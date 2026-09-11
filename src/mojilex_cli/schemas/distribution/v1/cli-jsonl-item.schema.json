@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-jsonl-item.schema.json",
+  "title": "MojiLex CLI JSONL item record v1",
+  "type": "object",
+  "required": ["schema_version", "record_type", "ordinal", "item"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "record_type": {"const": "item"},
+    "ordinal": {"type": "integer", "minimum": 0},
+    "item": {
+      "anyOf": [
+        {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetItem"},
+        {"$ref": "mlx://schemas/distribution/v1/cli-similar-item.schema.json"},
+        {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/snapshotItem"},
+        {
+          "type": "object",
+          "required": ["record", "runtime_trust"],
+          "properties": {
+            "record": {"$ref": "https://schemas.mojilex.org/v1/membership.schema.json"},
+            "runtime_trust": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/runtimeTrust"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

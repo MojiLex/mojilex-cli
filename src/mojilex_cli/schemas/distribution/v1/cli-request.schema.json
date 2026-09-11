@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-request.schema.json",
+  "title": "MojiLex normalized CLI read request v1",
+  "type": "object",
+  "required": ["request_profile_id", "command", "dataset", "arguments"],
+  "properties": {
+    "request_profile_id": {"const": "cli-request-v1"},
+    "command": {"enum": ["snapshots", "snapshot-pull", "snapshot-verify", "snapshot-update", "search", "get", "get-collection", "resolve", "similar"]},
+    "dataset": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetComponent"},
+    "arguments": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {"properties": {"command": {"const": "snapshots"}, "dataset": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}, "arguments": {"$ref": "#/$defs/snapshotsArguments"}}},
+        {"properties": {"command": {"const": "snapshot-pull"}, "arguments": {"$ref": "#/$defs/snapshotPullArguments"}}},
+        {"properties": {"command": {"const": "snapshot-verify"}, "arguments": {"$ref": "#/$defs/snapshotVerifyArguments"}}},
+        {"properties": {"command": {"const": "snapshot-update"}, "arguments": {"$ref": "#/$defs/snapshotUpdateArguments"}}},
+        {"properties": {"command": {"const": "search"}, "dataset": {"properties": {"present": {"const": true}}}, "arguments": {"$ref": "#/$defs/searchArguments"}}},
+        {"properties": {"command": {"const": "get"}, "dataset": {"properties": {"present": {"const": true}}}, "arguments": {"$ref": "#/$defs/getArguments"}}},
+        {"properties": {"command": {"const": "get-collection"}, "dataset": {"properties": {"present": {"const": true}}}, "arguments": {"$ref": "#/$defs/getCollectionArguments"}}},
+        {"properties": {"command": {"const": "resolve"}, "dataset": {"properties": {"present": {"const": true}}}, "arguments": {"$ref": "#/$defs/resolveArguments"}}},
+        {"properties": {"command": {"const": "similar"}, "dataset": {"properties": {"present": {"const": true}}}, "arguments": {"$ref": "#/$defs/similarArguments"}}}
+      ]
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "nullableString": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 4096}]},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+    "snapshotsArguments": {
+      "type": "object",
+      "required": ["channel", "limit", "cursor"],
+      "properties": {
+        "channel": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "limit": {"$ref": "#/$defs/limit"},
+        "cursor": {"$ref": "#/$defs/nullableString"}
+      },
+      "additionalProperties": false
+    },
+    "snapshotPullArguments": {
+      "type": "object",
+      "required": ["snapshot_id"],
+      "properties": {"snapshot_id": {"oneOf": [{"const": "latest"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"}]}},
+      "additionalProperties": false
+    },
+    "snapshotVerifyArguments": {
+      "type": "object",
+      "required": ["path", "manifest_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "manifest_sha256": {"oneOf": [{"type": "null"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}]}
+      },
+      "additionalProperties": false
+    },
+    "snapshotUpdateArguments": {
+      "type": "object",
+      "required": ["to"],
+      "properties": {"to": {"oneOf": [{"const": "latest"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"}]}},
+      "additionalProperties": false
+    },
+    "searchArguments": {
+      "type": "object",
+      "required": ["query", "language", "filters", "sort", "view", "limit", "cursor"],
+      "properties": {
+        "query": {"type": "string", "maxLength": 4096},
+        "language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"},
+        "filters": {"$ref": "mlx://schemas/distribution/v1/search-request.schema.json#/properties/filters"},
+        "sort": {"enum": ["relevance", "emoji-id"]},
+        "view": {"enum": ["canonical", "search", "agent"]},
+        "limit": {"$ref": "#/$defs/limit"},
+        "cursor": {"$ref": "#/$defs/nullableString"}
+      },
+      "additionalProperties": false
+    },
+    "getArguments": {
+      "type": "object",
+      "required": ["emoji_id", "view", "language", "include_sensitive"],
+      "properties": {
+        "emoji_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/emojiId"},
+        "view": {"enum": ["canonical", "search", "agent"]},
+        "language": {"oneOf": [{"type": "null"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}]},
+        "include_sensitive": {"type": "boolean"}
+      },
+      "allOf": [{"if": {"properties": {"view": {"const": "canonical"}}, "required": ["view"]}, "then": {"properties": {"language": {"type": "null"}}}}],
+      "additionalProperties": false
+    },
+    "getCollectionArguments": {
+      "type": "object",
+      "required": ["collection_id", "include_history", "limit", "cursor"],
+      "properties": {
+        "collection_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/collectionId"},
+        "include_history": {"type": "boolean"},
+        "limit": {"$ref": "#/$defs/limit"},
+        "cursor": {"$ref": "#/$defs/nullableString"}
+      },
+      "additionalProperties": false
+    },
+    "resolveArguments": {
+      "type": "object",
+      "required": ["platform", "namespace", "scope", "native_id", "identity_epoch", "as_of", "include_history", "limit", "cursor"],
+      "properties": {
+        "platform": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/platform"},
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 256},
+        "scope": {"type": "string", "minLength": 1, "maxLength": 256},
+        "native_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "identity_epoch": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]},
+        "as_of": {"oneOf": [{"type": "null"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"}]},
+        "include_history": {"type": "boolean"},
+        "limit": {"$ref": "#/$defs/limit"},
+        "cursor": {"$ref": "#/$defs/nullableString"}
+      },
+      "not": {"properties": {"identity_epoch": {"type": "integer"}, "as_of": {"type": "string"}}, "required": ["identity_epoch", "as_of"]},
+      "additionalProperties": false
+    },
+    "similarArguments": {
+      "type": "object",
+      "required": ["emoji_id", "view", "language", "limit", "cursor", "policy"],
+      "properties": {
+        "emoji_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/emojiId"},
+        "view": {"enum": ["canonical", "search", "agent"]},
+        "language": {"oneOf": [{"type": "null"}, {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}]},
+        "limit": {"$ref": "#/$defs/limit"},
+        "cursor": {"$ref": "#/$defs/nullableString"},
+        "policy": {"const": "confirmed-only-v1"}
+      },
+      "allOf": [{"if": {"properties": {"view": {"const": "canonical"}}, "required": ["view"]}, "then": {"properties": {"language": {"type": "null"}}}}],
+      "additionalProperties": false
+    }
+  }
+}

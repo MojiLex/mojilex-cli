@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/rights-profile.schema.json",
+  "title": "MojiLex rights profile v1",
+  "type": "object",
+  "required": [
+    "rights_profile_id",
+    "profile_version",
+    "status",
+    "applies_to",
+    "dataset_grant",
+    "operations",
+    "basis",
+    "attribution_required",
+    "effective_from"
+  ],
+  "properties": {
+    "rights_profile_id": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"
+    },
+    "profile_version": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"
+    },
+    "status": {"enum": ["active", "withdrawn"]},
+    "applies_to": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["project"],
+          "properties": {"project": {"const": "mojilex"}},
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["platform"],
+          "properties": {
+            "platform": {
+              "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/platform"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "dataset_grant": {
+      "type": "object",
+      "required": ["metadata_and_annotations_license", "exclusions"],
+      "properties": {
+        "metadata_and_annotations_license": {"const": "CC0-1.0"},
+        "exclusions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "source-media",
+              "characters",
+              "logos",
+              "trademarks",
+              "third-party-copyright"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "operations": {
+      "type": "object",
+      "required": [
+        "publish-metadata",
+        "publish-generated-annotations",
+        "store-source-media",
+        "redistribute-source-media",
+        "publish-derived-preview",
+        "send-media-to-external-ai",
+        "use-media-in-public-benchmark"
+      ],
+      "properties": {
+        "publish-metadata": {"$ref": "#/$defs/decision"},
+        "publish-generated-annotations": {"$ref": "#/$defs/decision"},
+        "store-source-media": {"$ref": "#/$defs/decision"},
+        "redistribute-source-media": {"$ref": "#/$defs/decision"},
+        "publish-derived-preview": {"$ref": "#/$defs/decision"},
+        "send-media-to-external-ai": {"$ref": "#/$defs/decision"},
+        "use-media-in-public-benchmark": {"$ref": "#/$defs/decision"}
+      },
+      "additionalProperties": false
+    },
+    "basis": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["kind", "document", "document_sha256"],
+        "properties": {
+          "kind": {"enum": ["project-policy", "platform-terms", "rights-clearance"]},
+          "document": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "document_sha256": {
+            "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "attribution_required": {"type": "boolean"},
+    "attribution_locator": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "effective_from": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"
+    },
+    "effective_until": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"attribution_required": {"const": true}},
+        "required": ["attribution_required"]
+      },
+      "then": {"required": ["attribution_locator"]},
+      "else": {"not": {"required": ["attribution_locator"]}}
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "required": ["decision"],
+      "properties": {
+        "decision": {"enum": ["allow", "deny", "conditional", "not-granted", "unknown"]},
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "maxLength": 64
+          }
+        }
+      },
+      "if": {
+        "properties": {"decision": {"const": "conditional"}},
+        "required": ["decision"]
+      },
+      "then": {"required": ["conditions"]},
+      "else": {"not": {"required": ["conditions"]}},
+      "additionalProperties": false
+    }
+  }
+}

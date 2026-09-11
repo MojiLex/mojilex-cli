@@ -13,6 +13,8 @@ from .hashes import (
 )
 from .ids import (
     DEFAULT_NAMESPACE,
+    DUPLICATE_GROUP_NAMESPACE,
+    RIGHTS_ASSIGNMENT_NAMESPACE,
     VISUAL_RELATION_NAMESPACE,
     IdentityError,
     collection_id,
@@ -31,6 +33,7 @@ from .models import (
     Collection,
     ColorBehavior,
     ColorFamily,
+    ConceptMappingStatus,
     Content,
     ContentRating,
     ContentType,
@@ -95,6 +98,8 @@ from .operations import (
 
 __all__ = [
     "DEFAULT_NAMESPACE",
+    "DUPLICATE_GROUP_NAMESPACE",
+    "RIGHTS_ASSIGNMENT_NAMESPACE",
     "SCHEMA_VERSION",
     "VISUAL_RELATION_NAMESPACE",
     "AlphaMode",
@@ -103,6 +108,7 @@ __all__ = [
     "Collection",
     "ColorBehavior",
     "ColorFamily",
+    "ConceptMappingStatus",
     "Content",
     "ContentRating",
     "ContentType",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -145,6 +146,8 @@ def make_snapshot(root: Path) -> DatasetSnapshot:
             ),
         },
         facets=facets,
+        concept_ids=[],
+        concept_mapping_status="pending",
         semantic_tags=["cat", "doubt", "suspicious"],
         content=Content(rating="general", warnings=[]),
         provenance=Provenance(
@@ -219,6 +222,8 @@ def make_snapshot(root: Path) -> DatasetSnapshot:
         "schema_version": "1.0.0",
         "id_namespace": "47d42c76-38da-5ab5-90fe-7af0ba6c4a27",
         "visual_relation_namespace": "4958ce2d-8120-5c3a-8755-a71d93c0c866",
+        "duplicate_group_namespace": "b6a91ddf-1126-5eee-ba5e-b8bd812883df",
+        "rights_assignment_namespace": "de845fef-2c83-51e1-a40a-f1bf11139639",
         "taxonomy_version": "1.0.0",
         "color_profile": "color-v1",
         "color_profile_sha256": PROFILE_HASHES["color-v1"],
@@ -228,6 +233,7 @@ def make_snapshot(root: Path) -> DatasetSnapshot:
         "collection_dedupe_profile_sha256": PROFILE_HASHES["collection-dedupe-v1"],
         "default_languages": ["ru", "en"],
         "platforms": ["telegram"],
+        "rights_defaults": {"project_profile_id": "mojilex-metadata-only-v1"},
         "canonical_repository": "https://github.com/MojiLex/mojilex",
         "licenses": {"data": "CC0-1.0", "code": "MIT"},
     }
@@ -254,7 +260,6 @@ def write_fixture(root: Path) -> DatasetSnapshot:
     for facet, identifiers in TAXONOMY_VALUES.items():
         filename = f"{facet.replace('_', '-')}.json"
         relative = f"taxonomy/v1/{filename}"
-        taxonomy_registries.append({"facet": facet, "path": filename})
         entries = [
             {
                 "id": identifier,
@@ -269,9 +274,17 @@ def write_fixture(root: Path) -> DatasetSnapshot:
             for identifier in sorted(identifiers)
         ]
         registry = {"taxonomy_version": "1.0.0", "facet": facet, "entries": entries}
+        registry_bytes = (json.dumps(registry, ensure_ascii=False, indent=2) + "\n").encode()
+        taxonomy_registries.append(
+            {
+                "dictionary_id": facet,
+                "path": filename,
+                "sha256": hashlib.sha256(registry_bytes).hexdigest(),
+            }
+        )
         writer.stage_bytes(
             relative,
-            (json.dumps(registry, ensure_ascii=False, indent=2) + "\n").encode(),
+            registry_bytes,
         )
     taxonomy_master = {
         "taxonomy_version": "1.0.0",
@@ -397,5 +410,108 @@ def write_fixture(root: Path) -> DatasetSnapshot:
             f"quality/{filename}",
             (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode(),
         )
+    concepts = {
+        "registry_schema_version": "1.0.0",
+        "registry_type": "concepts",
+        "registry_id": "concepts-v1.synthetic-001",
+        "concepts": [
+            {
+                "id": "animal.cat",
+                "status": "active",
+                "labels": {"en": "cat", "ru": "кот"},
+                "aliases": {"en": ["feline"], "ru": ["кошка"]},
+                "definitions": {"en": "A cat.", "ru": "Кот."},
+                "parent_ids": [],
+                "positive_examples": {"en": ["cat"], "ru": ["кот"]},
+                "negative_examples": {"en": ["dog"], "ru": ["собака"]},
+            }
+        ],
+    }
+    writer.stage_bytes(
+        "taxonomy/v1/concepts.json",
+        (json.dumps(concepts, ensure_ascii=False, indent=2) + "\n").encode(),
+    )
+    operation_decisions = {
+        "publish-metadata": {"decision": "allow"},
+        "publish-generated-annotations": {"decision": "allow"},
+        "store-source-media": {
+            "decision": "conditional",
+            "conditions": ["transient-run-only"],
+        },
+        "redistribute-source-media": {"decision": "not-granted"},
+        "publish-derived-preview": {"decision": "not-granted"},
+        "send-media-to-external-ai": {
+            "decision": "conditional",
+            "conditions": ["operator-explicit-consent"],
+        },
+        "use-media-in-public-benchmark": {"decision": "not-granted"},
+    }
+    rights_profiles = []
+    for profile_id, applies_to in (
+        ("mojilex-metadata-only-v1", {"project": "mojilex"}),
+        ("telegram-index-only-v1", {"platform": "telegram"}),
+    ):
+        rights_profiles.append(
+            {
+                "rights_profile_id": profile_id,
+                "profile_version": "1.0.0",
+                "status": "active",
+                "applies_to": applies_to,
+                "dataset_grant": {
+                    "metadata_and_annotations_license": "CC0-1.0",
+                    "exclusions": [
+                        "characters",
+                        "logos",
+                        "source-media",
+                        "third-party-copyright",
+                        "trademarks",
+                    ],
+                },
+                "operations": operation_decisions,
+                "basis": [
+                    {
+                        "kind": "project-policy",
+                        "document": "LICENSING.md",
+                        "document_sha256": "9" * 64,
+                    }
+                ],
+                "attribution_required": False,
+                "effective_from": "2026-09-11T00:00:00Z",
+            }
+        )
+    rights = {
+        "registry_schema_version": "1.0.0",
+        "registry_type": "rights-profiles",
+        "registry_id": "rights-profiles-v1.synthetic-001",
+        "project_default_profile_id": "mojilex-metadata-only-v1",
+        "profiles": rights_profiles,
+    }
+    writer.stage_bytes(
+        "rights/profiles.json",
+        (json.dumps(rights, ensure_ascii=False, indent=2) + "\n").encode(),
+    )
+    platform_profile = {
+        "profile_schema_version": "1.0.0",
+        "platform": "telegram",
+        "profile_version": "telegram-capabilities-v1",
+        "adapter_contract_version": "1.0.0",
+        "default_rights_profile_id": "telegram-index-only-v1",
+        "capabilities": [
+            {
+                "capability_id": "telegram.message-custom-emoji",
+                "surface": "message",
+                "status": "supported",
+                "applies_to": "custom_emoji",
+                "authority_class": "official-documentation",
+                "evidence_url": "https://core.telegram.org/stickers#custom-emoji",
+                "observed_at": "2026-09-11T00:00:00Z",
+                "freshness_period_seconds": 7776000,
+            }
+        ],
+    }
+    writer.stage_bytes(
+        "platforms/telegram.json",
+        (json.dumps(platform_profile, ensure_ascii=False, indent=2) + "\n").encode(),
+    )
     writer.commit()
     return snapshot

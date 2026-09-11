@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/key-serialization-profile-contract.schema.json",
+  "title": "MojiLex key-serialization profile body contract v1",
+  "type": "object",
+  "required": [
+    "component_profile",
+    "record_hash_profile",
+    "table_root_profile",
+    "serialization",
+    "line_ending"
+  ],
+  "properties": {
+    "component_profile": {
+      "const": "json-pointer-present-component-v1"
+    },
+    "record_hash_profile": {
+      "const": "sha256-jcs-v1"
+    },
+    "table_root_profile": {
+      "const": "sha256-key-record-lines-v1"
+    },
+    "serialization": {
+      "const": "rfc8785-jcs"
+    },
+    "line_ending": {
+      "const": "lf"
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/tombstone.schema.json",
+  "title": "MojiLex public tombstone v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "entity_type",
+    "target_entity_type",
+    "target_id",
+    "reason_code",
+    "withheld_at",
+    "public_note"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+    },
+    "entity_type": {
+      "const": "tombstone"
+    },
+    "target_entity_type": {
+      "enum": [
+        "collection",
+        "emoji",
+        "membership"
+      ]
+    },
+    "target_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/entityId"
+    },
+    "reason_code": {
+      "enum": [
+        "copyright",
+        "trademark",
+        "privacy",
+        "security",
+        "legal",
+        "other"
+      ]
+    },
+    "withheld_at": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/timestamp"
+    },
+    "public_note": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 280,
+      "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "target_entity_type": {
+            "const": "collection"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target_id": {
+            "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/collectionId"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target_entity_type": {
+            "const": "emoji"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target_id": {
+            "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/emojiId"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target_entity_type": {
+            "const": "membership"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target_id": {
+            "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/membershipId"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/platform-profiles-registry.schema.json",
+  "title": "MojiLex platform profiles registry v1",
+  "type": "object",
+  "required": ["registry_schema_version", "registry_type", "registry_id", "entries"],
+  "properties": {
+    "registry_schema_version": {"const": "1.0.0"},
+    "registry_type": {"const": "platform-profiles"},
+    "registry_id": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "mlx://schemas/distribution/v1/platform-profile.schema.json"}
+    }
+  },
+  "additionalProperties": false
+}

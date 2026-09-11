@@ -290,7 +290,7 @@ def scan_snapshot(
             collection_candidates=collection_candidates,
         )
     suppressed = _approved_not_duplicate_pairs(snapshot)
-    bucket_limit = int(bucket_policy["maximum_members"])
+    bucket_limit = int(bucket_policy["posting_bucket_cap"])
     secondary_keys = tuple(str(value) for value in bucket_policy["secondary_keys"])
     band_bits = _lsh_band_bits(secondary_keys)
     candidate_index = _build_candidate_index(

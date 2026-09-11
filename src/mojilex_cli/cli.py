@@ -19,15 +19,16 @@ from mojilex_cli.commands.dataset import (
     takedown_preview_command,
     validate_command,
 )
+from mojilex_cli.commands.read import execute_read, register_read_commands
 from mojilex_cli.commands.runtime import (
     CommandError,
+    CommandResult,
     execute,
     is_usage_error,
     machine_envelope_emitted,
     machine_output_mode,
     require_confirmation,
 )
-from mojilex_cli.commands.system import config_show_command, doctor_command, init_command
 
 app = typer.Typer(
     name="mojilex",
@@ -42,6 +43,46 @@ dedupe_app = typer.Typer(help="Scan and review exact or visual duplicate candida
 app.add_typer(config_app, name="config")
 app.add_typer(cache_app, name="cache")
 app.add_typer(dedupe_app, name="dedupe")
+register_read_commands(app)
+
+
+def init_command(
+    *,
+    repo: str,
+    provider: str,
+    model: str,
+    publish: str,
+    config_path: Path | None,
+    force: bool,
+) -> CommandResult:
+    """Load authoring diagnostics only when the init command is invoked."""
+
+    from mojilex_cli.commands.system import init_command as implementation
+
+    return implementation(
+        repo=repo,
+        provider=provider,
+        model=model,
+        publish=publish,
+        config_path=config_path,
+        force=force,
+    )
+
+
+def doctor_command() -> CommandResult:
+    """Load media probes only when the doctor command is invoked."""
+
+    from mojilex_cli.commands.system import doctor_command as implementation
+
+    return implementation()
+
+
+def config_show_command() -> CommandResult:
+    """Load credential/config adapters only when config show is invoked."""
+
+    from mojilex_cli.commands.system import config_show_command as implementation
+
+    return implementation()
 
 
 def _version_callback(value: bool) -> None:
@@ -368,15 +409,38 @@ def submit(
 
 @app.command("build-index")
 def build_index_cli(
+    snapshot_id: Annotated[
+        str,
+        typer.Option("--snapshot-id", help="Immutable snapshot ID: data-YYYY.MM.DD.N."),
+    ],
+    source_date_epoch: Annotated[
+        int,
+        typer.Option(
+            "--source-date-epoch",
+            min=0,
+            help="Immutable release source time as a Unix epoch.",
+        ),
+    ],
     path: Annotated[Path, typer.Argument(help="Local dataset root.")] = Path("."),
     output: Annotated[Path | None, typer.Option("--output")] = None,
+    git_commit: Annotated[str | None, typer.Option("--git-commit")] = None,
+    tool_commit: Annotated[str | None, typer.Option("--tool-commit")] = None,
+    dependency_lock_sha256: Annotated[str | None, typer.Option("--dependency-lock-sha256")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
     execute(
         "build-index",
-        lambda: build_index_command(path, output),
+        lambda: build_index_command(
+            path,
+            output,
+            snapshot_id=snapshot_id,
+            source_date_epoch=source_date_epoch,
+            git_commit=git_commit,
+            tool_commit=tool_commit,
+            dependency_lock_sha256=dependency_lock_sha256,
+        ),
         json_output=json_output,
         quiet=quiet,
         debug=debug,
@@ -766,11 +830,18 @@ def _command_label(argv: Sequence[str]) -> str:
         "dedupe",
         "describe",
         "doctor",
+        "get",
+        "get-collection",
         "import",
         "init",
         "resume",
         "review",
+        "resolve",
+        "search",
         "set-status",
+        "similar",
+        "snapshot",
+        "snapshots",
         "submit",
         "takedown",
         "update",
@@ -779,10 +850,12 @@ def _command_label(argv: Sequence[str]) -> str:
     for index, argument in enumerate(argv):
         if argument not in commands:
             continue
-        if argument in {"cache", "config", "dedupe"}:
+        if argument in {"cache", "config", "dedupe", "snapshot"}:
             for child in argv[index + 1 :]:
                 if not child.startswith("-"):
-                    return f"{argument} {child}"
+                    return (
+                        f"{argument}-{child}" if argument == "snapshot" else f"{argument} {child}"
+                    )
         return argument
     return "mojilex"
 
@@ -793,6 +866,22 @@ def _raise_boundary_error(exc: BaseException) -> NoReturn:
 
 def _emit_boundary_error(command: str, exc: BaseException) -> NoReturn:
     try:
+        if command in {
+            "snapshots",
+            "snapshot-pull",
+            "snapshot-verify",
+            "snapshot-update",
+            "search",
+            "get",
+            "get-collection",
+            "resolve",
+            "similar",
+        }:
+            execute_read(
+                command,
+                lambda: _raise_boundary_error(exc),
+                json_output=True,
+            )
         execute(command, lambda: _raise_boundary_error(exc), json_output=True)
     except typer.Exit as exit_error:
         raise SystemExit(exit_error.exit_code) from exc

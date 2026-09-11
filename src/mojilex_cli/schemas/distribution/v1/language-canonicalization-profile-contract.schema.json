@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/language-canonicalization-profile-contract.schema.json",
+  "title": "MojiLex language-canonicalization profile body contract v1",
+  "type": "object",
+  "required": [
+    "syntax",
+    "separator",
+    "underscore_allowed",
+    "canonical_case",
+    "accepted_base_languages",
+    "deprecated_subtags"
+  ],
+  "properties": {
+    "syntax": {
+      "const": "bcp47"
+    },
+    "separator": {
+      "const": "-"
+    },
+    "underscore_allowed": {
+      "const": false
+    },
+    "canonical_case": {
+      "const": true
+    },
+    "accepted_base_languages": {
+      "const": [
+        "en",
+        "ru"
+      ]
+    },
+    "deprecated_subtags": {
+      "const": {}
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

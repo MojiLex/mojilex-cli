@@ -12,8 +12,9 @@ respective rights holders.
 
 ## Status
 
-This repository contains the `0.1.0` MVP. The data format has its own independently versioned
-JSON Schema (`1.0.0`). Python 3.11 or newer is required.
+This repository contains the `0.2.0` MVP. It adds bounded, offline, read-only access to an
+explicitly selected `distribution-v1` snapshot. The data format has its own independently
+versioned JSON Schema (`1.0.0`). Python 3.11 or newer is required.
 
 ## Install
 
@@ -103,10 +104,27 @@ mojilex doctor
 mojilex config show
 mojilex cache info
 mojilex cache prune
+mojilex snapshot verify PATH
+mojilex search QUERY --snapshot PATH
+mojilex get EMOJI_ID --snapshot PATH
+mojilex get-collection COLLECTION_ID --snapshot PATH
+mojilex resolve --platform NAME --namespace NAME --scope ID --native-id ID --snapshot PATH
+mojilex similar EMOJI_ID --snapshot PATH
 ```
 
 Use `mojilex COMMAND --help` for exact options. With `--json`, stdout contains exactly one
 machine-readable envelope; progress and diagnostics go to stderr.
+
+Every data-reading command requires an explicit local `--snapshot PATH`. The pre-enforcement
+MVP snapshot is integrity-checked but unsigned, so reads fail closed unless diagnostic use is
+explicitly acknowledged with `--allow-unverified`; this never makes the release trusted and
+`runtime_trust.safe_eligible` remains false. `search` defaults to the safe `agent` view, while
+`--view search --allow-unverified` is the explicit diagnostic projection. The read path is
+offline-only and does not call AI providers, Telegram, media decoders, catalogs, mirrors, or any
+other network service.
+
+Signed catalog/revocation/errata enforcement and attestations (Stage C), partitioned releases,
+deltas, and scale indexes (Stage D), and the external data plane (Stage E) remain post-MVP.
 
 ## Safety defaults
 

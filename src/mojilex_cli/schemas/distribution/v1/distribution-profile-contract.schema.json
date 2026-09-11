@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/distribution-profile-contract.schema.json",
+  "title": "MojiLex distribution profile body contract v1",
+  "type": "object",
+  "required": [
+    "layout_profiles",
+    "semantic_roles",
+    "inline_limits",
+    "jsonl",
+    "critical_warning_policy"
+  ],
+  "properties": {
+    "layout_profiles": {
+      "const": [
+        "monolith-v1",
+        "partitioned-v1"
+      ]
+    },
+    "semantic_roles": {
+      "const": {
+        "canonical": [
+          "collections",
+          "emojis",
+          "memberships",
+          "tombstones",
+          "visual-relations",
+          "identity-references",
+          "identity-links",
+          "rights-assignments",
+          "observations",
+          "availability-verifications",
+          "review-attestations",
+          "review-attestation-subjects",
+          "generation-attestations",
+          "generation-attestation-subjects",
+          "generation-inputs",
+          "human-edit-events",
+          "human-edit-paths"
+        ],
+        "normative": [
+          "platform-profiles",
+          "observation-profiles",
+          "rights-profiles",
+          "reviewer-authorizations",
+          "reviewer-authorization-snapshots",
+          "review-policy",
+          "legacy-review-subjects",
+          "legacy-ai-provenance-subjects",
+          "review-policy-snapshots",
+          "taxonomy",
+          "concepts"
+        ],
+        "derived": [
+          "emojis-active",
+          "collection-facets",
+          "duplicate-groups",
+          "duplicate-group-memberships",
+          "search-{lang}",
+          "agent-{lang}",
+          "entity-routing",
+          "native-reference-to-mojilex-id",
+          "observations-by-subject",
+          "attestations-by-subject",
+          "memberships-by-collection",
+          "memberships-by-emoji",
+          "collection-by-id",
+          "locator-{logical_name}",
+          "sqlite-*",
+          "parquet-*"
+        ]
+      }
+    },
+    "inline_limits": {
+      "const": {
+        "native_references": 32,
+        "collection_ids": 64,
+        "duplicate_group_ids": 32
+      }
+    },
+    "jsonl": {
+      "const": {
+        "encoding": "utf-8",
+        "bom": false,
+        "line_ending": "lf",
+        "target_line_bytes": 262144,
+        "maximum_line_bytes": 1048576
+      }
+    },
+    "critical_warning_policy": {
+      "const": "all-content-warnings-v1"
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

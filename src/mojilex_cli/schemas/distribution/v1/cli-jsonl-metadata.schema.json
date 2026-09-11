@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-jsonl-metadata.schema.json",
+  "title": "MojiLex CLI JSONL metadata record v1",
+  "type": "object",
+  "required": ["schema_version", "record_type", "command", "view", "dataset", "request_sha256"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "record_type": {"const": "metadata"},
+    "command": {"enum": ["snapshots", "search", "get-collection", "similar"]},
+    "view": {"enum": ["snapshot", "canonical", "search", "agent"]},
+    "dataset": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetComponent"},
+    "request_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+  },
+  "oneOf": [
+    {"properties": {"command": {"const": "snapshots"}, "view": {"const": "snapshot"}, "dataset": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}}},
+    {"properties": {"command": {"const": "get-collection"}, "view": {"const": "canonical"}, "dataset": {"properties": {"present": {"const": true}}}}},
+    {"properties": {"command": {"const": "search"}, "view": {"enum": ["canonical", "search", "agent"]}, "dataset": {"properties": {"present": {"const": true}}}}},
+    {"properties": {"command": {"const": "similar"}, "view": {"enum": ["canonical", "search", "agent"]}, "dataset": {"properties": {"present": {"const": true}}}}}
+  ],
+  "additionalProperties": false
+}

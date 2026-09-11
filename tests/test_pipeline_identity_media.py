@@ -237,6 +237,7 @@ async def test_reported_hash_mismatch_direct_refetch_restores_existing_before_me
         reviewed_at="2026-09-11T19:00:00Z",
         reviewer="synthetic-reviewer",
         reviewed_content_sha256=reviewed_content_sha256(existing),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     before_emoji = existing.as_dict()
     source = _source(snapshot)

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/extensions/telegram.schema.json",
+  "title": "MojiLex Telegram extension v1",
+  "$defs": {
+    "retrievedVia": {
+      "enum": [
+        "bot_api",
+        "mtproto"
+      ]
+    },
+    "collection": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "retrieved_via",
+        "short_name",
+        "sticker_type",
+        "set_fingerprint_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+        },
+        "retrieved_via": {
+          "$ref": "#/$defs/retrievedVia"
+        },
+        "short_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_]+$"
+        },
+        "sticker_type": {
+          "const": "custom_emoji"
+        },
+        "set_fingerprint_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "stable_set_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "emoji": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "retrieved_via",
+        "custom_emoji_id",
+        "file_unique_id",
+        "needs_repainting"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+        },
+        "retrieved_via": {
+          "$ref": "#/$defs/retrievedVia"
+        },
+        "custom_emoji_id": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "file_unique_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "fallback_emoji": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "needs_repainting": {
+          "type": "boolean"
+        },
+        "context_observations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": [
+              "context",
+              "status",
+              "source_method",
+              "observed_at"
+            ],
+            "properties": {
+              "context": {
+                "enum": [
+                  "message",
+                  "emoji-status",
+                  "topic-icon",
+                  "chat-photo",
+                  "profile-photo"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "supported",
+                  "unsupported",
+                  "recommended",
+                  "not-recommended"
+                ]
+              },
+              "source_method": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+              },
+              "observed_at": {
+                "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/timestamp"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

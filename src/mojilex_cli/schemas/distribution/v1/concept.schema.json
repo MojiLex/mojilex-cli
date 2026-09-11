@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/concept.schema.json",
+  "title": "MojiLex semantic concept v1",
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "labels",
+    "aliases",
+    "definitions",
+    "parent_ids",
+    "positive_examples",
+    "negative_examples"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/conceptId"
+    },
+    "status": {
+      "enum": ["active", "deprecated"]
+    },
+    "replaced_by": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/conceptId"
+    },
+    "labels": {
+      "$ref": "#/$defs/localizedText"
+    },
+    "aliases": {
+      "$ref": "#/$defs/localizedTextArrays"
+    },
+    "definitions": {
+      "$ref": "#/$defs/localizedText"
+    },
+    "parent_ids": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/conceptId"
+      }
+    },
+    "positive_examples": {
+      "$ref": "#/$defs/localizedTextArrays"
+    },
+    "negative_examples": {
+      "$ref": "#/$defs/localizedTextArrays"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "deprecated"}},
+        "required": ["status"]
+      },
+      "then": {"required": ["replaced_by"]},
+      "else": {"not": {"required": ["replaced_by"]}}
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "localizedText": {
+      "type": "object",
+      "required": ["en", "ru"],
+      "propertyNames": {
+        "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "localizedTextArrays": {
+      "type": "object",
+      "required": ["en", "ru"],
+      "propertyNames": {
+        "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  }
+}

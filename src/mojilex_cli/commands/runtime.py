@@ -180,6 +180,18 @@ def machine_envelope_emitted() -> bool:
     return _ENVELOPE_EMITTED.get()
 
 
+def machine_output_requested() -> bool:
+    """Return whether the outer CLI boundary requested machine JSON output."""
+
+    return _MACHINE_JSON_MODE.get()
+
+
+def mark_machine_envelope_emitted() -> None:
+    """Mark output emitted by a specialized envelope implementation."""
+
+    _ENVELOPE_EMITTED.set(True)
+
+
 def execute(
     command: str,
     action: Callable[[], CommandResult],

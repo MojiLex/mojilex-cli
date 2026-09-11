@@ -721,6 +721,7 @@ def _replace_existing_media(snapshot: object, payload: bytes) -> None:
         reviewed_at="2026-09-11T19:00:00Z",
         reviewer="resume-cache-test",
         reviewed_content_sha256=reviewed_content_sha256(unreviewed),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     snapshot.emojis[emoji_id] = unreviewed.model_copy(  # type: ignore[attr-defined]
         update={"review": approved}

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/duplicate-group.schema.json",
+  "title": "MojiLex duplicate group summary v1",
+  "oneOf": [
+    {"$ref": "#/$defs/binaryMedia"},
+    {"$ref": "#/$defs/binaryEntity"},
+    {"$ref": "#/$defs/decodedMedia"},
+    {"$ref": "#/$defs/decodedEntity"},
+    {"$ref": "#/$defs/reviewedEntity"}
+  ],
+  "$defs": {
+    "baseProperties": {
+      "schema_version": {"const": "1.0.0"},
+      "group_id": {
+        "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"
+      },
+      "member_count": {"type": "integer", "minimum": 2},
+      "members_root_sha256": {
+        "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"
+      }
+    },
+    "binaryMedia": {
+      "type": "object",
+      "required": ["schema_version", "group_id", "group_type", "member_count", "members_root_sha256", "group_key"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "group_type": {"const": "binary-exact"},
+        "member_count": {"type": "integer", "minimum": 2},
+        "members_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "group_key": {
+          "type": "object",
+          "required": ["scope", "source_sha256", "byte_size"],
+          "properties": {
+            "scope": {"const": "media"},
+            "source_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+            "byte_size": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "binaryEntity": {
+      "type": "object",
+      "required": ["schema_version", "group_id", "group_type", "member_count", "members_root_sha256", "group_key"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "group_type": {"const": "binary-exact"},
+        "member_count": {"type": "integer", "minimum": 2},
+        "members_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "group_key": {
+          "type": "object",
+          "required": ["scope", "media_set_root_sha256"],
+          "properties": {
+            "scope": {"const": "entity"},
+            "media_set_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "decodedMedia": {
+      "type": "object",
+      "required": ["schema_version", "group_id", "group_type", "member_count", "members_root_sha256", "group_key"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "group_type": {"const": "decoded-exact"},
+        "member_count": {"type": "integer", "minimum": 2},
+        "members_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "group_key": {
+          "type": "object",
+          "required": ["scope", "decoded_profile_id", "decoded_payload_sha256"],
+          "properties": {
+            "scope": {"const": "media"},
+            "decoded_profile_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+            "decoded_payload_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "decodedEntity": {
+      "type": "object",
+      "required": ["schema_version", "group_id", "group_type", "member_count", "members_root_sha256", "group_key"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "group_type": {"const": "decoded-exact"},
+        "member_count": {"type": "integer", "minimum": 2},
+        "members_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "group_key": {
+          "type": "object",
+          "required": ["scope", "decoded_profile_id", "media_set_root_sha256"],
+          "properties": {
+            "scope": {"const": "entity"},
+            "decoded_profile_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+            "media_set_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "reviewedEntity": {
+      "type": "object",
+      "required": ["schema_version", "group_id", "group_type", "member_count", "members_root_sha256", "group_key"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "group_type": {"const": "reviewed-same-artwork"},
+        "member_count": {"type": "integer", "minimum": 2},
+        "members_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "group_key": {
+          "type": "object",
+          "required": ["scope", "relation_type"],
+          "properties": {"scope": {"const": "entity"}, "relation_type": {"const": "same-artwork"}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

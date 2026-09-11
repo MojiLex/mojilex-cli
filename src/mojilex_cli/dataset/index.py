@@ -15,6 +15,7 @@ from typing import Any
 from mojilex_cli.domain.hashes import media_digest
 from mojilex_cli.domain.models import ContentRating, ReviewStatus
 
+from .distribution import build_distribution
 from .layout import assert_no_link_or_reparse, is_link_or_reparse_point
 from .repository import DatasetSnapshot, load_dataset
 from .serialization import canonical_entity, parse_json, pretty_json, serialize_jsonl
@@ -22,7 +23,7 @@ from .staging import AtomicDatasetWriter
 from .transaction import recover_pending_dataset_transaction
 from .validation import validate_snapshot
 
-_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _PAYLOAD_NAMES = (
     "collections.jsonl",
     "emojis.jsonl",
@@ -39,10 +40,12 @@ _PAYLOAD_NAMES = (
 _PROTECTED_DATASET_DIRECTORIES = (
     ".git",
     ".github",
+    "analysis-profiles",
     "data",
     "examples",
     "platforms",
     "quality",
+    "rights",
     "schemas",
     "taxonomy",
     "tests",
@@ -51,13 +54,16 @@ _PROTECTED_DATASET_DIRECTORIES = (
 )
 _MANAGED_OUTPUT_NAMES = frozenset((*_PAYLOAD_NAMES, "manifest.json", "SHA256SUMS"))
 _MAX_EXISTING_OUTPUT_BYTES = 1024 * 1024 * 1024
-_MAX_EXISTING_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_EXISTING_MANIFEST_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class IndexBuildResult:
     output_directory: Path
     git_commit: str
+    git_object_format: str
+    tool_commit: str
+    dependency_lock_sha256: str
     file_sha256: dict[str, str]
     counts: dict[str, Any]
 
@@ -66,7 +72,9 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _git_commit(root: Path) -> str:
+def _git_commit(root: Path, *, option: str = "--git-commit") -> str:
+    if not (root / ".git").exists():
+        raise ValueError(f"cannot resolve a Git checkout at {root}; pass {option} explicitly")
     result = subprocess.run(
         ["git", "-c", f"safe.directory={root}", "-C", str(root), "rev-parse", "HEAD"],
         capture_output=True,
@@ -77,8 +85,26 @@ def _git_commit(root: Path) -> str:
     )
     value = result.stdout.strip().lower()
     if result.returncode != 0 or not _GIT_SHA_RE.fullmatch(value):
-        raise ValueError("cannot resolve the dataset Git commit; pass git_commit explicitly")
+        raise ValueError(f"cannot resolve a full Git commit at {root}; pass {option} explicitly")
     return value
+
+
+def _dependency_contract_sha256(tool_root: Path, explicit: str | None) -> str:
+    if explicit is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", explicit):
+            raise ValueError("dependency_lock_sha256 must be a lowercase SHA-256 digest")
+        return explicit
+    contract = tool_root / "pyproject.toml"
+    try:
+        return _sha(contract.read_bytes())
+    except OSError as exc:
+        raise ValueError(
+            "cannot resolve the CLI dependency contract; pass --dependency-lock-sha256 explicitly"
+        ) from exc
+
+
+def _tool_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _counter(values: list[str]) -> dict[str, int]:
@@ -483,39 +509,115 @@ def _validate_existing_output(output: Path) -> dict[PurePosixPath, tuple[int, st
     children = list(output.iterdir())
     if not children:
         return {}
-    if any(
-        is_link_or_reparse_point(child)
-        or not child.is_file()
-        or child.name not in _MANAGED_OUTPUT_NAMES
-        for child in children
-    ):
-        raise ValueError("index output contains unmanaged files or directories")
-    expected_files: dict[PurePosixPath, tuple[int, str]] = {}
-    total_bytes = 0
-    for child in children:
-        try:
-            size = child.stat().st_size
-        except OSError as exc:
-            raise ValueError("index output could not be inspected safely") from exc
-        total_bytes += size
-        if total_bytes > _MAX_EXISTING_OUTPUT_BYTES:
-            raise ValueError("index output exceeds the 1 GiB safety limit")
-        digest = _file_sha256(child)
-        if digest is None:
-            raise ValueError("index output could not be inspected safely")
-        expected_files[PurePosixPath(child.name)] = (size, digest)
     manifest_path = output / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError("index output is not a recognized MojiLex release directory")
     if manifest_path.stat().st_size > _MAX_EXISTING_MANIFEST_BYTES:
-        raise ValueError("index output manifest exceeds the 4 MiB safety limit")
+        raise ValueError("index output manifest exceeds the 64 MiB safety limit")
     try:
         manifest = parse_json(manifest_path.read_bytes(), source=str(manifest_path))
     except (OSError, ValueError) as exc:
         raise ValueError("index output is not a recognized MojiLex release directory") from exc
-    if manifest.get("dataset") != "mojilex" or not isinstance(manifest.get("payload_sha256"), dict):
+    if (
+        manifest.get("dataset") != "mojilex"
+        or manifest.get("manifest_version") != "1.0.0"
+        or not isinstance(manifest.get("artifacts"), list)
+        or not isinstance(manifest.get("resources"), list)
+    ):
         raise ValueError("index output is not a recognized MojiLex release directory")
-    return expected_files
+    expected_descriptors: dict[str, tuple[int, str]] = {}
+
+    def add_descriptor(value: Any) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("index manifest contains an invalid descriptor")
+        path = value.get("path")
+        size = value.get("object_byte_size")
+        digest = value.get("object_sha256")
+        if (
+            not isinstance(path, str)
+            or not path
+            or PurePosixPath(path).is_absolute()
+            or "\\" in path
+            or "%" in path
+            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or path in expected_descriptors
+        ):
+            raise ValueError("index manifest contains an invalid or duplicate physical path")
+        expected_descriptors[path] = (size, digest)
+
+    for descriptor in manifest["artifacts"]:
+        add_descriptor(descriptor)
+    for resource in manifest["resources"]:
+        if not isinstance(resource, dict):
+            raise ValueError("index manifest contains an invalid resource descriptor")
+        if resource.get("resource_kind") == "physical":
+            add_descriptor(resource)
+    expected_paths = {"manifest.json", "SHA256SUMS", *expected_descriptors}
+    if len(expected_paths) > 10_000:
+        raise ValueError("index output path count exceeds its safety limit")
+    folded: set[str] = set()
+    for expected_path in expected_paths:
+        identity = expected_path.casefold() if os.name == "nt" else expected_path
+        if identity in folded:
+            raise ValueError("index manifest paths alias on this filesystem")
+        folded.add(identity)
+    actual_files: dict[str, Path] = {}
+    actual_directories: set[str] = set()
+    total_bytes = 0
+    for child in output.rglob("*"):
+        if is_link_or_reparse_point(child):
+            raise ValueError("index output contains a link or reparse point")
+        relative = child.relative_to(output).as_posix()
+        if child.is_file():
+            actual_files[relative] = child
+            try:
+                total_bytes += child.stat().st_size
+            except OSError as exc:
+                raise ValueError("index output could not be inspected safely") from exc
+        elif child.is_dir():
+            actual_directories.add(relative)
+        else:
+            raise ValueError("index output contains a special filesystem entry")
+        if total_bytes > _MAX_EXISTING_OUTPUT_BYTES:
+            raise ValueError("index output exceeds the 1 GiB safety limit")
+    expected_directories = {
+        parent.as_posix()
+        for relative in expected_paths
+        for parent in PurePosixPath(relative).parents
+        if parent != PurePosixPath(".")
+    }
+    if set(actual_files) != expected_paths or actual_directories != expected_directories:
+        raise ValueError("index output contains unmanaged, missing, or stale entries")
+    result: dict[PurePosixPath, tuple[int, str]] = {}
+    for relative, file_path in actual_files.items():
+        size = file_path.stat().st_size
+        digest = _file_sha256(file_path)
+        if digest is None:
+            raise ValueError("index output could not be inspected safely")
+        descriptor = expected_descriptors.get(relative)
+        if descriptor is not None and descriptor != (size, digest):
+            raise ValueError(f"index output artifact does not match its manifest: {relative}")
+        result[PurePosixPath(relative)] = (size, digest)
+    expected_sums = "".join(
+        f"{digest}  {path}\n"
+        for path, (_size, digest) in sorted(
+            {
+                **expected_descriptors,
+                "manifest.json": (
+                    manifest_path.stat().st_size,
+                    result[PurePosixPath("manifest.json")][1],
+                ),
+            }.items()
+        )
+    ).encode("ascii")
+    if (output / "SHA256SUMS").read_bytes() != expected_sums:
+        raise ValueError("index output SHA256SUMS does not match its manifest")
+    return result
 
 
 def _index_transaction_lock_name(output: Path) -> str:
@@ -523,19 +625,39 @@ def _index_transaction_lock_name(output: Path) -> str:
     return f"index-{hashlib.sha256(identity).hexdigest()}.lock"
 
 
+def _remove_empty_managed_directories(output: Path, deleted_paths: set[PurePosixPath]) -> None:
+    parents = {
+        parent
+        for relative in deleted_paths
+        for parent in relative.parents
+        if parent != PurePosixPath(".")
+    }
+    for relative in sorted(parents, key=lambda item: (-len(item.parts), item.as_posix())):
+        directory = output.joinpath(*relative.parts)
+        assert_no_link_or_reparse(directory, boundary=output)
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # A non-empty directory may contain another current resource or a
+            # concurrent foreign file. Never recurse or remove its contents.
+            continue
+
+
 def build_index(
     root: str | Path,
     output_directory: str | Path | None = None,
     *,
+    snapshot_id: str,
+    source_date_epoch: int,
     git_commit: str | None = None,
+    tool_commit: str | None = None,
+    dependency_lock_sha256: str | None = None,
     validate: bool = True,
 ) -> IndexBuildResult:
     dataset_root = Path(root).resolve()
     output = _safe_output_directory(dataset_root, output_directory)
-    # Recover a prior interrupted index write before deciding whether the
-    # existing release directory is managed.  Keep the lock itself in the
-    # dataset's ignored local state so generated release directories contain
-    # payload files only.
     index_lock_name = _index_transaction_lock_name(output)
     recover_pending_dataset_transaction(
         output,
@@ -551,70 +673,60 @@ def build_index(
             schemas=True,
             repository_files=True,
         ).raise_for_errors()
-    revision = (git_commit or _git_commit(dataset_root)).lower()
+    revision = (git_commit or _git_commit(dataset_root, option="--git-commit")).lower()
     if not _GIT_SHA_RE.fullmatch(revision):
-        raise ValueError("git_commit must be a lowercase 40-character hexadecimal SHA")
-    payloads, counts = _payloads(snapshot)
-    payload_hashes = {name: _sha(payloads[name]) for name in _PAYLOAD_NAMES}
-    quality_root = dataset_root / "quality"
-    registry_hashes = {
-        key: digest
-        for key, path in {
-            "model_qualifications": quality_root / "model-qualifications.json",
-            "review_reasons": quality_root / "review-reasons-v1.json",
-            "review_routing": quality_root / "review-routing-v1.json",
-            "routing_reasons": quality_root / "routing-reasons-v1.json",
-        }.items()
-        if (digest := _file_sha256(path)) is not None
-    }
-    platform_hashes = {
-        platform: digest
-        for platform in snapshot.manifest.get("platforms", [])
-        if (digest := _file_sha256(dataset_root / "platforms" / f"{platform}.json")) is not None
-    }
-    manifest = {
-        "dataset": "mojilex",
-        "schema_version": snapshot.manifest["schema_version"],
-        "git_commit": revision,
-        "counts": counts,
-        "status_counts": _status_counts(snapshot),
-        "profiles": {
-            "taxonomy": {
-                "version": snapshot.manifest["taxonomy_version"],
-                "sha256": payload_hashes["taxonomy.json"],
-            },
-            "color": {
-                "id": snapshot.manifest["color_profile"],
-                "sha256": snapshot.manifest["color_profile_sha256"],
-            },
-            "dedupe": {
-                "id": snapshot.manifest["dedupe_profile"],
-                "sha256": snapshot.manifest["dedupe_profile_sha256"],
-            },
-            "collection_dedupe": {
-                "id": snapshot.manifest["collection_dedupe_profile"],
-                "sha256": snapshot.manifest["collection_dedupe_profile_sha256"],
-            },
-            "description": {"id": "standard-v1"},
-        },
-        "quality_registry_sha256": registry_hashes,
-        "platform_registry_sha256": platform_hashes,
-        "payload_sha256": dict(sorted(payload_hashes.items())),
-    }
-    manifest_bytes = pretty_json(manifest).encode("utf-8")
-    all_hashes = {"manifest.json": _sha(manifest_bytes), **payload_hashes}
-    checksums = "".join(
-        f"{digest}  {name}\n" for name, digest in sorted(all_hashes.items())
-    ).encode("ascii")
+        raise ValueError("git_commit must be a full lowercase Git object ID")
+    tool_root = _tool_root()
+    resolved_tool_commit = (tool_commit or _git_commit(tool_root, option="--tool-commit")).lower()
+    if not _GIT_SHA_RE.fullmatch(resolved_tool_commit):
+        raise ValueError("tool_commit must be a full lowercase Git object ID")
+    resolved_lock_sha256 = _dependency_contract_sha256(tool_root, dependency_lock_sha256)
+    manifest, files = build_distribution(
+        dataset_root,
+        snapshot=snapshot,
+        revision=revision,
+        snapshot_id=snapshot_id,
+        source_date_epoch=source_date_epoch,
+        tool_commit=resolved_tool_commit,
+        dependency_lock_sha256=resolved_lock_sha256,
+    )
     writer = AtomicDatasetWriter(
         output,
-        expected_root_files=expected_output_files,
+        expected_tree_files=expected_output_files,
         transaction_lock_root=dataset_root,
         transaction_lock_name=index_lock_name,
     )
-    writer.stage_bytes("manifest.json", manifest_bytes)
-    for name, data in payloads.items():
-        writer.stage_bytes(name, data)
-    writer.stage_bytes("SHA256SUMS", checksums)
+    generated_paths = {PurePosixPath(path) for path in files}
+    deleted_paths = set(expected_output_files) - generated_paths
+    for relative in sorted(deleted_paths, key=str):
+        writer.stage_delete(relative)
+    for output_name, payload in sorted(files.items()):
+        writer.stage_bytes(output_name, payload)
     writer.commit()
-    return IndexBuildResult(output, revision, all_hashes, counts)
+    _remove_empty_managed_directories(output, deleted_paths)
+    file_hashes = {name: _sha(payload) for name, payload in sorted(files.items())}
+    counts = dict(manifest["counts"])
+    git_metadata = manifest.get("git")
+    object_format = git_metadata.get("object_format") if isinstance(git_metadata, dict) else None
+    if object_format not in {"sha1", "sha256"}:
+        raise ValueError("distribution manifest has an invalid Git object format")
+    build_metadata = manifest.get("build")
+    manifest_tool_commit = (
+        build_metadata.get("tool_commit") if isinstance(build_metadata, dict) else None
+    )
+    manifest_lock_sha256 = (
+        build_metadata.get("dependency_lock_sha256") if isinstance(build_metadata, dict) else None
+    )
+    if manifest_tool_commit != resolved_tool_commit:
+        raise ValueError("distribution manifest tool commit differs from build input")
+    if manifest_lock_sha256 != resolved_lock_sha256:
+        raise ValueError("distribution manifest dependency contract differs from build input")
+    return IndexBuildResult(
+        output,
+        revision,
+        object_format,
+        manifest_tool_commit,
+        manifest_lock_sha256,
+        file_hashes,
+        counts,
+    )

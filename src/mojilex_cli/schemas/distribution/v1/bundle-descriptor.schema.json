@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/bundle-descriptor.schema.json",
+  "title": "MojiLex release bundle descriptor v1",
+  "type": "object",
+  "required": ["bundle_id", "path", "media_type", "compression", "compression_profile", "entry_count", "uncompressed_byte_size", "object_byte_size", "object_sha256"],
+  "properties": {
+    "bundle_id": {"type": "string", "pattern": "^bundle-[0-9]{4}$"},
+    "path": {"type": "string", "pattern": "^bundles/bundle-[0-9]{4}\\.tar\\.zst$"},
+    "media_type": {"const": "application/vnd.mojilex.bundle+tar"},
+    "compression": {"const": "zstd"},
+    "compression_profile": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+    "entry_count": {"type": "integer", "minimum": 1, "maximum": 256},
+    "uncompressed_byte_size": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+    "object_byte_size": {"type": "integer", "minimum": 1, "maximum": 1610612736},
+    "object_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+  },
+  "additionalProperties": false
+}

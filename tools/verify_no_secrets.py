@@ -6,10 +6,13 @@ reported by path and rule name, never by value, so CI logs cannot amplify a leak
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote_to_bytes
 
 _PATTERNS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("telegram-bot-token", re.compile(rb"(?<![0-9])[0-9]{5,12}:[A-Za-z0-9_-]{20,}")),
@@ -43,6 +46,42 @@ _ALLOWED_SYNTHETIC_VALUES = (
     b"github_pat_abcdefghijklmnopqrstuvwxyz123456",
 )
 
+_BASE64_CANDIDATE = re.compile(
+    rb"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,4096}={0,2}(?![A-Za-z0-9+/_=-])"
+)
+
+
+def _redact_synthetic(payload: bytes) -> bytes:
+    for fixture in _ALLOWED_SYNTHETIC_VALUES:
+        payload = payload.replace(fixture, b"[synthetic-redaction-fixture]")
+    # Credential URLs targeting the reserved test domain are intentionally synthetic.
+    return re.sub(
+        rb"https?://[^\s/@:]+:[^\s/@]+@example\.test(?:/[^\s]*)?",
+        b"https://example.test/fixture",
+        payload,
+        flags=re.IGNORECASE,
+    )
+
+
+def _decoded_views(payload: bytes) -> tuple[bytes, ...]:
+    """Return bounded decoded views used only for credential-pattern matching."""
+
+    views: list[bytes] = [payload]
+    if re.search(rb"%[0-9A-Fa-f]{2}", payload):
+        views.append(unquote_to_bytes(payload))
+    decoded: list[bytes] = []
+    for view in views:
+        for match in _BASE64_CANDIDATE.finditer(view):
+            candidate = match.group(0)
+            try:
+                padding = b"=" * ((4 - len(candidate) % 4) % 4)
+                value = base64.b64decode(candidate + padding, altchars=b"-_", validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            if len(value) >= 16:
+                decoded.append(value)
+    return tuple(_redact_synthetic(view) for view in (*views, *decoded))
+
 
 def tracked_secret_findings(root: Path) -> tuple[tuple[str, str], ...]:
     completed = subprocess.run(
@@ -63,18 +102,9 @@ def tracked_secret_findings(root: Path) -> tuple[tuple[str, str], ...]:
         path = (root / relative).resolve()
         if not path.is_file() or root.resolve() not in path.parents:
             raise RuntimeError(f"tracked path is missing or escaped the repository: {relative}")
-        payload = path.read_bytes()
-        for fixture in _ALLOWED_SYNTHETIC_VALUES:
-            payload = payload.replace(fixture, b"[synthetic-redaction-fixture]")
-        # Credential URLs targeting the reserved test domain are intentionally synthetic.
-        payload = re.sub(
-            rb"https?://[^\s/@:]+:[^\s/@]+@example\.test(?:/[^\s]*)?",
-            b"https://example.test/fixture",
-            payload,
-            flags=re.IGNORECASE,
-        )
+        payload_views = _decoded_views(path.read_bytes())
         for name, pattern in _PATTERNS:
-            if pattern.search(payload):
+            if any(pattern.search(payload) for payload in payload_views):
                 findings.append((relative.replace("\\", "/"), name))
     return tuple(sorted(set(findings)))
 

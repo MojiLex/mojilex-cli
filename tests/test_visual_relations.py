@@ -133,6 +133,7 @@ def _approve_literal_text(emoji: Emoji, literal: str | None) -> None:
         reviewer="reviewer",
         reviewed_at="2026-09-11T12:00:00Z",
         reviewed_content_sha256=reviewed_content_sha256(emoji),
+        review_hash_profile_id="semantic-review-content-v3",
     )
 
 

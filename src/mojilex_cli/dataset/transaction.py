@@ -92,6 +92,7 @@ class DurableDatasetTransaction:
         *,
         expected_files: Mapping[PurePosixPath, bytes] | None = None,
         expected_root_files: Mapping[PurePosixPath, tuple[int, str]] | None = None,
+        expected_tree_files: Mapping[PurePosixPath, tuple[int, str]] | None = None,
         lock_root: str | Path | None = None,
         lock_name: str | None = None,
     ) -> DurableDatasetTransaction:
@@ -109,6 +110,8 @@ class DurableDatasetTransaction:
                 _verify_dataset_precondition(resolved, expected_files)
             if expected_root_files is not None:
                 _verify_root_file_precondition(resolved, expected_root_files)
+            if expected_tree_files is not None:
+                _verify_tree_file_precondition(resolved, expected_tree_files)
             ordered = tuple(sorted(changes.items(), key=lambda item: str(item[0])))
             if not ordered:
                 raise ValueError("dataset transaction requires at least one change")
@@ -494,6 +497,67 @@ def _verify_root_file_precondition(
             ) from exc
         if size != expected_size or digest != expected_digest:
             raise AtomicWriteError(f"transaction root changed since it was inspected: {relative}")
+
+
+def _verify_tree_file_precondition(
+    root: Path,
+    expected_files: Mapping[PurePosixPath, tuple[int, str]],
+) -> None:
+    """Require an exact bounded recursive file tree while holding the transaction lock."""
+
+    if len(expected_files) > _MAX_CHANGES:
+        raise AtomicWriteError("tree precondition exceeds the path safety limit")
+    expected: dict[PurePosixPath, tuple[int, str]] = {}
+    identities: set[str] = set()
+    total_bytes = 0
+    for relative, metadata in expected_files.items():
+        path = PurePosixPath(relative)
+        destination = safe_destination(root, path)
+        identity = transaction_path_identity(root, path)
+        if path in expected or identity in identities:
+            raise AtomicWriteError("tree precondition contains aliased paths")
+        size, digest = metadata
+        if isinstance(size, bool) or size < 0 or not _SHA256.fullmatch(digest):
+            raise AtomicWriteError("tree precondition metadata is invalid")
+        if destination == root:
+            raise AtomicWriteError("tree precondition path escapes the transaction root")
+        total_bytes += size
+        if total_bytes > _MAX_TOTAL_PAYLOAD_BYTES:
+            raise AtomicWriteError("tree precondition exceeds the 1 GiB safety limit")
+        expected[path] = (size, digest)
+        identities.add(identity)
+
+    current: dict[PurePosixPath, Path] = {}
+    try:
+        paths = list(root.rglob("*"))
+    except OSError as exc:
+        raise AtomicWriteError("transaction tree could not be inspected safely") from exc
+    for candidate in paths:
+        if is_link_or_reparse_point(candidate):
+            raise AtomicWriteError(
+                f"transaction tree changed since it was inspected: unsafe {candidate}"
+            )
+        relative = PurePosixPath(candidate.relative_to(root).as_posix())
+        if candidate.is_file():
+            current[relative] = candidate
+        elif not candidate.is_dir():
+            raise AtomicWriteError(
+                f"transaction tree changed since it was inspected: special {relative}"
+            )
+    if set(current) != set(expected):
+        changed = sorted(set(current) ^ set(expected), key=str)[0]
+        raise AtomicWriteError(f"transaction tree changed since it was inspected: {changed}")
+    for relative, (expected_size, expected_digest) in expected.items():
+        current_path = current[relative]
+        try:
+            size = current_path.stat().st_size
+            digest = _file_sha256(current_path)
+        except OSError as exc:
+            raise AtomicWriteError(
+                f"transaction tree changed since it was inspected: {relative}"
+            ) from exc
+        if size != expected_size or digest != expected_digest:
+            raise AtomicWriteError(f"transaction tree changed since it was inspected: {relative}")
 
 
 def _current_canonical_dataset_paths(root: Path) -> set[PurePosixPath]:

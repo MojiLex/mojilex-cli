@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/emoji.schema.json",
+  "title": "MojiLex emoji v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "entity_type",
+    "id",
+    "platform",
+    "native_namespace",
+    "scope_id",
+    "native_id",
+    "identity_epoch",
+    "availability",
+    "media",
+    "facets",
+    "fingerprints",
+    "descriptions",
+    "concept_ids",
+    "concept_mapping_status",
+    "semantic_tags",
+    "content",
+    "provenance",
+    "review",
+    "extensions"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+    },
+    "entity_type": {
+      "const": "emoji"
+    },
+    "id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/emojiId"
+    },
+    "platform": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/platform"
+    },
+    "native_namespace": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/identityComponent"
+    },
+    "scope_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/identityComponent"
+    },
+    "native_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/identityComponent"
+    },
+    "identity_epoch": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/identityEpoch"
+    },
+    "availability": {
+      "allOf": [
+        {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/availability"
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "active",
+                "unavailable",
+                "deleted",
+                "unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "media": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/media"
+      }
+    },
+    "facets": {
+      "$ref": "https://schemas.mojilex.org/v1/facets.schema.json"
+    },
+    "fingerprints": {
+      "$ref": "https://schemas.mojilex.org/v1/fingerprints.schema.json"
+    },
+    "descriptions": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/descriptions"
+    },
+    "concept_ids": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/conceptIds"
+    },
+    "concept_mapping_status": {
+      "enum": [
+        "pending",
+        "complete"
+      ]
+    },
+    "semantic_tags": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/semanticTags"
+    },
+    "content": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/content"
+    },
+    "provenance": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/provenance"
+    },
+    "review": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/review"
+    },
+    "extensions": {
+      "type": "object",
+      "properties": {
+        "telegram": {
+          "$ref": "https://schemas.mojilex.org/v1/extensions/telegram.schema.json#/$defs/emoji"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "concept_mapping_status": {
+            "const": "pending"
+          }
+        },
+        "required": [
+          "concept_mapping_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "concept_ids": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "concept_ids": {
+            "minItems": 1,
+            "maxItems": 16
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "availability": {
+            "properties": {
+              "status": {
+                "const": "active"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        "required": [
+          "availability"
+        ]
+      },
+      "then": {
+        "properties": {
+          "fingerprints": {
+            "properties": {
+              "status": {
+                "const": "complete"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "telegram"
+          }
+        },
+        "required": [
+          "platform"
+        ]
+      },
+      "then": {
+        "properties": {
+          "native_namespace": {
+            "const": "custom_emoji.id"
+          },
+          "scope_id": {
+            "const": "global"
+          },
+          "media": {
+            "maxItems": 1,
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/media"
+                },
+                {
+                  "properties": {
+                    "role": {
+                      "const": "primary"
+                    }
+                  },
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "static"
+                        },
+                        "format": {
+                          "const": "webp"
+                        },
+                        "mime_type": {
+                          "const": "image/webp"
+                        },
+                        "animated": {
+                          "const": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "format",
+                        "mime_type",
+                        "animated"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "animation"
+                        },
+                        "format": {
+                          "const": "tgs"
+                        },
+                        "mime_type": {
+                          "const": "application/x-tgsticker"
+                        },
+                        "animated": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "format",
+                        "mime_type",
+                        "animated"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "video"
+                        },
+                        "format": {
+                          "const": "webm"
+                        },
+                        "mime_type": {
+                          "const": "video/webm"
+                        },
+                        "animated": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "format",
+                        "mime_type",
+                        "animated"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "extensions": {
+            "required": [
+              "telegram"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

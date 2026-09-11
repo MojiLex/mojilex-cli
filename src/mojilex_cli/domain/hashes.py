@@ -58,6 +58,7 @@ def review_payload(emoji: Emoji | Mapping[str, Any]) -> dict[str, Any]:
         "media": media_identity_payload(raw["media"]),
         "descriptions": raw["descriptions"],
         "facets": raw["facets"],
+        "concept_ids": raw["concept_ids"],
         "semantic_tags": raw["semantic_tags"],
         "content": raw["content"],
         "provenance": raw["provenance"],

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from mojilex_cli.dataset import validate_snapshot
 from mojilex_cli.domain import (
+    ConceptMappingStatus,
     Facets,
     PerceptualFingerprint,
     RenderingItem,
@@ -30,6 +31,16 @@ def test_review_hash_includes_facets_but_excludes_fingerprints(tmp_path) -> None
     changed = emoji.model_copy(deep=True)
     changed.facets.styles = ["cartoon", "flat", "outline"]
     assert reviewed_content_sha256(changed) != original
+
+    concepts_changed = emoji.model_copy(
+        deep=True,
+        update={
+            "concept_ids": ["animal.cat"],
+            "concept_mapping_status": ConceptMappingStatus.COMPLETE,
+        },
+    )
+    assert reviewed_content_sha256(concepts_changed) != original
+    assert review_payload(concepts_changed)["concept_ids"] == ["animal.cat"]
 
 
 def test_rendering_palette_and_perceptual_wire_are_fail_closed() -> None:

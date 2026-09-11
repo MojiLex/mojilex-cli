@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/concept-candidate-profile.schema.json",
+  "title": "MojiLex concept candidate profile v1",
+  "type": "object",
+  "required": ["profile_id", "ordering", "max_candidates", "include_statuses"],
+  "properties": {
+    "profile_id": {"const": "concept-candidates-v1"},
+    "ordering": {"const": "registry-id-bytewise-v1"},
+    "max_candidates": {"const": 65536},
+    "include_statuses": {
+      "type": "array",
+      "prefixItems": [{"const": "active"}],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    }
+  },
+  "additionalProperties": false
+}

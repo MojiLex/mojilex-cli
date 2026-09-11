@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-jsonl-summary.schema.json",
+  "title": "MojiLex CLI JSONL summary record v1",
+  "type": "object",
+  "required": ["schema_version", "record_type", "ok", "status", "item_count", "next_cursor", "warnings", "errors"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "record_type": {"const": "summary"},
+    "ok": {"type": "boolean"},
+    "status": {"enum": ["succeeded", "noop", "dry_run", "stale", "partial", "failed", "interrupted", "budget_exceeded"]},
+    "item_count": {"type": "integer", "minimum": 0},
+    "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"},
+    "warnings": {"type": "array", "maxItems": 128, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/warning"}},
+    "errors": {"type": "array", "maxItems": 128, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/error"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"enum": ["succeeded", "noop", "dry_run"]}}, "required": ["status"]}, "then": {"properties": {"ok": {"const": true}, "errors": {"maxItems": 0}}}, "else": {"properties": {"ok": {"const": false}, "errors": {"minItems": 1}}}}
+  ],
+  "additionalProperties": false
+}

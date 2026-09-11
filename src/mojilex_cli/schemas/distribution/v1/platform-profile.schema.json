@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/platform-profile.schema.json",
+  "title": "MojiLex platform capability profile v1",
+  "type": "object",
+  "required": [
+    "profile_schema_version",
+    "platform",
+    "profile_version",
+    "adapter_contract_version",
+    "capabilities"
+  ],
+  "properties": {
+    "profile_schema_version": {"const": "1.0.0"},
+    "platform": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/platform"
+    },
+    "profile_version": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"
+    },
+    "adapter_contract_version": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"
+    },
+    "default_rights_profile_id": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"
+    },
+    "inherit_project_default": {"const": true},
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "capability_id",
+          "surface",
+          "status",
+          "applies_to",
+          "authority_class",
+          "evidence_url",
+          "observed_at",
+          "freshness_period_seconds"
+        ],
+        "properties": {
+          "capability_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)+$",
+            "maxLength": 128
+          },
+          "surface": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+          "status": {"enum": ["supported", "unsupported", "unknown", "deprecated"]},
+          "applies_to": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
+          "authority_class": {
+            "enum": ["official-api", "official-documentation", "inferred"]
+          },
+          "evidence_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+          "observed_at": {
+            "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"
+          },
+          "freshness_period_seconds": {"type": "integer", "minimum": 1, "maximum": 31557600}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["default_rights_profile_id"],
+      "not": {"required": ["inherit_project_default"]}
+    },
+    {
+      "required": ["inherit_project_default"],
+      "not": {"required": ["default_rights_profile_id"]}
+    }
+  ],
+  "additionalProperties": false
+}

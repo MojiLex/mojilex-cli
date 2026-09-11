@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/visual-relation.schema.json",
+  "title": "MojiLex reviewed visual relation v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "entity_type",
+    "id",
+    "identity_epoch",
+    "subject_id",
+    "object_id",
+    "scope",
+    "relation_type",
+    "evidence",
+    "review"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+    },
+    "entity_type": {
+      "const": "visual_relation"
+    },
+    "id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/visualRelationId"
+    },
+    "identity_epoch": {
+      "const": 0
+    },
+    "subject_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/emojiId"
+    },
+    "object_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/emojiId"
+    },
+    "scope": {
+      "enum": [
+        "entity",
+        "media-pair"
+      ]
+    },
+    "relation_type": {
+      "enum": [
+        "same-artwork",
+        "variant-of",
+        "not-duplicate",
+        "related-series"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "dedupe_profile",
+        "subject_media_digest",
+        "object_media_digest",
+        "media_pairs",
+        "signals"
+      ],
+      "properties": {
+        "dedupe_profile": {
+          "const": "dedupe-v1"
+        },
+        "subject_media_digest": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "object_media_digest": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "media_pairs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mediaPair"
+          }
+        },
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "alpha-iou-match",
+              "canonical-render-match",
+              "cyclic-phash-match",
+              "decoded-exact",
+              "high-temporal-similarity",
+              "phash-match",
+              "possible-recolor",
+              "possible-variant",
+              "shape-match",
+              "speed-change",
+              "ssim-match"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "status",
+        "reviewer",
+        "reviewed_at",
+        "reviewed_relation_sha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "approved"
+        },
+        "reviewer": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/handle"
+        },
+        "reviewed_at": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/timestamp"
+        },
+        "reviewed_relation_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "media-pair"
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "properties": {
+              "media_pairs": {
+                "maxItems": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "mediaPair": {
+      "type": "object",
+      "required": [
+        "subject_role",
+        "object_role"
+      ],
+      "properties": {
+        "subject_role": {
+          "enum": [
+            "primary",
+            "light",
+            "dark",
+            "alternate"
+          ]
+        },
+        "subject_variant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        },
+        "object_role": {
+          "enum": [
+            "primary",
+            "light",
+            "dark",
+            "alternate"
+          ]
+        },
+        "object_variant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

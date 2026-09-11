@@ -23,6 +23,7 @@ class AtomicDatasetWriter:
         *,
         expected_files: Mapping[PurePosixPath, bytes] | None = None,
         expected_root_files: Mapping[PurePosixPath, tuple[int, str]] | None = None,
+        expected_tree_files: Mapping[PurePosixPath, tuple[int, str]] | None = None,
         transaction_lock_root: str | Path | None = None,
         transaction_lock_name: str | None = None,
     ) -> None:
@@ -65,6 +66,16 @@ class AtomicDatasetWriter:
                     raise ValueError(f"duplicate expected root path: {path}")
                 normalized_root_files[path] = metadata
             self._expected_root_files = normalized_root_files
+        self._expected_tree_files: dict[PurePosixPath, tuple[int, str]] | None = None
+        if expected_tree_files is not None:
+            normalized_tree_files: dict[PurePosixPath, tuple[int, str]] = {}
+            for relative, metadata in expected_tree_files.items():
+                path = PurePosixPath(relative)
+                safe_destination(self.root, path)
+                if path in normalized_tree_files:
+                    raise ValueError(f"duplicate expected tree path: {path}")
+                normalized_tree_files[path] = metadata
+            self._expected_tree_files = normalized_tree_files
 
     def stage_bytes(self, relative: str | PurePosixPath, data: bytes) -> None:
         path = PurePosixPath(relative)
@@ -95,6 +106,7 @@ class AtomicDatasetWriter:
             self._changes,
             expected_files=self._expected_files,
             expected_root_files=self._expected_root_files,
+            expected_tree_files=self._expected_tree_files,
             lock_root=self._transaction_lock_root,
             lock_name=self._transaction_lock_name,
         )

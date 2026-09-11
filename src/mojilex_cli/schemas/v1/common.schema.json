@@ -1,0 +1,868 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/common.schema.json",
+  "title": "MojiLex schema v1 common definitions",
+  "$defs": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "collectionId": {
+      "type": "string",
+      "pattern": "^mxc_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "emojiId": {
+      "type": "string",
+      "pattern": "^mxe_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "membershipId": {
+      "type": "string",
+      "pattern": "^mxm_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "visualRelationId": {
+      "type": "string",
+      "pattern": "^mxr_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "entityId": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/collectionId"
+        },
+        {
+          "$ref": "#/$defs/emojiId"
+        },
+        {
+          "$ref": "#/$defs/membershipId"
+        },
+        {
+          "$ref": "#/$defs/visualRelationId"
+        }
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "identityComponent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "identityEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "handle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$"
+    },
+    "availability": {
+      "type": "object",
+      "required": [
+        "status",
+        "first_seen_at",
+        "last_changed_at"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "active",
+            "unavailable",
+            "private",
+            "deleted",
+            "unknown"
+          ]
+        },
+        "first_seen_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "last_changed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "last_verified_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+        },
+        "set_by": {
+          "$ref": "#/$defs/handle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "active",
+                  "unavailable",
+                  "private",
+                  "deleted"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "last_verified_at"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "private",
+                  "deleted"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason_code",
+              "set_by"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "active"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "reason_code"
+                  ]
+                },
+                {
+                  "required": [
+                    "set_by"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "reason_code"
+                  ]
+                },
+                {
+                  "required": [
+                    "set_by"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "media": {
+      "type": "object",
+      "required": [
+        "role",
+        "kind",
+        "format",
+        "mime_type",
+        "sha256",
+        "byte_size",
+        "width",
+        "height",
+        "animated"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "primary",
+            "light",
+            "dark",
+            "alternate"
+          ]
+        },
+        "variant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        },
+        "kind": {
+          "enum": [
+            "static",
+            "animation",
+            "video"
+          ]
+        },
+        "format": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+$",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "mime_type": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$",
+          "maxLength": 127
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "byte_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "animated": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "if": {
+        "properties": {
+          "animated": {
+            "const": true
+          }
+        },
+        "required": [
+          "animated"
+        ]
+      },
+      "then": {
+        "required": [
+          "duration_ms"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "duration_ms"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "description": {
+      "type": "object",
+      "required": [
+        "text",
+        "motion_status",
+        "usage"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280,
+          "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+        },
+        "motion_status": {
+          "enum": [
+            "described",
+            "not_applicable",
+            "undetermined"
+          ]
+        },
+        "motion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280,
+          "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+        },
+        "usage": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "motion_status": {
+            "const": "described"
+          }
+        },
+        "required": [
+          "motion_status"
+        ]
+      },
+      "then": {
+        "required": [
+          "motion"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "motion"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "descriptions": {
+      "type": "object",
+      "required": [
+        "ru",
+        "en"
+      ],
+      "propertyNames": {
+        "pattern": "^(?:[A-Za-z]{2,3})(?:-[A-Za-z0-9]{2,8})*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/description"
+      }
+    },
+    "semanticTags": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 48,
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      }
+    },
+    "conceptId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)+$",
+      "maxLength": 128
+    },
+    "conceptIds": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/conceptId"
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": [
+        "rating",
+        "warnings"
+      ],
+      "properties": {
+        "rating": {
+          "enum": [
+            "general",
+            "sensitive",
+            "adult",
+            "unknown"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "nudity",
+              "sexual-content",
+              "graphic-violence",
+              "hate-symbol",
+              "self-harm",
+              "drugs",
+              "flashing",
+              "other-sensitive"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "additionalProperties": false
+    },
+    "humanEdit": {
+      "type": "object",
+      "required": [
+        "editor",
+        "edited_at",
+        "languages"
+      ],
+      "properties": {
+        "editor": {
+          "$ref": "#/$defs/handle"
+        },
+        "edited_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "languages": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[A-Za-z]{2,3})(?:-[A-Za-z0-9]{2,8})*$"
+          }
+        },
+        "changed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:/(?:[^~/]|~0|~1)*)+$",
+            "maxLength": 512
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "origin",
+        "tool"
+      ],
+      "properties": {
+        "origin": {
+          "enum": [
+            "ai",
+            "human",
+            "mixed"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prompt_version": {
+          "$ref": "#/$defs/semver"
+        },
+        "pipeline_version": {
+          "$ref": "#/$defs/semver"
+        },
+        "description_profile": {
+          "const": "standard-v1"
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "request_parameters_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "qualification_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^mq_[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        },
+        "generation_stage": {
+          "enum": [
+            "primary",
+            "escalated"
+          ]
+        },
+        "routing_policy_version": {
+          "const": "1.0.0"
+        },
+        "routing_reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "character-or-brand",
+              "complex-motion",
+              "facet-conflict",
+              "low-visibility",
+              "ocr-conflict",
+              "partial-text",
+              "quality-control-sample",
+              "schema-retry-exhausted",
+              "sensitive-content",
+              "unqualified-model"
+            ]
+          }
+        },
+        "generated_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "input_media_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "creator": {
+          "$ref": "#/$defs/handle"
+        },
+        "human_edits": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/humanEdit"
+          }
+        },
+        "tool": {
+          "$ref": "#/$defs/tool"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "ai"
+              }
+            },
+            "required": [
+              "origin"
+            ]
+          },
+          "then": {
+            "required": [
+              "provider",
+              "model",
+              "prompt_version",
+              "pipeline_version",
+              "description_profile",
+              "prompt_sha256",
+              "request_parameters_sha256",
+              "generation_stage",
+              "routing_policy_version",
+              "routing_reason_codes",
+              "generated_at",
+              "input_media_sha256"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "created_at"
+                  ]
+                },
+                {
+                  "required": [
+                    "creator"
+                  ]
+                },
+                {
+                  "required": [
+                    "human_edits"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "human"
+              }
+            },
+            "required": [
+              "origin"
+            ]
+          },
+          "then": {
+            "required": [
+              "created_at",
+              "creator"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "provider"
+                  ]
+                },
+                {
+                  "required": [
+                    "model"
+                  ]
+                },
+                {
+                  "required": [
+                    "prompt_version"
+                  ]
+                },
+                {
+                  "required": [
+                    "pipeline_version"
+                  ]
+                },
+                {
+                  "required": [
+                    "description_profile"
+                  ]
+                },
+                {
+                  "required": [
+                    "model_revision"
+                  ]
+                },
+                {
+                  "required": [
+                    "prompt_sha256"
+                  ]
+                },
+                {
+                  "required": [
+                    "request_parameters_sha256"
+                  ]
+                },
+                {
+                  "required": [
+                    "qualification_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "generation_stage"
+                  ]
+                },
+                {
+                  "required": [
+                    "routing_policy_version"
+                  ]
+                },
+                {
+                  "required": [
+                    "routing_reason_codes"
+                  ]
+                },
+                {
+                  "required": [
+                    "generated_at"
+                  ]
+                },
+                {
+                  "required": [
+                    "input_media_sha256"
+                  ]
+                },
+                {
+                  "required": [
+                    "human_edits"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "mixed"
+              }
+            },
+            "required": [
+              "origin"
+            ]
+          },
+          "then": {
+            "required": [
+              "provider",
+              "model",
+              "prompt_version",
+              "pipeline_version",
+              "description_profile",
+              "prompt_sha256",
+              "request_parameters_sha256",
+              "generation_stage",
+              "routing_policy_version",
+              "routing_reason_codes",
+              "generated_at",
+              "input_media_sha256",
+              "human_edits"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "created_at"
+                  ]
+                },
+                {
+                  "required": [
+                    "creator"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "unreviewed",
+            "approved",
+            "changes_requested",
+            "rejected"
+          ]
+        },
+        "reviewed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/handle"
+        },
+        "reviewed_content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "review_hash_profile_id": {
+          "const": "semantic-review-content-v3"
+        }
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unreviewed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "reviewed_at"
+              ]
+            },
+            {
+              "required": [
+                "reviewer"
+              ]
+            },
+            {
+              "required": [
+                "reviewed_content_sha256"
+              ]
+            },
+            {
+              "required": [
+                "review_hash_profile_id"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "reviewed_at",
+          "reviewer",
+          "reviewed_content_sha256",
+          "review_hash_profile_id"
+        ]
+      },
+      "additionalProperties": false
+    }
+  }
+}

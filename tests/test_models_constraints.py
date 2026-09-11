@@ -151,3 +151,22 @@ def test_content_warning_values_are_closed_and_unique() -> None:
         Content(rating="general", warnings=["not-a-warning"])
     with pytest.raises(ValidationError, match="unique"):
         Content(rating="sensitive", warnings=["nudity", "nudity"])
+
+
+def test_concept_mapping_contract_is_closed_and_sorted(tmp_path) -> None:
+    from mojilex_cli.domain import Emoji
+
+    raw = next(iter(make_snapshot(tmp_path).emojis.values())).as_dict()
+    raw["concept_mapping_status"] = "complete"
+    raw["concept_ids"] = ["emotion.skepticism", "animal.cat"]
+    with pytest.raises(ValidationError, match="bytewise sorted"):
+        Emoji.model_validate(raw)
+
+    raw["concept_ids"] = []
+    with pytest.raises(ValidationError, match="requires at least one"):
+        Emoji.model_validate(raw)
+
+    raw["concept_mapping_status"] = "pending"
+    raw["concept_ids"] = ["animal.cat"]
+    with pytest.raises(ValidationError, match="must have no concept_ids"):
+        Emoji.model_validate(raw)

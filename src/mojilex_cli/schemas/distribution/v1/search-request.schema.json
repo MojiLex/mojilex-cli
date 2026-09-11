@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/search-request.schema.json",
+  "title": "MojiLex structured search request v1",
+  "type": "object",
+  "required": ["schema_version", "query", "language", "filters", "pagination", "sort", "view"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "language": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}
+      ]
+    },
+    "filters": {
+      "type": "object",
+      "properties": {
+        "platform": {"$ref": "#/$defs/stringArray"},
+        "collection": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/collectionId"}},
+        "availability": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"enum": ["active", "unavailable", "private", "deleted", "unknown"]}},
+        "review": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"enum": ["approved", "unreviewed", "changes_requested", "rejected", "qualified-ai"]}},
+        "rating": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["general", "sensitive", "adult", "unknown"]}},
+        "exclude_warning": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"enum": ["nudity", "sexual-content", "graphic-violence", "hate-symbol", "self-harm", "drugs", "flashing", "other-sensitive"]}},
+        "animated": {"enum": ["yes", "no", "any"]},
+        "media_kind": {"$ref": "#/$defs/kebabArray"},
+        "color_behavior": {"$ref": "#/$defs/kebabArray"},
+        "color_family": {"type": "array", "maxItems": 13, "uniqueItems": true, "items": {"enum": ["black", "white", "gray", "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown", "beige"]}},
+        "contains_text": {"enum": ["yes", "no", "any"]},
+        "content_type": {"$ref": "#/$defs/kebabArray"},
+        "style": {"$ref": "#/$defs/kebabArray"},
+        "suggested_use": {"$ref": "#/$defs/kebabArray"},
+        "uncertainty": {"$ref": "#/$defs/kebabArray"},
+        "concept": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/conceptId"}},
+        "rights": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"enum": ["allowed", "restricted", "unknown", "withdrawn"]}},
+        "require_no_warnings": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "pagination": {
+      "type": "object",
+      "required": ["limit", "cursor"],
+      "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "cursor": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 4096}]}
+      },
+      "additionalProperties": false
+    },
+    "sort": {"enum": ["relevance", "emoji-id"]},
+    "view": {"enum": ["search", "agent", "canonical"]}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stringArray": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+    "kebabArray": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 128}}
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/analysis-profile.schema.json",
+  "title": "MojiLex deterministic analysis profile v1",
+  "oneOf": [
+    {
+      "$ref": "mlx://schemas/distribution/v1/concept-candidate-profile.schema.json"
+    },
+    {
+      "$ref": "mlx://schemas/distribution/v1/delegated-profile.schema.json"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/taxonomy-registry.schema.json",
+  "title": "MojiLex assembled facet taxonomy registry v1",
+  "type": "object",
+  "required": ["registry_schema_version", "registry_type", "registry_id", "dictionaries"],
+  "properties": {
+    "registry_schema_version": {"const": "1.0.0"},
+    "registry_type": {"const": "facet-taxonomy"},
+    "registry_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+    "dictionaries": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["dictionary_id", "entries"],
+        "properties": {
+          "dictionary_id": {
+            "enum": ["color_families", "content_types", "platform_contexts", "styles", "suggested_uses", "uncertainties"]
+          },
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"$ref": "mlx://schemas/distribution/v1/taxonomy-dictionary.schema.json#/$defs/entry"}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

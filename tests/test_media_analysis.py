@@ -29,10 +29,10 @@ def _decoded_length(value: str) -> int:
 
 def test_bundled_profiles_are_exact_and_recursively_immutable() -> None:
     expected = {
-        "color-v1": "c30dcf7241037e3c1e4c4a16686c4e899c3f81bae19bd741eb257e458f9986ae",
-        "dedupe-v1": "8f6eb6f68479897a8fe5be434ca2f081edcf4cb08cc1371308e732022f7c66c1",
+        "color-v1": "fa7f0cb270bd3645b78ec5e6c1b8d6b23f8f2a07457699bc1ac95cf0c70aa230",
+        "dedupe-v1": "c1f09fd2a4abb416b7dec82f67f9b101e1e9f993a8d578908a108f43d87602ba",
         "collection-dedupe-v1": (
-            "a03a1979980c6e23323cac02459fa7a29bf68c858c45d2b52b9a54857766cf01"
+            "5640836b227b4013772e6e48ce06e52245ad980bd0a554111d389504366fee8b"
         ),
     }
     assert dict(known_profile_hashes()) == expected
@@ -41,6 +41,7 @@ def test_bundled_profiles_are_exact_and_recursively_immutable() -> None:
         assert profile.sha256 == expected_hash
         assert hashlib.sha256(profile.raw_bytes).hexdigest() == expected_hash
         assert profile.data["profile_id"] == profile_id
+        assert "body" not in profile.data
         with pytest.raises(TypeError):
             profile.data["profile_id"] = "changed"  # type: ignore[index]
 

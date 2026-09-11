@@ -53,6 +53,7 @@ def test_unqualified_is_blocking_until_valid_human_approval(tmp_path: Path) -> N
         reviewed_at="2026-09-11T20:00:00Z",
         reviewer="reviewer",
         reviewed_content_sha256=reviewed_content_sha256(emoji),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     approved = _report(snapshot).items[0]
     assert approved.priority is ReviewPriority.LOW

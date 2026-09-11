@@ -34,6 +34,7 @@ def test_detects_fingerprint_and_review_hash_tampering(tmp_path) -> None:
         reviewed_at="2026-09-10T19:00:00Z",
         reviewer="reviewer",
         reviewed_content_sha256=reviewed_content_sha256(emoji),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     emoji.descriptions["en"].text = "Tampered after review."
     codes = _codes(validate_snapshot(loaded))

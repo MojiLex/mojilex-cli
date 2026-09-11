@@ -1,0 +1,607 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/distribution-common.schema.json",
+  "title": "MojiLex distribution v1 common definitions",
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "snapshotId": {
+      "type": "string",
+      "pattern": "^data-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01])\\.[1-9][0-9]*$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "languageTag": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+      "maxLength": 35
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 32
+    },
+    "conceptId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)+$",
+      "maxLength": 128
+    },
+    "emojiId": {
+      "type": "string",
+      "pattern": "^mxe_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "collectionId": {
+      "type": "string",
+      "pattern": "^mxc_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "duplicateGroupId": {
+      "type": "string",
+      "pattern": "^mxdg_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "jsonPointer": {
+      "type": "string",
+      "pattern": "^(?:/(?:[^~/]|~0|~1)*)+$",
+      "maxLength": 512
+    },
+    "safePath": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$",
+      "maxLength": 1024
+    },
+    "absoluteSchemaRef": {
+      "type": "string",
+      "pattern": "^(?:mlx|https)://[^\\s]+$",
+      "maxLength": 512
+    },
+    "mediaRole": {
+      "enum": [
+        "primary",
+        "light",
+        "dark",
+        "alternate"
+      ]
+    },
+    "absentComponent": {
+      "type": "object",
+      "required": [
+        "present"
+      ],
+      "properties": {
+        "present": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "stringPresentComponent": {
+      "type": "object",
+      "required": [
+        "present",
+        "value"
+      ],
+      "properties": {
+        "present": {
+          "const": true
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "stringOptionalComponent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/absentComponent"
+        },
+        {
+          "$ref": "#/$defs/stringPresentComponent"
+        }
+      ]
+    },
+    "recordKeyComponent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "pointer",
+            "present",
+            "value"
+          ],
+          "properties": {
+            "pointer": {
+              "$ref": "#/$defs/jsonPointer"
+            },
+            "present": {
+              "const": true
+            },
+            "value": true
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "pointer",
+            "present"
+          ],
+          "properties": {
+            "pointer": {
+              "$ref": "#/$defs/jsonPointer"
+            },
+            "present": {
+              "const": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "canonicalLocator": {
+      "type": "object",
+      "required": [
+        "logical_name",
+        "record_key"
+      ],
+      "properties": {
+        "logical_name": {
+          "const": "emojis"
+        },
+        "record_key": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/recordKeyComponent"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "nativeReference": {
+      "type": "object",
+      "required": [
+        "platform",
+        "native_namespace",
+        "scope_id",
+        "native_id",
+        "identity_epoch",
+        "status"
+      ],
+      "properties": {
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "native_namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "scope_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "native_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "identity_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "current",
+            "former"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "description": {
+      "type": "object",
+      "required": [
+        "text",
+        "motion_status",
+        "usage"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "motion_status": {
+          "enum": [
+            "described",
+            "not_applicable",
+            "undetermined"
+          ]
+        },
+        "motion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "usage": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "motion_status": {
+            "const": "described"
+          }
+        },
+        "required": [
+          "motion_status"
+        ]
+      },
+      "then": {
+        "required": [
+          "motion"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "motion"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "literalText": {
+      "type": "object",
+      "required": [
+        "value",
+        "kind",
+        "script",
+        "temporal_scope"
+      ],
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "word",
+            "phrase",
+            "number",
+            "symbol",
+            "mixed"
+          ]
+        },
+        "script": {
+          "type": "string",
+          "pattern": "^[A-Z][a-z]{3}$"
+        },
+        "language": {
+          "$ref": "#/$defs/languageTag"
+        },
+        "temporal_scope": {
+          "enum": [
+            "persistent",
+            "transient"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "content": {
+      "type": "object",
+      "required": [
+        "rating",
+        "warnings"
+      ],
+      "properties": {
+        "rating": {
+          "enum": [
+            "general",
+            "sensitive",
+            "adult",
+            "unknown"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "nudity",
+              "sexual-content",
+              "graphic-violence",
+              "hate-symbol",
+              "self-harm",
+              "drugs",
+              "flashing",
+              "other-sensitive"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rightsSummary": {
+      "type": "object",
+      "required": [
+        "rights_profile_id",
+        "distribution_status",
+        "attribution_required"
+      ],
+      "properties": {
+        "rights_profile_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "distribution_status": {
+          "enum": [
+            "allowed",
+            "restricted",
+            "unknown",
+            "withdrawn"
+          ]
+        },
+        "attribution_required": {
+          "type": "boolean"
+        },
+        "attribution_locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "if": {
+        "properties": {
+          "attribution_required": {
+            "const": true
+          }
+        },
+        "required": [
+          "attribution_required"
+        ]
+      },
+      "then": {
+        "required": [
+          "attribution_locator"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "attribution_locator"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "cursorComponent": {
+      "oneOf": [
+        {"$ref": "#/$defs/absentComponent"},
+        {
+          "type": "object",
+          "required": ["present", "value"],
+          "properties": {
+            "present": {"const": true},
+            "value": {"type": "string", "minLength": 1, "maxLength": 4096}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "datasetContext": {
+      "type": "object",
+      "required": [
+        "snapshot_id", "manifest_sha256", "release_verification_status", "catalog_status",
+        "revocation_status", "control_state_status", "errata_status", "catalog_checkpoint"
+      ],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/snapshotId"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "release_verification_status": {"enum": ["verified", "integrity-only-unsigned", "unverified", "invalid"]},
+        "catalog_status": {"enum": ["current", "superseded", "revoked", "withdrawn", "unknown"]},
+        "revocation_status": {"enum": ["clear", "revoked", "withdrawn", "unknown", "invalid"]},
+        "control_state_status": {"enum": ["current", "offline-unknown", "expired", "invalid"]},
+        "errata_status": {"enum": ["none", "applicable", "unknown", "invalid"]},
+        "catalog_checkpoint": {
+          "oneOf": [
+            {"$ref": "#/$defs/absentComponent"},
+            {
+              "type": "object",
+              "required": ["present", "value"],
+              "properties": {
+                "present": {"const": true},
+                "value": {
+                  "type": "object",
+                  "required": ["authority", "channel", "catalog_sequence", "catalog_sha256", "revocation_sequence", "revocation_registry_sha256", "errata_sequence", "errata_registry_sha256", "trust_root_version", "trust_root_sha256"],
+                  "properties": {
+                    "authority": {"$ref": "#/$defs/identifier"},
+                    "channel": {"$ref": "#/$defs/identifier"},
+                    "catalog_sequence": {"type": "integer", "minimum": 0},
+                    "catalog_sha256": {"$ref": "#/$defs/sha256"},
+                    "revocation_sequence": {"type": "integer", "minimum": 0},
+                    "revocation_registry_sha256": {"$ref": "#/$defs/sha256"},
+                    "errata_sequence": {"type": "integer", "minimum": 0},
+                    "errata_registry_sha256": {"$ref": "#/$defs/sha256"},
+                    "trust_root_version": {"type": "integer", "minimum": 1},
+                    "trust_root_sha256": {"$ref": "#/$defs/sha256"}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "datasetComponent": {
+      "oneOf": [
+        {"$ref": "#/$defs/absentComponent"},
+        {
+          "type": "object",
+          "required": ["present", "value"],
+          "properties": {
+            "present": {"const": true},
+            "value": {"$ref": "#/$defs/datasetContext"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "warning": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,63}$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096}
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable", "hint"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,63}$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "retryable": {"type": "boolean"},
+        "hint": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "source": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "entity_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "details": {"type": "object", "maxProperties": 64}
+      },
+      "additionalProperties": false
+    },
+    "runtimeTrust": {
+      "type": "object",
+      "required": ["control_state_status", "review_attestation_status", "review_hash_profile_status", "model_qualification_status", "generation_attestation_status", "safe_eligible"],
+      "properties": {
+        "control_state_status": {"enum": ["current", "offline-unknown", "expired", "invalid"]},
+        "review_attestation_status": {"enum": ["valid", "unverified", "revoked", "conflict", "legacy-unattested", "legacy-unprofiled"]},
+        "review_hash_profile_status": {"enum": ["valid", "legacy-unprofiled", "mismatch", "not-applicable"]},
+        "model_qualification_status": {"enum": ["active", "expired-for-new-generation", "revoked", "missing", "mismatch", "invalid", "not-applicable"]},
+        "generation_attestation_status": {"enum": ["valid", "missing", "mismatch", "invalid", "revoked", "not-applicable"]},
+        "review_attestation_id": {"type": "string", "pattern": "^mxa_[0-9a-f-]{36}$"},
+        "generation_attestation_id": {"type": "string", "pattern": "^mxg_sha256_[0-9a-f]{64}$"},
+        "model_qualification": {"$ref": "mlx://schemas/distribution/v1/search-record.schema.json#/$defs/qualificationComponent"},
+        "safe_eligible": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "datasetItem": {
+      "type": "object",
+      "required": ["record", "runtime_trust"],
+      "properties": {
+        "record": {
+          "oneOf": [
+            {"$ref": "https://schemas.mojilex.org/v1/emoji.schema.json"},
+            {"$ref": "mlx://schemas/distribution/v1/search-record.schema.json"},
+            {"$ref": "mlx://schemas/distribution/v1/agent-record.schema.json"}
+          ]
+        },
+        "runtime_trust": {"$ref": "#/$defs/runtimeTrust"}
+      },
+      "additionalProperties": false
+    },
+    "derivedFrom": {
+      "type": "object",
+      "required": [
+        "profile",
+        "source_canonical_state_root_sha256",
+        "manifest_inputs",
+        "selectors",
+        "derived_artifacts",
+        "physical_input_roots"
+      ],
+      "properties": {
+        "profile": {
+          "const": "derived-from-v1"
+        },
+        "source_canonical_state_root_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_inputs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["manifest_pointer", "value_sha256"],
+            "properties": {
+              "manifest_pointer": {"$ref": "#/$defs/jsonPointer"},
+              "value_sha256": {"$ref": "#/$defs/sha256"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "selectors": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["selector_kind", "manifest_pointer", "selector_value_sha256"],
+            "properties": {
+              "selector_kind": {"enum": ["profile", "policy"]},
+              "manifest_pointer": {"$ref": "#/$defs/jsonPointer"},
+              "selector_value_sha256": {"$ref": "#/$defs/sha256"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "derived_artifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["logical_name", "digest_kind", "sha256"],
+            "properties": {
+              "logical_name": {"$ref": "#/$defs/identifier"},
+              "digest_kind": {"enum": ["table-root", "payload"]},
+              "sha256": {"$ref": "#/$defs/sha256"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "physical_input_roots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["projection_profile", "sha256"],
+            "properties": {
+              "projection_profile": {"$ref": "#/$defs/identifier"},
+              "sha256": {"$ref": "#/$defs/sha256"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

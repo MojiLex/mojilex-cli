@@ -24,6 +24,8 @@ _KEY_ORDER = (
     "schema_version",
     "id_namespace",
     "visual_relation_namespace",
+    "duplicate_group_namespace",
+    "rights_assignment_namespace",
     "taxonomy_version",
     "color_profile",
     "color_profile_sha256",
@@ -33,6 +35,8 @@ _KEY_ORDER = (
     "collection_dedupe_profile_sha256",
     "default_languages",
     "platforms",
+    "rights_defaults",
+    "project_profile_id",
     "canonical_repository",
     "licenses",
     "data",
@@ -51,14 +55,16 @@ _KEY_ORDER = (
     "item_count",
     "media",
     "fingerprints",
-    "descriptions",
     "facets",
+    "descriptions",
     "ru",
     "en",
     "text",
     "motion_status",
     "motion",
     "usage",
+    "concept_ids",
+    "concept_mapping_status",
     "semantic_tags",
     "content",
     "rating",
@@ -93,6 +99,7 @@ _KEY_ORDER = (
     "reviewed_at",
     "reviewer",
     "reviewed_content_sha256",
+    "review_hash_profile_id",
     "extensions",
     "telegram",
     "retrieved_via",
@@ -127,43 +134,6 @@ _KEY_ORDER = (
     "target_id",
     "withheld_at",
     "public_note",
-    "rendering",
-    "profile",
-    "items",
-    "color_behavior",
-    "palette_dynamics",
-    "alpha_mode",
-    "visible_area_bp",
-    "dominant_colors",
-    "hex",
-    "family",
-    "coverage_bp",
-    "adaptive_mask_source",
-    "adaptive_mask_sha256",
-    "text_content",
-    "dynamics",
-    "value",
-    "script",
-    "language",
-    "temporal_scope",
-    "media_refs",
-    "content_types",
-    "styles",
-    "suggested_uses",
-    "uncertainties",
-    "input_media_digest",
-    "decoded_payload_sha256",
-    "canonical_render_sha256",
-    "shape_sha256",
-    "perceptual",
-    "encoding",
-    "sample_count",
-    "layout_phash64",
-    "content_phash64",
-    "alpha_phash64",
-    "edge_phash64",
-    "temporal_energy_bp",
-    "low_information",
     "subject_id",
     "object_id",
     "scope",
@@ -216,6 +186,8 @@ def _context_order(value: Mapping[str, Any]) -> tuple[str, ...] | None:
             "fingerprints",
             "descriptions",
             "facets",
+            "concept_ids",
+            "concept_mapping_status",
             "semantic_tags",
             "content",
             "provenance",
@@ -315,6 +287,8 @@ def _context_order(value: Mapping[str, Any]) -> tuple[str, ...] | None:
             "schema_version",
             "id_namespace",
             "visual_relation_namespace",
+            "duplicate_group_namespace",
+            "rights_assignment_namespace",
             "taxonomy_version",
             "color_profile",
             "color_profile_sha256",
@@ -324,6 +298,7 @@ def _context_order(value: Mapping[str, Any]) -> tuple[str, ...] | None:
             "collection_dedupe_profile_sha256",
             "default_languages",
             "platforms",
+            "rights_defaults",
             "canonical_repository",
             "licenses",
         )
@@ -393,9 +368,21 @@ def _context_order(value: Mapping[str, Any]) -> tuple[str, ...] | None:
     if {"name", "version"}.issubset(value) and len(value) == 2:
         return ("name", "version")
     if "status" in value and set(value).issubset(
-        {"status", "reviewed_at", "reviewer", "reviewed_content_sha256"}
+        {
+            "status",
+            "reviewed_at",
+            "reviewer",
+            "reviewed_content_sha256",
+            "review_hash_profile_id",
+        }
     ):
-        return ("status", "reviewed_at", "reviewer", "reviewed_content_sha256")
+        return (
+            "status",
+            "reviewed_at",
+            "reviewer",
+            "reviewed_content_sha256",
+            "review_hash_profile_id",
+        )
     if "status" in value and "reviewed_relation_sha256" in value:
         return ("status", "reviewer", "reviewed_at", "reviewed_relation_sha256")
     if {"profile", "items"}.issubset(value) and "input_media_digest" in value:
@@ -590,6 +577,7 @@ def canonical_entity(entity: Entity | Mapping[str, Any]) -> dict[str, Any]:
     )
     raw = _nfc(raw)
     if raw.get("entity_type") == "emoji":
+        raw["concept_ids"] = sorted(set(raw["concept_ids"]))
         raw["semantic_tags"] = sorted(set(raw["semantic_tags"]))
         raw["content"]["warnings"] = sorted(set(raw["content"]["warnings"]))
         raw["media"] = sorted(

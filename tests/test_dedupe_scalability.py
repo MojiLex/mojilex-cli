@@ -68,7 +68,7 @@ def _run_scalability_scenario() -> tuple[float, int, int, int, int, int]:
         index = _build_candidate_index(
             _synthetic_references(),
             thresholds=thresholds,
-            bucket_limit=int(bucket_policy["maximum_members"]),
+            bucket_limit=int(bucket_policy["posting_bucket_cap"]),
             secondary_keys=secondary_keys,
             band_bits=band_bits,
         )

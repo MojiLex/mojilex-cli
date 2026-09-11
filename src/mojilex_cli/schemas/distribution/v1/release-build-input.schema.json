@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/release-build-input.schema.json",
+  "title": "MojiLex release build input v1",
+  "type": "object",
+  "required": ["build_input_profile_id", "manifest_header", "selectors", "lineage", "builder"],
+  "properties": {
+    "build_input_profile_id": {"const": "release-build-input-v1"},
+    "manifest_header": {
+      "type": "object",
+      "required": ["manifest_version", "dataset", "snapshot_id", "schema_version", "layout_profile", "trust_stage", "minimum_reader_version", "required_features", "git", "languages", "storage"],
+      "properties": {
+        "manifest_version": {"const": "1.0.0"},
+        "dataset": {"const": "mojilex"},
+        "snapshot_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "schema_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+        "layout_profile": {"enum": ["monolith-v1", "partitioned-v1"]},
+        "trust_stage": {"enum": ["pre-enforcement", "signed-v1"]},
+        "minimum_reader_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+        "required_features": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"}},
+        "git": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/git"},
+        "languages": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/languages"},
+        "storage": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/storage"}
+      },
+      "additionalProperties": false
+    },
+    "selectors": {
+      "type": "object",
+      "required": ["profiles", "policies"],
+      "properties": {
+        "profiles": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/profiles"},
+        "policies": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/policies"}
+      },
+      "additionalProperties": false
+    },
+    "lineage": {
+      "type": "object",
+      "required": ["previous_snapshot", "change_set_batch", "migration_inputs_root_sha256"],
+      "properties": {
+        "previous_snapshot": {
+          "oneOf": [
+            {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"},
+            {
+              "type": "object", "required": ["present", "value"],
+              "properties": {"present": {"const": true}, "value": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/previousSnapshot"}},
+              "additionalProperties": false
+            }
+          ]
+        },
+        "change_set_batch": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"},
+        "migration_inputs_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "builder": {
+      "type": "object",
+      "required": ["tool", "tool_version", "tool_repository", "tool_commit", "dependency_lock_sha256", "distribution_profile", "parameters", "parameters_sha256", "evidence_inputs_root_sha256", "source_date_epoch"],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1, "maxLength": 64},
+        "tool_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+        "tool_repository": {"type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 512},
+        "tool_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "dependency_lock_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "distribution_profile": {"const": "distribution-v1"},
+        "parameters": {"$ref": "mlx://schemas/distribution/v1/release-manifest.schema.json#/$defs/parameters"},
+        "parameters_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "evidence_inputs_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "source_date_epoch": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

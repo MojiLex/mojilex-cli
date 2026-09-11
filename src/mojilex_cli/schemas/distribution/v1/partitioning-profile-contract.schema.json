@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/partitioning-profile-contract.schema.json",
+  "title": "MojiLex partitioning profile body contract v1",
+  "type": "object",
+  "required": [
+    "algorithm",
+    "key_serialization_profile_id",
+    "bit_order",
+    "partition_count_rule",
+    "minimum_partition_count",
+    "maximum_partition_count"
+  ],
+  "properties": {
+    "algorithm": {
+      "const": "sha256-jcs-routing-msb"
+    },
+    "key_serialization_profile_id": {
+      "const": "canonical-primary-key-v1"
+    },
+    "bit_order": {
+      "const": "msb-first"
+    },
+    "partition_count_rule": {
+      "const": "power-of-two"
+    },
+    "minimum_partition_count": {
+      "const": 2
+    },
+    "maximum_partition_count": {
+      "const": 65536
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

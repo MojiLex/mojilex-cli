@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/taxonomy-dictionary.schema.json",
+  "title": "MojiLex facet taxonomy dictionary v1",
+  "type": "object",
+  "required": ["taxonomy_version", "facet", "entries"],
+  "properties": {
+    "taxonomy_version": {"const": "1.0.0"},
+    "facet": {
+      "enum": ["color_families", "content_types", "platform_contexts", "styles", "suggested_uses", "uncertainties"]
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["id", "name_ru", "name_en", "definition_ru", "definition_en", "positive_examples", "negative_examples", "status"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64},
+        "name_ru": {"type": "string", "minLength": 1, "maxLength": 128},
+        "name_en": {"type": "string", "minLength": 1, "maxLength": 128},
+        "definition_ru": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "definition_en": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "positive_examples": {"$ref": "#/$defs/examples"},
+        "negative_examples": {"$ref": "#/$defs/examples"},
+        "status": {"enum": ["active", "deprecated"]},
+        "replaced_by": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64}
+      },
+      "if": {"properties": {"status": {"const": "deprecated"}}, "required": ["status"]},
+      "then": {"required": ["replaced_by"]},
+      "else": {"not": {"required": ["replaced_by"]}},
+      "additionalProperties": false
+    },
+    "examples": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    }
+  }
+}

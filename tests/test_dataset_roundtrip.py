@@ -6,7 +6,7 @@ from mojilex_cli.dataset import (
     load_dataset,
     merge_emoji,
 )
-from mojilex_cli.domain import Review, reviewed_content_sha256
+from mojilex_cli.domain import Emoji, Review, reviewed_content_sha256
 from test_dataset_helpers import write_fixture
 
 
@@ -23,17 +23,27 @@ def test_loader_roundtrip_and_canonical_paths(tmp_path) -> None:
 def test_merge_preserves_approved_manual_content_when_media_is_unchanged(tmp_path) -> None:
     snapshot = write_fixture(tmp_path)
     existing = next(iter(snapshot.emojis.values())).model_copy(deep=True)
+    existing_raw = existing.as_dict()
+    existing_raw["concept_ids"] = ["animal.cat"]
+    existing_raw["concept_mapping_status"] = "complete"
+    existing = Emoji.model_validate(existing_raw)
     existing.review = Review(
         status="approved",
         reviewed_at="2026-09-10T19:00:00Z",
         reviewer="reviewer",
         reviewed_content_sha256=reviewed_content_sha256(existing),
+        review_hash_profile_id="semantic-review-content-v3",
     )
-    incoming = existing.model_copy(deep=True)
-    incoming.review = Review(status="unreviewed")
+    incoming_raw = existing.as_dict()
+    incoming_raw["concept_ids"] = []
+    incoming_raw["concept_mapping_status"] = "pending"
+    incoming_raw["review"] = {"status": "unreviewed"}
+    incoming = Emoji.model_validate(incoming_raw)
     incoming.descriptions["en"].text = "An incorrect replacement."
     merged = merge_emoji(existing, incoming)
     assert merged.descriptions["en"].text == existing.descriptions["en"].text
+    assert merged.concept_ids == ["animal.cat"]
+    assert merged.concept_mapping_status.value == "complete"
     assert merged.review.status.value == "approved"
 
 

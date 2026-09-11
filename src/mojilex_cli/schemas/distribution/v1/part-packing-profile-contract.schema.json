@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/part-packing-profile-contract.schema.json",
+  "title": "MojiLex part-packing profile body contract v1",
+  "type": "object",
+  "required": [
+    "target_uncompressed_bytes",
+    "maximum_uncompressed_bytes",
+    "maximum_records",
+    "maximum_jsonl_line_bytes",
+    "packing_order"
+  ],
+  "properties": {
+    "target_uncompressed_bytes": {
+      "const": 67108864
+    },
+    "maximum_uncompressed_bytes": {
+      "const": 268435456
+    },
+    "maximum_records": {
+      "const": 1000000
+    },
+    "maximum_jsonl_line_bytes": {
+      "const": 1048576
+    },
+    "packing_order": {
+      "const": "canonical-sort-key-prefix-v1"
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

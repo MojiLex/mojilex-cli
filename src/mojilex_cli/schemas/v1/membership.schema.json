@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/membership.schema.json",
+  "title": "MojiLex collection membership v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "entity_type",
+    "id",
+    "collection_id",
+    "emoji_id",
+    "status",
+    "position",
+    "first_seen_at",
+    "last_changed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+    },
+    "entity_type": {
+      "const": "membership"
+    },
+    "id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/membershipId"
+    },
+    "collection_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/collectionId"
+    },
+    "emoji_id": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/emojiId"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "removed_from_collection",
+        "unknown"
+      ]
+    },
+    "position": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "first_seen_at": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/timestamp"
+    },
+    "last_changed_at": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/timestamp"
+    }
+  },
+  "additionalProperties": false
+}

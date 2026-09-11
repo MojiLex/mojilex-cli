@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/collection-dedupe-profile-contract.schema.json",
+  "title": "MojiLex collection-dedupe profile body contract v1",
+  "type": "object",
+  "required": [
+    "matching",
+    "clone_candidate",
+    "subset_candidate",
+    "candidate_generation"
+  ],
+  "properties": {
+    "matching": {
+      "const": {
+        "algorithm": "maximum-cardinality-one-to-one",
+        "allowed_signals": [
+          "binary-entity-exact",
+          "decoded-entity-exact",
+          "reviewed-same-artwork"
+        ],
+        "excluded_relations": [
+          "variant-of"
+        ]
+      }
+    },
+    "clone_candidate": {
+      "const": {
+        "minimum_each_coverage": "0.90",
+        "minimum_matches": 8
+      }
+    },
+    "subset_candidate": {
+      "const": {
+        "minimum_smaller_coverage": "0.90",
+        "maximum_larger_coverage_exclusive": "0.80",
+        "minimum_matches": 8
+      }
+    },
+    "candidate_generation": {
+      "const": {
+        "algorithm": "inverted-duplicate-group-index-v1",
+        "hot_group_member_collection_cap": 4096,
+        "minimum_shared_informative_groups": 2,
+        "hot_group_policy": "suppress"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

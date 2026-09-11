@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/fingerprints.schema.json",
+  "title": "MojiLex deterministic fingerprints v1",
+  "type": "object",
+  "required": [
+    "status",
+    "profile",
+    "input_media_digest",
+    "items"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "profile": {
+      "const": "dedupe-v1"
+    },
+    "input_media_digest": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unavailable"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "item": {
+      "type": "object",
+      "required": [
+        "role",
+        "decoded_payload_sha256",
+        "canonical_render_sha256",
+        "shape_sha256",
+        "perceptual"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "primary",
+            "light",
+            "dark",
+            "alternate"
+          ]
+        },
+        "variant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        },
+        "decoded_payload_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "canonical_render_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "shape_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        },
+        "perceptual": {
+          "type": "object",
+          "required": [
+            "encoding",
+            "sample_count",
+            "layout_phash64",
+            "content_phash64",
+            "alpha_phash64",
+            "edge_phash64",
+            "temporal_energy_bp",
+            "low_information"
+          ],
+          "properties": {
+            "encoding": {
+              "const": "u64be-base64url-nopad"
+            },
+            "sample_count": {
+              "enum": [
+                1,
+                16
+              ]
+            },
+            "layout_phash64": {
+              "$ref": "#/$defs/phash"
+            },
+            "content_phash64": {
+              "$ref": "#/$defs/phash"
+            },
+            "alpha_phash64": {
+              "$ref": "#/$defs/phash"
+            },
+            "edge_phash64": {
+              "$ref": "#/$defs/phash"
+            },
+            "temporal_energy_bp": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "low_information": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "phash": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  },
+  "additionalProperties": false
+}

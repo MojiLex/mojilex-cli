@@ -45,6 +45,13 @@ SemanticTag = Annotated[
     str,
     StringConstraints(min_length=1, max_length=48, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"),
 ]
+ConceptId = Annotated[
+    str,
+    StringConstraints(
+        max_length=128,
+        pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$",
+    ),
+]
 Handle = Annotated[
     str,
     StringConstraints(
@@ -131,6 +138,11 @@ class ReviewStatus(StrEnum):
     APPROVED = "approved"
     CHANGES_REQUESTED = "changes_requested"
     REJECTED = "rejected"
+
+
+class ConceptMappingStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETE = "complete"
 
 
 class ContentRating(StrEnum):
@@ -931,6 +943,7 @@ class Review(StrictModel):
     reviewed_at: UtcTimestamp | None = None
     reviewer: Handle | None = None
     reviewed_content_sha256: Sha256 | None = None
+    review_hash_profile_id: Literal["semantic-review-content-v3"] | None = None
 
     @field_validator("reviewer")
     @classmethod
@@ -940,7 +953,12 @@ class Review(StrictModel):
     @model_validator(mode="after")
     def validate_review(self) -> Review:
         reviewed = self.status is not ReviewStatus.UNREVIEWED
-        fields = (self.reviewed_at, self.reviewer, self.reviewed_content_sha256)
+        fields = (
+            self.reviewed_at,
+            self.reviewer,
+            self.reviewed_content_sha256,
+            self.review_hash_profile_id,
+        )
         if reviewed and any(value is None for value in fields):
             raise ValueError("reviewed states require reviewed_at, reviewer, and review hash")
         if not reviewed and any(value is not None for value in fields):
@@ -1007,6 +1025,8 @@ class Emoji(StrictModel):
     fingerprints: Fingerprints
     descriptions: dict[str, LocalizedDescription]
     facets: Facets
+    concept_ids: Annotated[list[ConceptId], Field(max_length=16)]
+    concept_mapping_status: ConceptMappingStatus
     semantic_tags: Annotated[list[SemanticTag], Field(min_length=1, max_length=12)]
     content: Content
     provenance: Provenance
@@ -1018,15 +1038,21 @@ class Emoji(StrictModel):
     def clean_strings(cls, value: str) -> str:
         return _ensure_clean_text(value)
 
-    @field_validator("semantic_tags")
+    @field_validator("concept_ids", "semantic_tags")
     @classmethod
     def unique_tags(cls, value: list[str]) -> list[str]:
         if len(value) != len(set(value)):
-            raise ValueError("semantic_tags must be unique")
+            raise ValueError("concept_ids and semantic_tags must be unique")
         return value
 
     @model_validator(mode="after")
     def validate_description_and_media(self) -> Emoji:
+        if self.concept_ids != sorted(self.concept_ids):
+            raise ValueError("concept_ids must be bytewise sorted")
+        if self.concept_mapping_status is ConceptMappingStatus.PENDING and self.concept_ids:
+            raise ValueError("pending concept mapping must have no concept_ids")
+        if self.concept_mapping_status is ConceptMappingStatus.COMPLETE and not self.concept_ids:
+            raise ValueError("complete concept mapping requires at least one concept_id")
         if not {"ru", "en"}.issubset(self.descriptions):
             raise ValueError("MVP records require ru and en descriptions")
         if any(not _BCP47_RE.fullmatch(language) for language in self.descriptions):

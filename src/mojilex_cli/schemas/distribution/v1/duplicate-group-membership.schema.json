@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/duplicate-group-membership.schema.json",
+  "title": "MojiLex duplicate group membership v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema_version", "group_id", "member_scope", "emoji_id", "role", "variant"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "member_scope": {"const": "entity"},
+        "emoji_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/emojiId"},
+        "role": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"},
+        "variant": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "group_id", "member_scope", "emoji_id", "role", "variant"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/duplicateGroupId"},
+        "member_scope": {"const": "media"},
+        "emoji_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/emojiId"},
+        "role": {
+          "type": "object",
+          "required": ["present", "value"],
+          "properties": {
+            "present": {"const": true},
+            "value": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/mediaRole"}
+          },
+          "additionalProperties": false
+        },
+        "variant": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"}
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/bundling-profile-contract.schema.json",
+  "title": "MojiLex bundling profile body contract v1",
+  "type": "object",
+  "required": [
+    "bundle_mode",
+    "compression_profile_id",
+    "maximum_entries",
+    "maximum_entry_bytes",
+    "maximum_object_bytes",
+    "packing_order",
+    "archive_metadata_profile"
+  ],
+  "properties": {
+    "bundle_mode": {
+      "const": "tar-zstd"
+    },
+    "compression_profile_id": {
+      "const": "zstd-v1"
+    },
+    "maximum_entries": {
+      "const": 256
+    },
+    "maximum_entry_bytes": {
+      "const": 1073741824
+    },
+    "maximum_object_bytes": {
+      "const": 1610612736
+    },
+    "packing_order": {
+      "const": "path-utf8-bytewise-greedy-v1"
+    },
+    "archive_metadata_profile": {
+      "const": "portable-zero-metadata-v1"
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

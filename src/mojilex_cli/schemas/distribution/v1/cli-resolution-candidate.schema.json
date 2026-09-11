@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-resolution-candidate.schema.json",
+  "title": "MojiLex CLI resolution candidate v1",
+  "type": "object",
+  "required": ["reference_id", "identity_epoch", "reference_status", "reference_role", "observed_from", "observed_until", "target_entity_type", "target_id", "path_evidence", "runtime_trust"],
+  "properties": {
+    "reference_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "identity_epoch": {"type": "integer", "minimum": 0},
+    "reference_status": {"enum": ["current", "former"]},
+    "reference_role": {"enum": ["primary", "alias"]},
+    "observed_from": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"},
+    "observed_until": {
+      "oneOf": [
+        {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"},
+        {
+          "type": "object",
+          "required": ["present", "value"],
+          "properties": {
+            "present": {"const": true},
+            "value": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/timestamp"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "target_entity_type": {"enum": ["collection", "emoji"]},
+    "target_id": {"type": "string", "pattern": "^mx[ce]_[0-9a-f-]{36}$"},
+    "path_evidence": {
+      "type": "object",
+      "required": ["identity_link_id", "attestation_id"],
+      "properties": {
+        "identity_link_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"},
+        "attestation_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"}
+      },
+      "additionalProperties": false
+    },
+    "runtime_trust": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/runtimeTrust"}
+  },
+  "additionalProperties": false
+}

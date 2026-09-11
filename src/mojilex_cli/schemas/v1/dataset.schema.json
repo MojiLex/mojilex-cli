@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/dataset.schema.json",
+  "title": "MojiLex dataset manifest v1",
+  "type": "object",
+  "required": [
+    "dataset",
+    "schema_version",
+    "id_namespace",
+    "visual_relation_namespace",
+    "duplicate_group_namespace",
+    "rights_assignment_namespace",
+    "taxonomy_version",
+    "color_profile",
+    "color_profile_sha256",
+    "dedupe_profile",
+    "dedupe_profile_sha256",
+    "collection_dedupe_profile",
+    "collection_dedupe_profile_sha256",
+    "default_languages",
+    "platforms",
+    "rights_defaults",
+    "canonical_repository",
+    "licenses"
+  ],
+  "properties": {
+    "dataset": {
+      "const": "mojilex"
+    },
+    "schema_version": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/schemaVersion"
+    },
+    "id_namespace": {
+      "type": "string",
+      "format": "uuid",
+      "const": "47d42c76-38da-5ab5-90fe-7af0ba6c4a27"
+    },
+    "visual_relation_namespace": {
+      "type": "string",
+      "format": "uuid",
+      "const": "4958ce2d-8120-5c3a-8755-a71d93c0c866"
+    },
+    "duplicate_group_namespace": {
+      "type": "string",
+      "format": "uuid",
+      "const": "b6a91ddf-1126-5eee-ba5e-b8bd812883df"
+    },
+    "rights_assignment_namespace": {
+      "type": "string",
+      "format": "uuid",
+      "const": "de845fef-2c83-51e1-a40a-f1bf11139639"
+    },
+    "taxonomy_version": {
+      "const": "1.0.0"
+    },
+    "color_profile": {
+      "const": "color-v1"
+    },
+    "color_profile_sha256": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256",
+      "const": "fa7f0cb270bd3645b78ec5e6c1b8d6b23f8f2a07457699bc1ac95cf0c70aa230"
+    },
+    "dedupe_profile": {
+      "const": "dedupe-v1"
+    },
+    "dedupe_profile_sha256": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256",
+      "const": "c1f09fd2a4abb416b7dec82f67f9b101e1e9f993a8d578908a108f43d87602ba"
+    },
+    "collection_dedupe_profile": {
+      "const": "collection-dedupe-v1"
+    },
+    "collection_dedupe_profile_sha256": {
+      "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256",
+      "const": "5640836b227b4013772e6e48ce06e52245ad980bd0a554111d389504366fee8b"
+    },
+    "default_languages": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "contains": {
+        "const": "ru"
+      },
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[A-Za-z]{2,3})(?:-[A-Za-z0-9]{2,8})*$"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "const": "en"
+          }
+        }
+      ]
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "contains": {
+        "const": "telegram"
+      },
+      "items": {
+        "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/platform"
+      }
+    },
+    "rights_defaults": {
+      "type": "object",
+      "required": [
+        "project_profile_id"
+      ],
+      "properties": {
+        "project_profile_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "canonical_repository": {
+      "const": "https://github.com/MojiLex/mojilex"
+    },
+    "licenses": {
+      "type": "object",
+      "required": [
+        "data",
+        "code"
+      ],
+      "properties": {
+        "data": {
+          "const": "CC0-1.0"
+        },
+        "code": {
+          "const": "MIT"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

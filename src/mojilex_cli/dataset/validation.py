@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -25,6 +26,8 @@ from mojilex_cli.domain.hashes import (
     telegram_set_fingerprint,
 )
 from mojilex_cli.domain.ids import (
+    DUPLICATE_GROUP_NAMESPACE,
+    RIGHTS_ASSIGNMENT_NAMESPACE,
     VISUAL_RELATION_NAMESPACE,
     collection_id,
     emoji_id,
@@ -257,6 +260,8 @@ def _validate_manifest(snapshot: DatasetSnapshot, issues: list[ValidationIssue])
         "schema_version": "1.0.0",
         "canonical_repository": "https://github.com/MojiLex/mojilex",
         "visual_relation_namespace": str(VISUAL_RELATION_NAMESPACE),
+        "duplicate_group_namespace": str(DUPLICATE_GROUP_NAMESPACE),
+        "rights_assignment_namespace": str(RIGHTS_ASSIGNMENT_NAMESPACE),
         "taxonomy_version": "1.0.0",
         "color_profile": "color-v1",
         "dedupe_profile": "dedupe-v1",
@@ -279,6 +284,14 @@ def _validate_manifest(snapshot: DatasetSnapshot, issues: list[ValidationIssue])
     platforms = manifest.get("platforms")
     if not isinstance(platforms, list) or "telegram" not in platforms:
         _issue(issues, "MANIFEST", "dataset.json/platforms", "telegram is required for MVP")
+    rights_defaults = manifest.get("rights_defaults")
+    if rights_defaults != {"project_profile_id": "mojilex-metadata-only-v1"}:
+        _issue(
+            issues,
+            "MANIFEST",
+            "dataset.json/rights_defaults",
+            "must select mojilex-metadata-only-v1",
+        )
     licenses = manifest.get("licenses")
     if licenses != {"data": "CC0-1.0", "code": "MIT"}:
         _issue(
@@ -717,6 +730,8 @@ def _validate_emoji_policy(
             _issue(issues, "SORT", path, "media must be sorted by role, variant_id, sha256")
         if emoji.semantic_tags != sorted(emoji.semantic_tags):
             _issue(issues, "SORT", path, "semantic_tags must be sorted")
+        if emoji.concept_ids != sorted(emoji.concept_ids):
+            _issue(issues, "SORT", path, "concept_ids must be sorted")
         duplicates = sorted(set(emoji.semantic_tags) & controlled_tags)
         if duplicates:
             _issue(
@@ -902,16 +917,24 @@ def _validate_profile_assets(snapshot: DatasetSnapshot, issues: list[ValidationI
         expected_hash = snapshot.manifest.get(hash_field)
         if not isinstance(profile_id, str):
             continue
-        try:
-            actual_hash = profile_sha256(profile_id)
-        except AnalysisError as exc:
-            _issue(
-                issues,
-                "PROFILE_MISSING",
-                f"package:analysis_profiles/{profile_id}.json",
-                str(exc),
-            )
-            continue
+        source_path = snapshot.root / "analysis-profiles" / f"{profile_id}.json"
+        if source_path.is_file() and not source_path.is_symlink():
+            try:
+                actual_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            except OSError as exc:
+                _issue(issues, "PROFILE_MISSING", str(source_path), str(exc))
+                continue
+        else:
+            try:
+                actual_hash = profile_sha256(profile_id)
+            except AnalysisError as exc:
+                _issue(
+                    issues,
+                    "PROFILE_MISSING",
+                    f"analysis-profiles/{profile_id}.json",
+                    str(exc),
+                )
+                continue
         if actual_hash != expected_hash:
             _issue(
                 issues,
@@ -951,7 +974,9 @@ def _validate_taxonomy_assets(snapshot: DatasetSnapshot, issues: list[Validation
         )
         return
     paths = [str(item.get("path")) for item in raw_registries]
-    actual_mapping = {str(item.get("facet")): str(item.get("path")) for item in raw_registries}
+    actual_mapping = {
+        str(item.get("dictionary_id")): str(item.get("path")) for item in raw_registries
+    }
     if paths != sorted(paths) or actual_mapping != expected_paths:
         _issue(
             issues,
@@ -963,10 +988,29 @@ def _validate_taxonomy_assets(snapshot: DatasetSnapshot, issues: list[Validation
         display_path = f"taxonomy/v1/{relative}"
         path = snapshot.root / "taxonomy" / "v1" / relative
         try:
-            registry = parse_json(path.read_bytes(), source=str(path))
+            registry_bytes = path.read_bytes()
+            registry = parse_json(registry_bytes, source=str(path))
         except (OSError, ValueError) as exc:
             _issue(issues, "TAXONOMY_REGISTRY", display_path, str(exc))
             continue
+        master_entry = next(
+            (
+                item
+                for item in raw_registries
+                if item.get("dictionary_id") == facet and item.get("path") == relative
+            ),
+            None,
+        )
+        if (
+            master_entry is None
+            or master_entry.get("sha256") != hashlib.sha256(registry_bytes).hexdigest()
+        ):
+            _issue(
+                issues,
+                "TAXONOMY_REGISTRY",
+                display_path,
+                "master dictionary SHA-256 mismatch",
+            )
         if registry.get("taxonomy_version") != snapshot.manifest.get("taxonomy_version"):
             _issue(issues, "TAXONOMY_REGISTRY", display_path, "version mismatch")
         if registry.get("facet") != facet:
@@ -1006,6 +1050,202 @@ def _validate_taxonomy_assets(snapshot: DatasetSnapshot, issues: list[Validation
                     f"{display_path}/{item.get('id')}",
                     "deprecated entry requires a valid replaced_by",
                 )
+
+
+def _validate_concept_assets(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
+    display_path = "taxonomy/v1/concepts.json"
+    path = snapshot.root / display_path
+    try:
+        registry = parse_json(path.read_bytes(), source=str(path))
+    except (OSError, ValueError) as exc:
+        _issue(issues, "CONCEPT_REGISTRY", display_path, str(exc))
+        return
+    if (
+        registry.get("registry_schema_version") != "1.0.0"
+        or registry.get("registry_type") != "concepts"
+    ):
+        _issue(issues, "CONCEPT_REGISTRY", display_path, "invalid registry header")
+    registry_id = registry.get("registry_id")
+    if not isinstance(registry_id, str) or not registry_id.startswith("concepts-v1."):
+        _issue(
+            issues,
+            "CONCEPT_REGISTRY",
+            f"{display_path}/registry_id",
+            "registry identity must be content-versioned",
+        )
+    concepts = registry.get("concepts")
+    if not isinstance(concepts, list) or any(not isinstance(item, dict) for item in concepts):
+        _issue(issues, "CONCEPT_REGISTRY", f"{display_path}/concepts", "invalid concepts")
+        return
+    identifiers = [str(item.get("id")) for item in concepts]
+    if identifiers != sorted(identifiers, key=lambda value: value.encode("utf-8")):
+        _issue(
+            issues,
+            "CONCEPT_REGISTRY",
+            f"{display_path}/concepts",
+            "concept IDs must be bytewise sorted",
+        )
+    if len(identifiers) != len(set(identifiers)):
+        _issue(issues, "CONCEPT_REGISTRY", f"{display_path}/concepts", "duplicate concept ID")
+    known = set(identifiers)
+    graph: dict[str, list[str]] = {}
+    active: set[str] = set()
+    for item in concepts:
+        identifier = str(item.get("id"))
+        parents = item.get("parent_ids")
+        if not isinstance(parents, list) or any(not isinstance(value, str) for value in parents):
+            _issue(
+                issues,
+                "CONCEPT_REGISTRY",
+                f"{display_path}/{identifier}/parent_ids",
+                "parent_ids must be an array of strings",
+            )
+            parents = []
+        if parents != sorted(parents, key=lambda value: value.encode("utf-8")):
+            _issue(
+                issues,
+                "CONCEPT_REGISTRY",
+                f"{display_path}/{identifier}/parent_ids",
+                "parent_ids must be bytewise sorted",
+            )
+        missing = sorted(set(parents) - known)
+        if missing:
+            _issue(
+                issues,
+                "CONCEPT_REGISTRY",
+                f"{display_path}/{identifier}/parent_ids",
+                f"unknown parent IDs: {', '.join(missing)}",
+            )
+        graph[identifier] = list(parents)
+        if item.get("status") == "active":
+            active.add(identifier)
+        for language in ("en", "ru"):
+            aliases = (
+                item.get("aliases", {}).get(language)
+                if isinstance(item.get("aliases"), dict)
+                else None
+            )
+            if not isinstance(aliases, list) or aliases != sorted(
+                aliases, key=lambda value: str(value).encode("utf-8")
+            ):
+                _issue(
+                    issues,
+                    "CONCEPT_REGISTRY",
+                    f"{display_path}/{identifier}/aliases/{language}",
+                    "aliases must be bytewise sorted arrays",
+                )
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(identifier: str) -> None:
+        if identifier in visiting:
+            _issue(issues, "CONCEPT_REGISTRY", display_path, "concept parent graph has a cycle")
+            return
+        if identifier in visited:
+            return
+        visiting.add(identifier)
+        for parent in graph.get(identifier, []):
+            if parent in graph:
+                visit(parent)
+        visiting.remove(identifier)
+        visited.add(identifier)
+
+    for identifier in identifiers:
+        visit(identifier)
+    for emoji in snapshot.emojis.values():
+        unknown = sorted(set(emoji.concept_ids) - active)
+        if unknown:
+            _issue(
+                issues,
+                "CONCEPT_REFERENCE",
+                str(emoji_bucket_path(emoji.platform, emoji.id)),
+                f"unknown or inactive concept IDs: {', '.join(unknown)}",
+            )
+
+
+def _validate_rights_assets(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
+    display_path = "rights/profiles.json"
+    path = snapshot.root / display_path
+    try:
+        registry = parse_json(path.read_bytes(), source=str(path))
+    except (OSError, ValueError) as exc:
+        _issue(issues, "RIGHTS_REGISTRY", display_path, str(exc))
+        return
+    if (
+        registry.get("registry_schema_version") != "1.0.0"
+        or registry.get("registry_type") != "rights-profiles"
+    ):
+        _issue(issues, "RIGHTS_REGISTRY", display_path, "invalid registry header")
+    registry_id = registry.get("registry_id")
+    if not isinstance(registry_id, str) or not registry_id.startswith("rights-profiles-v1."):
+        _issue(
+            issues,
+            "RIGHTS_REGISTRY",
+            f"{display_path}/registry_id",
+            "registry identity must be content-versioned",
+        )
+    profiles = registry.get("profiles")
+    if not isinstance(profiles, list) or any(not isinstance(item, dict) for item in profiles):
+        _issue(issues, "RIGHTS_REGISTRY", f"{display_path}/profiles", "invalid profiles")
+        return
+    identifiers = [str(item.get("rights_profile_id")) for item in profiles]
+    if identifiers != sorted(identifiers) or len(identifiers) != len(set(identifiers)):
+        _issue(
+            issues,
+            "RIGHTS_REGISTRY",
+            f"{display_path}/profiles",
+            "profile IDs must be unique and sorted",
+        )
+    by_id = {str(item.get("rights_profile_id")): item for item in profiles}
+    project_default = snapshot.manifest.get("rights_defaults", {}).get("project_profile_id")
+    if (
+        registry.get("project_default_profile_id") != project_default
+        or project_default not in by_id
+    ):
+        _issue(
+            issues,
+            "RIGHTS_REGISTRY",
+            f"{display_path}/project_default_profile_id",
+            "project default must match dataset.json and an existing profile",
+        )
+    selected_ids = {project_default}
+    platforms = snapshot.manifest.get("platforms")
+    for platform in platforms if isinstance(platforms, list) else []:
+        profile_path = snapshot.root / "platforms" / f"{platform}.json"
+        try:
+            platform_profile = parse_json(profile_path.read_bytes(), source=str(profile_path))
+        except (OSError, ValueError) as exc:
+            _issue(issues, "PLATFORM_PROFILE", f"platforms/{platform}.json", str(exc))
+            continue
+        if not isinstance(platform_profile, dict) or platform_profile.get("platform") != platform:
+            _issue(
+                issues,
+                "PLATFORM_PROFILE",
+                f"platforms/{platform}.json",
+                "platform profile identity mismatch",
+            )
+            continue
+        selected_ids.add(platform_profile.get("default_rights_profile_id"))
+    for profile_id in selected_ids:
+        profile = by_id.get(str(profile_id))
+        if profile is None:
+            _issue(
+                issues,
+                "RIGHTS_REGISTRY",
+                display_path,
+                f"missing selected rights profile {profile_id!r}",
+            )
+            continue
+        operations = profile.get("operations")
+        publish = operations.get("publish-metadata") if isinstance(operations, dict) else None
+        if not isinstance(publish, dict) or publish.get("decision") != "allow":
+            _issue(
+                issues,
+                "RIGHTS_POLICY",
+                f"{display_path}/{profile_id}",
+                "selected MVP profile must allow publish-metadata",
+            )
 
 
 def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
@@ -1529,6 +1769,8 @@ def validate_snapshot(
     if canonical:
         _validate_profile_assets(snapshot, issues)
         _validate_taxonomy_assets(snapshot, issues)
+        _validate_concept_assets(snapshot, issues)
+        _validate_rights_assets(snapshot, issues)
         _validate_qualifications(snapshot, issues)
         _validate_review_routing(snapshot, issues)
     _validate_persisted_values(snapshot, issues)

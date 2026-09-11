@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-command-result.schema.json",
+  "title": "MojiLex CLI read command result v1",
+  "oneOf": [
+    {"$ref": "#/$defs/snapshots"},
+    {"$ref": "#/$defs/snapshotPull"},
+    {"$ref": "#/$defs/snapshotVerify"},
+    {"$ref": "#/$defs/snapshotUpdate"},
+    {"$ref": "#/$defs/search"},
+    {"$ref": "#/$defs/get"},
+    {"$ref": "#/$defs/getCollection"},
+    {"$ref": "#/$defs/resolve"},
+    {"$ref": "#/$defs/similar"}
+  ],
+  "$defs": {
+    "snapshotItem": {
+      "type": "object",
+      "required": ["snapshot_id", "manifest_sha256", "channel", "catalog_status"],
+      "properties": {
+        "snapshot_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "manifest_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "channel": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "catalog_status": {"enum": ["current", "superseded", "revoked", "withdrawn", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "languageComponent": {
+      "oneOf": [
+        {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"},
+        {
+          "type": "object",
+          "required": ["present", "value"],
+          "properties": {
+            "present": {"const": true},
+            "value": {
+              "type": "object",
+              "required": ["requested_language", "effective_language", "fallback_used"],
+              "properties": {
+                "requested_language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"},
+                "effective_language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"},
+                "fallback_used": {"type": "boolean"}
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "collectionWrapper": {
+      "type": "object",
+      "required": ["record", "runtime_trust"],
+      "properties": {
+        "record": {"$ref": "https://schemas.mojilex.org/v1/collection.schema.json"},
+        "runtime_trust": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/runtimeTrust"}
+      },
+      "additionalProperties": false
+    },
+    "membershipWrapper": {
+      "type": "object",
+      "required": ["record", "runtime_trust"],
+      "properties": {
+        "record": {"$ref": "https://schemas.mojilex.org/v1/membership.schema.json"},
+        "runtime_trust": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/runtimeTrust"}
+      },
+      "additionalProperties": false
+    },
+    "snapshots": {
+      "type": "object",
+      "required": ["items", "next_cursor"],
+      "properties": {
+        "items": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/snapshotItem"}},
+        "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"}
+      },
+      "additionalProperties": false
+    },
+    "snapshotPull": {
+      "type": "object",
+      "required": ["snapshot_id", "manifest_sha256", "snapshot_path", "downloaded_objects", "reused_objects"],
+      "properties": {
+        "snapshot_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "manifest_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "snapshot_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "downloaded_objects": {"type": "integer", "minimum": 0},
+        "reused_objects": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "snapshotVerify": {
+      "type": "object",
+      "required": ["overall_status", "manifest_sha256", "checks"],
+      "properties": {
+        "overall_status": {"enum": ["verified", "verified-with-errata", "verified-offline-control-state-unknown", "integrity-only-unsigned", "unverified-release", "revoked", "invalid"]},
+        "manifest_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "required": ["check_id", "status"],
+            "properties": {
+              "check_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+              "status": {"enum": ["passed", "failed", "skipped", "unknown"]}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshotUpdate": {
+      "type": "object",
+      "required": ["from_snapshot", "to_snapshot", "method", "downloaded_objects", "reused_objects"],
+      "properties": {
+        "from_snapshot": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "to_snapshot": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "method": {"enum": ["full", "delta", "noop"]},
+        "downloaded_objects": {"type": "integer", "minimum": 0},
+        "reused_objects": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "search": {
+      "type": "object",
+      "required": ["requested_language", "effective_language", "fallback_used", "effective_filters", "items", "next_cursor"],
+      "properties": {
+        "requested_language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"},
+        "effective_language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"},
+        "fallback_used": {"type": "boolean"},
+        "effective_filters": {"$ref": "mlx://schemas/distribution/v1/search-request.schema.json#/properties/filters"},
+        "items": {"type": "array", "maxItems": 200, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetItem"}},
+        "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"}
+      },
+      "additionalProperties": false
+    },
+    "get": {
+      "type": "object",
+      "required": ["item", "view", "language"],
+      "properties": {
+        "item": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetItem"},
+        "view": {"enum": ["canonical", "search", "agent"]},
+        "language": {"$ref": "#/$defs/languageComponent"}
+      },
+      "allOf": [
+        {"if": {"properties": {"view": {"const": "canonical"}}, "required": ["view"]}, "then": {"properties": {"language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}}}, "else": {"properties": {"language": {"properties": {"present": {"const": true}}}}}}
+      ],
+      "additionalProperties": false
+    },
+    "getCollection": {
+      "type": "object",
+      "required": ["collection", "memberships", "next_cursor"],
+      "properties": {
+        "collection": {"$ref": "#/$defs/collectionWrapper"},
+        "memberships": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/membershipWrapper"}},
+        "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"}
+      },
+      "additionalProperties": false
+    },
+    "resolve": {
+      "type": "object",
+      "required": ["resolution_status", "resolution_path", "candidate_count", "candidates", "next_cursor"],
+      "properties": {
+        "resolution_status": {"enum": ["current", "former", "ambiguous", "not_found"]},
+        "resolution_path": {"enum": ["direct", "alias", "redirect", "successor-available", "none"]},
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "candidates": {"type": "array", "maxItems": 200, "items": {"$ref": "mlx://schemas/distribution/v1/cli-resolution-candidate.schema.json"}},
+        "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"}
+      },
+      "additionalProperties": false
+    },
+    "similar": {
+      "type": "object",
+      "required": ["source_emoji_id", "view", "language", "items", "next_cursor"],
+      "properties": {
+        "source_emoji_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/emojiId"},
+        "view": {"enum": ["canonical", "search", "agent"]},
+        "language": {"$ref": "#/$defs/languageComponent"},
+        "items": {"type": "array", "maxItems": 200, "items": {"$ref": "mlx://schemas/distribution/v1/cli-similar-item.schema.json"}},
+        "next_cursor": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/cursorComponent"}
+      },
+      "allOf": [
+        {"if": {"properties": {"view": {"const": "canonical"}}, "required": ["view"]}, "then": {"properties": {"language": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}}}, "else": {"properties": {"language": {"properties": {"present": {"const": true}}}}}}
+      ],
+      "additionalProperties": false
+    }
+  }
+}

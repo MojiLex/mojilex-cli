@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 from tools.verify_no_secrets import tracked_secret_findings
 
@@ -61,3 +63,29 @@ def test_tracked_secret_scan_allows_safe_credential_placeholders(tmp_path: Path)
     )
 
     assert tracked_secret_findings(tmp_path) == ()
+
+
+def test_tracked_secret_scan_detects_base64_encoded_credentials(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, shell=False)
+    secret = ("github_pat_" + "A" * 40).encode("ascii")
+    (tmp_path / "encoded.txt").write_bytes(base64.b64encode(secret) + b"\n")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "encoded.txt"],
+        check=True,
+        shell=False,
+    )
+
+    assert tracked_secret_findings(tmp_path) == (("encoded.txt", "github-token"),)
+
+
+def test_tracked_secret_scan_detects_url_encoded_credentials(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, shell=False)
+    secret = "123456:" + "A" * 32
+    (tmp_path / "encoded.txt").write_text(quote(secret, safe="") + "\n", encoding="ascii")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "encoded.txt"],
+        check=True,
+        shell=False,
+    )
+
+    assert tracked_secret_findings(tmp_path) == (("encoded.txt", "telegram-bot-token"),)

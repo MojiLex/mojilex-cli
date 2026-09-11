@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/compression-profile-contract.schema.json",
+  "title": "MojiLex compression profile body contract v1",
+  "type": "object",
+  "required": [
+    "default_compression",
+    "entries"
+  ],
+  "properties": {
+    "default_compression": {
+      "const": "none"
+    },
+    "entries": {
+      "const": [
+        {
+          "compression_profile_id": "none",
+          "compression": "none"
+        },
+        {
+          "compression_profile_id": "zstd-v1",
+          "compression": "zstd",
+          "encoder": "zstandard",
+          "encoder_version": "1.5",
+          "level": 9,
+          "threads": 1,
+          "content_size": true,
+          "frame_checksum": true,
+          "dictionary": {
+            "present": false
+          },
+          "maximum_window_bytes": 134217728
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

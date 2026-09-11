@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/lexical-search-profile-contract.schema.json",
+  "title": "MojiLex lexical-search profile body contract v1",
+  "type": "object",
+  "required": [
+    "query_normalization",
+    "case_folding",
+    "whitespace_policy",
+    "token_boundary_policy",
+    "fields",
+    "match_rules",
+    "match_scores",
+    "match_priority",
+    "tie_break",
+    "stop_word_policy",
+    "stemming_policy",
+    "ai_translation",
+    "embeddings"
+  ],
+  "properties": {
+    "query_normalization": {
+      "const": "NFKC"
+    },
+    "case_folding": {
+      "const": "locale-aware"
+    },
+    "whitespace_policy": {
+      "const": "collapse"
+    },
+    "token_boundary_policy": {
+      "const": "unicode-punctuation-v1"
+    },
+    "fields": {
+      "const": [
+        {
+          "field": "description.text",
+          "weight": 100
+        },
+        {
+          "field": "description.motion",
+          "weight": 60
+        },
+        {
+          "field": "description.usage",
+          "weight": 80
+        },
+        {
+          "field": "semantic.concept_ids",
+          "weight": 120
+        },
+        {
+          "field": "semantic.semantic_tags",
+          "weight": 90
+        },
+        {
+          "field": "literal_text.value",
+          "weight": 110
+        }
+      ]
+    },
+    "match_rules": {
+      "const": {
+        "field_evaluation": "best-tier-per-field-v1",
+        "exact": "normalized-full-value-v1",
+        "phrase": "normalized-contiguous-substring-v1",
+        "prefix": "normalized-token-prefix-v1",
+        "token": "normalized-token-equality-v1",
+        "concept_alias": "normalized-full-value-v1"
+      }
+    },
+    "match_scores": {
+      "const": {
+        "exact_mojilex_id": 1000000,
+        "exact_native_reference": 900000,
+        "exact_concept_id": 800000,
+        "field_exact_multiplier": 400,
+        "field_phrase_multiplier": 300,
+        "field_prefix_multiplier": 200,
+        "field_token_multiplier": 100,
+        "concept_alias_bonus_multiplier": 1
+      }
+    },
+    "match_priority": {
+      "const": [
+        "exact-mojilex-id",
+        "exact-native-reference",
+        "exact-concept-id",
+        "exact-phrase",
+        "prefix",
+        "token",
+        "concept-alias"
+      ]
+    },
+    "tie_break": {
+      "const": "emoji-id-utf8-bytewise-ascending"
+    },
+    "stop_word_policy": {
+      "const": "none"
+    },
+    "stemming_policy": {
+      "const": "none"
+    },
+    "ai_translation": {
+      "const": "forbidden"
+    },
+    "embeddings": {
+      "const": false
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

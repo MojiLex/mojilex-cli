@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/taxonomy-source.schema.json",
+  "title": "MojiLex facet taxonomy source assembly v1",
+  "type": "object",
+  "required": ["taxonomy_version", "status", "registries"],
+  "properties": {
+    "taxonomy_version": {"const": "1.0.0"},
+    "status": {"const": "active"},
+    "registries": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["dictionary_id", "path", "sha256"],
+        "properties": {
+          "dictionary_id": {
+            "enum": ["color_families", "content_types", "platform_contexts", "styles", "suggested_uses", "uncertainties"]
+          },
+          "path": {
+            "enum": ["color-families.json", "content-types.json", "platform-contexts.json", "styles.json", "suggested-uses.json", "uncertainties.json"]
+          },
+          "sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+        },
+        "allOf": [
+          {"if": {"properties": {"dictionary_id": {"const": "color_families"}}}, "then": {"properties": {"path": {"const": "color-families.json"}}}},
+          {"if": {"properties": {"dictionary_id": {"const": "content_types"}}}, "then": {"properties": {"path": {"const": "content-types.json"}}}},
+          {"if": {"properties": {"dictionary_id": {"const": "platform_contexts"}}}, "then": {"properties": {"path": {"const": "platform-contexts.json"}}}},
+          {"if": {"properties": {"dictionary_id": {"const": "styles"}}}, "then": {"properties": {"path": {"const": "styles.json"}}}},
+          {"if": {"properties": {"dictionary_id": {"const": "suggested_uses"}}}, "then": {"properties": {"path": {"const": "suggested-uses.json"}}}},
+          {"if": {"properties": {"dictionary_id": {"const": "uncertainties"}}}, "then": {"properties": {"path": {"const": "uncertainties.json"}}}}
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

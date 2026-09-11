@@ -401,6 +401,8 @@ def _emoji(
         fingerprints=analysis.fingerprints.model_copy(deep=True),
         descriptions=localized,
         facets=facets,
+        concept_ids=[],
+        concept_mapping_status="pending",
         semantic_tags=sorted(description.semantic_tags),
         content=Content(
             rating=description.content.rating,

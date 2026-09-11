@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/artifact-descriptor.schema.json",
+  "title": "MojiLex release artifact descriptor v1",
+  "type": "object",
+  "required": [
+    "logical_name", "semantic_role", "content_model", "path", "media_type", "schema_ref",
+    "compression", "payload_sha256", "object_sha256", "uncompressed_byte_size", "object_byte_size"
+  ],
+  "properties": {
+    "logical_name": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+    "semantic_role": {"enum": ["canonical", "normative", "derived"]},
+    "content_model": {"enum": ["recordset-jsonl", "singleton-json", "sqlite", "parquet"]},
+    "path": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/safePath"},
+    "media_type": {"type": "string", "minLength": 1, "maxLength": 127},
+    "schema_ref": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absoluteSchemaRef"},
+    "compression": {"enum": ["none", "zstd"]},
+    "compression_profile": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+    "payload_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "object_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "uncompressed_byte_size": {"type": "integer", "minimum": 0},
+    "object_byte_size": {"type": "integer", "minimum": 0},
+    "record_count": {"type": "integer", "minimum": 0},
+    "logical_record_count": {"type": "integer", "minimum": 0},
+    "primary_key": {"$ref": "#/$defs/pointers"},
+    "routing_key": {"$ref": "#/$defs/pointers"},
+    "sort_key": {"$ref": "#/$defs/pointers"},
+    "table_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "partition": {"$ref": "#/$defs/partition"},
+    "index_metadata": {
+      "type": "object",
+      "required": ["index_profile_id", "index_kind"],
+      "properties": {
+        "index_profile_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "index_kind": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"}
+      },
+      "additionalProperties": false
+    },
+    "format_profile_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+    "format_profile_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "content_schema_refs": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absoluteSchemaRef"}
+    },
+    "derived_from": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/derivedFrom"},
+    "bundle_id": {"type": "string", "pattern": "^bundle-[0-9]{4}$"},
+    "required_reader_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"semantic_role": {"const": "derived"}}, "required": ["semantic_role"]},
+      "then": {"required": ["derived_from"]},
+      "else": {"not": {"required": ["derived_from"]}}
+    },
+    {
+      "if": {"properties": {"compression": {"const": "zstd"}}, "required": ["compression"]},
+      "then": {"required": ["compression_profile"]},
+      "else": {"not": {"required": ["compression_profile"]}}
+    },
+    {
+      "if": {"properties": {"content_model": {"const": "recordset-jsonl"}}, "required": ["content_model"]},
+      "then": {
+        "required": ["record_count", "logical_record_count", "primary_key", "sort_key", "table_root_sha256"],
+        "properties": {"media_type": {"const": "application/x-ndjson"}},
+        "not": {"anyOf": [{"required": ["format_profile_id"]}, {"required": ["format_profile_sha256"]}, {"required": ["content_schema_refs"]}]}
+      },
+      "else": {
+        "not": {"anyOf": [
+          {"required": ["record_count"]}, {"required": ["logical_record_count"]}, {"required": ["primary_key"]},
+          {"required": ["routing_key"]}, {"required": ["sort_key"]}, {"required": ["table_root_sha256"]},
+          {"required": ["partition"]}, {"required": ["index_metadata"]}
+        ]}
+      }
+    },
+    {
+      "if": {"properties": {"content_model": {"const": "singleton-json"}}, "required": ["content_model"]},
+      "then": {
+        "properties": {"media_type": {"enum": ["application/json", "application/schema+json"]}},
+        "not": {"anyOf": [{"required": ["format_profile_id"]}, {"required": ["format_profile_sha256"]}, {"required": ["content_schema_refs"]}]}
+      }
+    },
+    {
+      "if": {"properties": {"content_model": {"enum": ["sqlite", "parquet"]}}, "required": ["content_model"]},
+      "then": {
+        "required": ["format_profile_id", "format_profile_sha256", "content_schema_refs"],
+        "properties": {"semantic_role": {"const": "derived"}}
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "pointers": {
+      "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/jsonPointer"}
+    },
+    "partition": {
+      "type": "object",
+      "required": ["algorithm", "partition_scheme_id", "partition_count", "partition_index", "prefix_bits", "prefix_hex", "part_index", "key_field", "first_sort_key", "last_sort_key"],
+      "properties": {
+        "algorithm": {"const": "sha256-jcs-routing-msb"},
+        "partition_scheme_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "partition_count": {"type": "integer", "minimum": 2, "maximum": 65536},
+        "partition_index": {"type": "integer", "minimum": 0},
+        "prefix_bits": {"type": "integer", "minimum": 1, "maximum": 16},
+        "prefix_hex": {"type": "string", "pattern": "^[0-9a-f]{1,4}$"},
+        "part_index": {"type": "integer", "minimum": 0},
+        "key_field": {"$ref": "#/$defs/pointers"},
+        "first_sort_key": {"type": "array", "minItems": 1, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/recordKeyComponent"}},
+        "last_sort_key": {"type": "array", "minItems": 1, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/recordKeyComponent"}}
+      },
+      "additionalProperties": false
+    }
+  }
+}

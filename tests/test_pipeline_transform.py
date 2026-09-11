@@ -185,6 +185,7 @@ def test_deterministic_rendering_change_resets_review_but_protects_semantic_face
         reviewed_at="2026-09-11T17:00:00Z",
         reviewer="reviewer",
         reviewed_content_sha256=reviewed_content_sha256(existing),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     source = _source(snapshot)
     native_id = source.items[0].native_id

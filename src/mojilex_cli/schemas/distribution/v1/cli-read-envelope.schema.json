@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-read-envelope.schema.json",
+  "title": "MojiLex CLI read envelope v1",
+  "type": "object",
+  "required": ["schema_version", "ok", "command", "status", "run_id", "warnings", "errors"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "ok": {"type": "boolean"},
+    "command": {"enum": ["snapshots", "snapshot-pull", "snapshot-verify", "snapshot-update", "search", "get", "get-collection", "resolve", "similar"]},
+    "status": {"enum": ["succeeded", "noop", "dry_run", "stale", "partial", "failed", "interrupted", "budget_exceeded"]},
+    "run_id": {"type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"},
+    "dataset": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/datasetContext"},
+    "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json"},
+    "warnings": {"type": "array", "maxItems": 128, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/warning"}},
+    "errors": {"type": "array", "maxItems": 128, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/error"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"enum": ["succeeded", "noop", "dry_run"]}}, "required": ["status"]},
+      "then": {"required": ["result"], "properties": {"ok": {"const": true}, "errors": {"maxItems": 0}}},
+      "else": {"properties": {"ok": {"const": false}, "errors": {"minItems": 1}}}
+    },
+    {
+      "oneOf": [
+        {"properties": {"command": {"const": "snapshots"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/snapshots"}}, "required": ["command"], "not": {"required": ["dataset"]}},
+        {"properties": {"command": {"const": "snapshot-pull"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/snapshotPull"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "snapshot-verify"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/snapshotVerify"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "snapshot-update"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/snapshotUpdate"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "search"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/search"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "get"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/get"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "get-collection"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/getCollection"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "resolve"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/resolve"}}, "required": ["command"]},
+        {"properties": {"command": {"const": "similar"}, "result": {"$ref": "mlx://schemas/distribution/v1/cli-command-result.schema.json#/$defs/similar"}}, "required": ["command"]}
+      ]
+    },
+    {
+      "if": {"properties": {"command": {"enum": ["search", "get", "get-collection", "resolve", "similar", "snapshot-verify"]}}, "required": ["command"]},
+      "then": {"required": ["dataset"]}
+    }
+  ],
+  "additionalProperties": false
+}

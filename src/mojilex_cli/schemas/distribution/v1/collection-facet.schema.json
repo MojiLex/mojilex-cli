@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/collection-facet.schema.json",
+  "title": "MojiLex collection facet aggregate v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "collection_id",
+    "source_memberships_table_root_sha256",
+    "collection_dedupe_profile_id",
+    "active_memberships",
+    "media_kind_counts",
+    "adaptive_share_bp",
+    "fixed_share_bp",
+    "content_type_counts",
+    "style_counts",
+    "recognized_text_count",
+    "number_count",
+    "color_family_counts",
+    "suggested_use_counts",
+    "exact_duplicate_group_count",
+    "reviewed_visual_duplicate_group_count"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "collection_id": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/collectionId"
+    },
+    "source_memberships_table_root_sha256": {
+      "$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"
+    },
+    "collection_dedupe_profile_id": {"const": "collection-dedupe-v1"},
+    "active_memberships": {"$ref": "#/$defs/count"},
+    "media_kind_counts": {"$ref": "#/$defs/countMap"},
+    "adaptive_share_bp": {"$ref": "#/$defs/basisPoints"},
+    "fixed_share_bp": {"$ref": "#/$defs/basisPoints"},
+    "content_type_counts": {"$ref": "#/$defs/countMap"},
+    "style_counts": {"$ref": "#/$defs/countMap"},
+    "recognized_text_count": {"$ref": "#/$defs/count"},
+    "number_count": {"$ref": "#/$defs/count"},
+    "color_family_counts": {"$ref": "#/$defs/countMap"},
+    "suggested_use_counts": {"$ref": "#/$defs/countMap"},
+    "exact_duplicate_group_count": {"$ref": "#/$defs/count"},
+    "reviewed_visual_duplicate_group_count": {"$ref": "#/$defs/count"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "basisPoints": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "countMap": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+      "additionalProperties": {"$ref": "#/$defs/count"}
+    }
+  }
+}

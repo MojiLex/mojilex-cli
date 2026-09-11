@@ -1,0 +1,616 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mojilex.org/v1/facets.schema.json",
+  "title": "MojiLex facets v1",
+  "type": "object",
+  "required": [
+    "taxonomy_version",
+    "rendering",
+    "text_content",
+    "content_types",
+    "styles",
+    "suggested_uses",
+    "uncertainties"
+  ],
+  "properties": {
+    "taxonomy_version": {
+      "const": "1.0.0"
+    },
+    "rendering": {
+      "type": "object",
+      "required": [
+        "profile",
+        "items"
+      ],
+      "properties": {
+        "profile": {
+          "const": "color-v1"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/renderingItem"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "text_content": {
+      "$ref": "#/$defs/textContent"
+    },
+    "content_types": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "reaction",
+          "character",
+          "person",
+          "animal",
+          "body-part",
+          "object",
+          "food-drink",
+          "plant",
+          "nature",
+          "activity",
+          "place",
+          "vehicle",
+          "flag",
+          "symbol",
+          "technical-icon",
+          "text",
+          "ui-icon",
+          "number",
+          "logo",
+          "scene",
+          "pattern",
+          "abstract"
+        ]
+      }
+    },
+    "styles": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "flat",
+          "three-dimensional",
+          "pixel-art",
+          "hand-drawn",
+          "photorealistic",
+          "cartoon",
+          "anime",
+          "minimal",
+          "detailed",
+          "outline",
+          "solid",
+          "gradient",
+          "neon",
+          "sticker-like",
+          "ornamental"
+        ]
+      }
+    },
+    "suggested_uses": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "bot-interface",
+          "app-interface",
+          "navigation",
+          "button-icon",
+          "status",
+          "profile-avatar",
+          "profile-background",
+          "topic-icon",
+          "badge",
+          "counter",
+          "label",
+          "notification",
+          "message-accent",
+          "decoration",
+          "branding"
+        ]
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "text",
+          "content-type",
+          "style",
+          "suggested-use",
+          "cultural-reference",
+          "character-or-brand",
+          "motion"
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "text_content": {
+            "properties": {
+              "status": {
+                "not": {
+                  "const": "none"
+                }
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content_types": {
+            "contains": {
+              "const": "text"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "text_content": {
+            "properties": {
+              "items": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "number"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content_types": {
+            "contains": {
+              "const": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "text_content": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "partially-recognized",
+                  "unreadable"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "uncertainties": {
+            "contains": {
+              "const": "text"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "mediaReference": {
+      "type": "object",
+      "required": [
+        "role"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "primary",
+            "light",
+            "dark",
+            "alternate"
+          ]
+        },
+        "variant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dominantColor": {
+      "type": "object",
+      "required": [
+        "hex",
+        "family",
+        "coverage_bp"
+      ],
+      "properties": {
+        "hex": {
+          "type": "string",
+          "pattern": "^#[0-9a-f]{6}$"
+        },
+        "family": {
+          "enum": [
+            "black",
+            "white",
+            "gray",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "pink",
+            "brown",
+            "beige"
+          ]
+        },
+        "coverage_bp": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "renderingItem": {
+      "type": "object",
+      "required": [
+        "role",
+        "color_behavior",
+        "palette_dynamics",
+        "alpha_mode",
+        "visible_area_bp"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/mediaReference/properties/role"
+        },
+        "variant_id": {
+          "$ref": "#/$defs/mediaReference/properties/variant_id"
+        },
+        "color_behavior": {
+          "enum": [
+            "fixed",
+            "platform-adaptive",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "palette_dynamics": {
+          "enum": [
+            "stable",
+            "changing",
+            "unknown"
+          ]
+        },
+        "alpha_mode": {
+          "enum": [
+            "opaque",
+            "binary",
+            "translucent",
+            "unknown"
+          ]
+        },
+        "visible_area_bp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "dominant_colors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/$defs/dominantColor"
+          }
+        },
+        "adaptive_mask_source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+        },
+        "adaptive_mask_sha256": {
+          "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "color_behavior": {
+                "const": "platform-adaptive"
+              }
+            },
+            "required": [
+              "color_behavior"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "dominant_colors"
+                  ]
+                },
+                {
+                  "required": [
+                    "adaptive_mask_source"
+                  ]
+                },
+                {
+                  "required": [
+                    "adaptive_mask_sha256"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "color_behavior": {
+                "not": {
+                  "const": "mixed"
+                }
+              }
+            },
+            "required": [
+              "color_behavior"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "adaptive_mask_source"
+                  ]
+                },
+                {
+                  "required": [
+                    "adaptive_mask_sha256"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "color_behavior": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "color_behavior"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "dominant_colors"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "color_behavior": {
+                "enum": [
+                  "fixed",
+                  "mixed"
+                ]
+              },
+              "visible_area_bp": {
+                "minimum": 1
+              }
+            },
+            "required": [
+              "color_behavior",
+              "visible_area_bp"
+            ]
+          },
+          "then": {
+            "required": [
+              "dominant_colors"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "visible_area_bp": {
+                "const": 0
+              }
+            },
+            "required": [
+              "visible_area_bp"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "dominant_colors"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "color_behavior": {
+                "const": "mixed"
+              }
+            },
+            "required": [
+              "color_behavior"
+            ]
+          },
+          "then": {
+            "required": [
+              "adaptive_mask_source",
+              "adaptive_mask_sha256"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "textItem": {
+      "type": "object",
+      "required": [
+        "value",
+        "kind",
+        "script",
+        "temporal_scope",
+        "media_refs"
+      ],
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+        },
+        "kind": {
+          "enum": [
+            "letter",
+            "number",
+            "word",
+            "phrase",
+            "punctuation",
+            "code",
+            "symbol",
+            "other"
+          ]
+        },
+        "script": {
+          "type": "string",
+          "pattern": "^[A-Z][a-z]{3}$"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^(?:und|[A-Za-z]{2,3})(?:-[A-Za-z0-9]{2,8})*$"
+        },
+        "temporal_scope": {
+          "enum": [
+            "persistent",
+            "transient",
+            "unknown"
+          ]
+        },
+        "media_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mediaReference"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "textContent": {
+      "type": "object",
+      "required": [
+        "status",
+        "dynamics",
+        "items"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "none",
+            "recognized",
+            "partially-recognized",
+            "unreadable"
+          ]
+        },
+        "dynamics": {
+          "enum": [
+            "stable",
+            "changing",
+            "unknown"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textItem"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "none",
+                  "unreadable"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "items": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "items": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

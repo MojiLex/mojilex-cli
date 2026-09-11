@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/resource-descriptor.schema.json",
+  "title": "MojiLex offline resource descriptor v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["uri", "resource_kind", "source_path", "path", "media_type", "compression", "payload_sha256", "object_sha256", "uncompressed_byte_size", "object_byte_size", "bindings"],
+      "properties": {
+        "uri": {"type": "string", "pattern": "^(?:mlx|https)://[^\\s]+$", "maxLength": 1024},
+        "resource_kind": {"const": "physical"},
+        "source_path": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/safePath"},
+        "path": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/safePath"},
+        "media_type": {"type": "string", "minLength": 1, "maxLength": 127},
+        "compression": {"enum": ["none", "zstd"]},
+        "compression_profile": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "payload_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "object_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "uncompressed_byte_size": {"type": "integer", "minimum": 0},
+        "object_byte_size": {"type": "integer", "minimum": 0},
+        "bundle_id": {"type": "string", "pattern": "^bundle-[0-9]{4}$"},
+        "content_schema_ref": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absoluteSchemaRef"},
+        "bindings": {"$ref": "#/$defs/bindings"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"compression": {"const": "zstd"}}, "required": ["compression"]},
+          "then": {"required": ["compression_profile"]},
+          "else": {"not": {"required": ["compression_profile"]}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["uri", "resource_kind", "artifact_logical_name", "payload_sha256", "bindings"],
+      "properties": {
+        "uri": {"type": "string", "pattern": "^mlx://[^\\s]+$", "maxLength": 1024},
+        "resource_kind": {"const": "artifact-alias"},
+        "artifact_logical_name": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "payload_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "bindings": {"$ref": "#/$defs/bindings"}
+      },
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "bindings": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object", "required": ["kind", "manifest_pointer"],
+            "properties": {"kind": {"const": "exact-content"}, "manifest_pointer": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/jsonPointer"}},
+            "additionalProperties": false
+          },
+          {
+            "type": "object", "required": ["kind", "manifest_pointer"],
+            "properties": {"kind": {"const": "aggregate-member"}, "manifest_pointer": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/jsonPointer"}},
+            "additionalProperties": false
+          },
+          {
+            "type": "object", "required": ["kind", "manifest_pointer"],
+            "properties": {"kind": {"const": "source-bundle-member"}, "manifest_pointer": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/jsonPointer"}},
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  }
+}

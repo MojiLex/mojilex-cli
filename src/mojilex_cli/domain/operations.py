@@ -108,6 +108,7 @@ def review_emoji(
         reviewed_at=reviewed_at or utc_now(),
         reviewer=reviewer,
         reviewed_content_sha256=reviewed_content_sha256(emoji),
+        review_hash_profile_id="semantic-review-content-v3",
     )
     return OperationResult(
         target_id,

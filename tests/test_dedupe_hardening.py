@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 import rfc8785
 
+from mojilex_cli.analysis import load_analysis_profile
 from mojilex_cli.commands.dedupe import (
     _PERSISTED_RELATION_SIGNALS,
     _apply_review_relation,
@@ -149,7 +150,10 @@ def test_oversized_noninformative_hash_buckets_have_bounded_comparisons(tmp_path
     snapshot.emojis.clear()
     snapshot.emojis[original.id] = original
     _set_static_fingerprint(snapshot, original, seed="overflow-0", phash=0)
-    for index in range(1, 520):
+    posting_cap = int(
+        load_analysis_profile("dedupe-v1").data["oversized_bucket_policy"]["posting_bucket_cap"]
+    )
+    for index in range(1, posting_cap + 8):
         emoji = _clone(snapshot, str(7_000_000_000_000_000_000 + index))
         _set_static_fingerprint(
             snapshot,

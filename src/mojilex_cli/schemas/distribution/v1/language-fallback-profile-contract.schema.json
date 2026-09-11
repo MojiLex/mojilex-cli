@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/language-fallback-profile-contract.schema.json",
+  "title": "MojiLex language-fallback profile body contract v1",
+  "type": "object",
+  "required": [
+    "lookup_algorithm",
+    "chains",
+    "machine_translation"
+  ],
+  "properties": {
+    "lookup_algorithm": {
+      "const": "rfc4647-lookup"
+    },
+    "chains": {
+      "const": {
+        "en": [
+          "en"
+        ],
+        "ru": [
+          "ru",
+          "en"
+        ]
+      }
+    },
+    "machine_translation": {
+      "const": "forbidden"
+    }
+  },
+  "additionalProperties": false,
+  "unevaluatedProperties": false
+}

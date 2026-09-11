@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/cli-similar-item.schema.json",
+  "title": "MojiLex CLI similar result item v1",
+  "type": "object",
+  "required": ["record", "runtime_trust", "similarity"],
+  "properties": {
+    "record": {
+      "oneOf": [
+        {"$ref": "https://schemas.mojilex.org/v1/emoji.schema.json"},
+        {"$ref": "mlx://schemas/distribution/v1/search-record.schema.json"},
+        {"$ref": "mlx://schemas/distribution/v1/agent-record.schema.json"}
+      ]
+    },
+    "runtime_trust": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/runtimeTrust"},
+    "similarity": {
+      "type": "object",
+      "required": ["match_type", "match_rank", "group_id", "relation_id", "evidence_profile_id", "evidence_profile_sha256", "relation_review"],
+      "properties": {
+        "match_type": {"enum": ["binary-exact", "decoded-exact", "reviewed-same-artwork", "same-artwork", "variant-of", "related-series", "candidate"]},
+        "match_rank": {"enum": [10, 20, 30, 40, 50, 60, 90]},
+        "group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"},
+        "relation_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"},
+        "evidence_profile_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "evidence_profile_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "relation_review": {
+          "type": "object",
+          "required": ["review_attestation_id", "status"],
+          "properties": {
+            "review_attestation_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/stringOptionalComponent"},
+            "status": {"enum": ["valid", "legacy-unattested", "unverified", "revoked", "conflict", "not-applicable"]}
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"match_type": {"enum": ["binary-exact", "decoded-exact", "reviewed-same-artwork"]}}, "required": ["match_type"]},
+          "then": {"properties": {"group_id": {"properties": {"present": {"const": true}}}, "relation_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}}},
+          "else": {"properties": {"group_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/absentComponent"}, "relation_id": {"properties": {"present": {"const": true}}}}}
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

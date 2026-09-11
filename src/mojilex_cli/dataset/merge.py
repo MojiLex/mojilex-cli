@@ -86,6 +86,13 @@ def merge_emoji(
         or existing.provenance.origin.value in {"human", "mixed"}
     )
     if same_media and protected and not overwrite_reviewed:
+        merged = merged.model_copy(
+            deep=True,
+            update={
+                "concept_ids": list(existing.concept_ids),
+                "concept_mapping_status": existing.concept_mapping_status,
+            },
+        )
         merged.descriptions = deepcopy(existing.descriptions)
         merged.facets = existing.facets.model_copy(deep=True)
         merged.semantic_tags = list(existing.semantic_tags)

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/delegated-profile.schema.json",
+  "title": "MojiLex delegated deterministic profile wrapper v1",
+  "type": "object",
+  "required": [
+    "profile_schema_version",
+    "profile_type",
+    "profile_id",
+    "contract_schema_ref",
+    "contract_schema_sha256",
+    "body"
+  ],
+  "properties": {
+    "profile_schema_version": {
+      "const": "1.0.0"
+    },
+    "profile_type": {
+      "enum": [
+        "distribution",
+        "key-serialization",
+        "partitioning",
+        "compression",
+        "part-packing",
+        "bundling",
+        "lexical-search",
+        "language-fallback",
+        "language-canonicalization",
+        "color",
+        "dedupe",
+        "collection-dedupe",
+        "scale-index"
+      ]
+    },
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "contract_schema_ref": {
+      "type": "string",
+      "pattern": "^mlx://schemas/distribution/v1/[a-z0-9]+(?:-[a-z0-9]+)*-profile-contract\\.schema\\.json$"
+    },
+    "contract_schema_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "body": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

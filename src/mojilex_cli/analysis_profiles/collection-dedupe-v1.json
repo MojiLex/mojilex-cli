@@ -1,18 +1,1 @@
-{
-  "profile_id": "collection-dedupe-v1",
-  "profile_version": "1.0.0",
-  "matching": {
-    "algorithm": "maximum-cardinality-one-to-one",
-    "allowed_signals": ["binary-entity-exact", "decoded-entity-exact", "reviewed-same-artwork"],
-    "excluded_relations": ["variant-of"]
-  },
-  "clone_candidate": {
-    "minimum_each_coverage": "0.90",
-    "minimum_matches": 8
-  },
-  "subset_candidate": {
-    "minimum_smaller_coverage": "0.90",
-    "maximum_larger_coverage_exclusive": "0.80",
-    "minimum_matches": 8
-  }
-}
+{"body":{"candidate_generation":{"algorithm":"inverted-duplicate-group-index-v1","hot_group_member_collection_cap":4096,"hot_group_policy":"suppress","minimum_shared_informative_groups":2},"clone_candidate":{"minimum_each_coverage":"0.90","minimum_matches":8},"matching":{"algorithm":"maximum-cardinality-one-to-one","allowed_signals":["binary-entity-exact","decoded-entity-exact","reviewed-same-artwork"],"excluded_relations":["variant-of"]},"subset_candidate":{"maximum_larger_coverage_exclusive":"0.80","minimum_matches":8,"minimum_smaller_coverage":"0.90"}},"contract_schema_ref":"mlx://schemas/distribution/v1/collection-dedupe-profile-contract.schema.json","contract_schema_sha256":"d223f0f0b68d487fe7d2b33a6dec5a8850249d25df9d17276e868dea2a2e645d","profile_id":"collection-dedupe-v1","profile_schema_version":"1.0.0","profile_type":"collection-dedupe"}

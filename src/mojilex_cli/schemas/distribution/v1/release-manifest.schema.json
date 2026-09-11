@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mlx://schemas/distribution/v1/release-manifest.schema.json",
+  "title": "MojiLex release manifest v1",
+  "type": "object",
+  "required": [
+    "manifest_version", "dataset", "snapshot_id", "schema_version", "layout_profile",
+    "trust_stage", "minimum_reader_version", "required_features", "git", "languages",
+    "profiles", "policies", "migrations", "storage", "artifacts", "resources", "bundles",
+    "counts", "canonical_state_root_sha256", "derived_views_root_sha256",
+    "artifact_set_sha256", "build"
+  ],
+  "properties": {
+    "manifest_version": {"const": "1.0.0"},
+    "dataset": {"const": "mojilex"},
+    "snapshot_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+    "schema_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+    "layout_profile": {"enum": ["monolith-v1", "partitioned-v1"]},
+    "trust_stage": {"enum": ["pre-enforcement", "signed-v1"]},
+    "minimum_reader_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+    "required_features": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"}
+    },
+    "git": {"$ref": "#/$defs/git"},
+    "languages": {"$ref": "#/$defs/languages"},
+    "profiles": {"$ref": "#/$defs/profiles"},
+    "policies": {"$ref": "#/$defs/policies"},
+    "previous_snapshot": {"$ref": "#/$defs/previousSnapshot"},
+    "migrations": {"type": "array", "maxItems": 0},
+    "storage": {"$ref": "#/$defs/storage"},
+    "artifacts": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/artifact-descriptor.schema.json"}
+    },
+    "resources": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/resource-descriptor.schema.json"}
+    },
+    "bundles": {
+      "type": "array", "uniqueItems": true,
+      "items": {"$ref": "mlx://schemas/distribution/v1/bundle-descriptor.schema.json"}
+    },
+    "counts": {"$ref": "#/$defs/counts"},
+    "canonical_state_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "derived_views_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "artifact_set_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+    "build": {"$ref": "#/$defs/build"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "selector": {
+      "type": "object",
+      "required": ["id", "root_scope", "sha256"],
+      "properties": {
+        "id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "root_scope": {"enum": ["canonical", "derived", "none"]},
+        "sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "sourceSelector": {
+      "type": "object",
+      "required": ["id", "root_scope", "sha256", "source_bundle_sha256"],
+      "properties": {
+        "id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/identifier"},
+        "root_scope": {"enum": ["canonical", "derived", "none"]},
+        "sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "source_bundle_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "profiles": {
+      "type": "object",
+      "required": [
+        "canonical_schemas", "derived_schemas", "transport_schemas", "distribution",
+        "key_serialization", "partitioning", "compression", "part_packing", "bundling",
+        "taxonomy", "concepts", "concept_candidates", "color", "dedupe", "collection_dedupe",
+        "lexical_search", "language_fallback", "language_canonicalization"
+      ],
+      "properties": {
+        "canonical_schemas": {"$ref": "#/$defs/selector"},
+        "derived_schemas": {"$ref": "#/$defs/selector"},
+        "transport_schemas": {"$ref": "#/$defs/selector"},
+        "distribution": {"$ref": "#/$defs/selector"},
+        "key_serialization": {"$ref": "#/$defs/selector"},
+        "partitioning": {"$ref": "#/$defs/selector"},
+        "compression": {"$ref": "#/$defs/selector"},
+        "part_packing": {"$ref": "#/$defs/selector"},
+        "bundling": {"$ref": "#/$defs/selector"},
+        "taxonomy": {"$ref": "#/$defs/sourceSelector"},
+        "concepts": {"$ref": "#/$defs/selector"},
+        "concept_candidates": {"$ref": "#/$defs/selector"},
+        "color": {"$ref": "#/$defs/selector"},
+        "dedupe": {"$ref": "#/$defs/selector"},
+        "collection_dedupe": {"$ref": "#/$defs/selector"},
+        "lexical_search": {"$ref": "#/$defs/selector"},
+        "language_fallback": {"$ref": "#/$defs/selector"},
+        "language_canonicalization": {"$ref": "#/$defs/selector"}
+      },
+      "additionalProperties": false
+    },
+    "policies": {
+      "type": "object",
+      "required": ["platform_profiles", "rights_profiles"],
+      "properties": {
+        "platform_profiles": {"$ref": "#/$defs/sourceSelector"},
+        "rights_profiles": {"$ref": "#/$defs/selector"}
+      },
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "required": ["repository", "commit", "object_format"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 512},
+        "commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "object_format": {"enum": ["sha1", "sha256"]}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["described", "total"],
+      "properties": {
+        "described": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "languages": {
+      "type": "object",
+      "required": ["required", "available", "localization_layout", "canonicalization_profile", "fallback_profile", "coverage"],
+      "properties": {
+        "required": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}},
+        "available": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}},
+        "localization_layout": {"const": "inline-v1"},
+        "canonicalization_profile": {"const": "bcp47-v1"},
+        "fallback_profile": {"const": "language-fallback-v1"},
+        "coverage": {
+          "type": "object", "minProperties": 2,
+          "additionalProperties": {"$ref": "#/$defs/coverage"},
+          "propertyNames": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/languageTag"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "storage": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {"mode": {"const": "git-native"}},
+      "additionalProperties": false
+    },
+    "previousSnapshot": {
+      "type": "object",
+      "required": ["snapshot_id", "manifest_sha256"],
+      "properties": {
+        "snapshot_id": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/snapshotId"},
+        "manifest_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "availabilityStatusHistogram": {
+      "type": "object",
+      "required": ["active", "unavailable", "private", "deleted", "unknown"],
+      "properties": {
+        "active": {"type": "integer", "minimum": 0},
+        "unavailable": {"type": "integer", "minimum": 0},
+        "private": {"type": "integer", "minimum": 0},
+        "deleted": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "reviewStatusHistogram": {
+      "type": "object",
+      "required": ["unreviewed", "approved", "changes_requested", "rejected"],
+      "properties": {
+        "unreviewed": {"type": "integer", "minimum": 0},
+        "approved": {"type": "integer", "minimum": 0},
+        "changes_requested": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "membershipStatusHistogram": {
+      "type": "object",
+      "required": ["active", "removed_from_collection", "unknown"],
+      "properties": {
+        "active": {"type": "integer", "minimum": 0},
+        "removed_from_collection": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "required": ["collections", "emojis", "active_emojis", "memberships", "tombstones", "availability_by_status", "emoji_review_by_status", "memberships_by_status"],
+      "properties": {
+        "collections": {"type": "integer", "minimum": 0},
+        "emojis": {"type": "integer", "minimum": 0},
+        "active_emojis": {"type": "integer", "minimum": 0},
+        "memberships": {"type": "integer", "minimum": 0},
+        "tombstones": {"type": "integer", "minimum": 0},
+        "availability_by_status": {
+          "type": "object", "required": ["collections", "emojis"],
+          "properties": {"collections": {"$ref": "#/$defs/availabilityStatusHistogram"}, "emojis": {"$ref": "#/$defs/availabilityStatusHistogram"}},
+          "additionalProperties": false
+        },
+        "emoji_review_by_status": {"$ref": "#/$defs/reviewStatusHistogram"},
+        "memberships_by_status": {"$ref": "#/$defs/membershipStatusHistogram"}
+      },
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "object",
+      "required": ["distribution_profile", "layout_profile", "storage_mode", "compression_profile", "part_packing_profile", "bundle_mode", "bundle_profile", "partition_overrides"],
+      "properties": {
+        "distribution_profile": {"const": "distribution-v1"},
+        "layout_profile": {"enum": ["monolith-v1", "partitioned-v1"]},
+        "storage_mode": {"const": "git-native"},
+        "compression_profile": {"enum": ["none", "zstd-v1"]},
+        "part_packing_profile": {"const": "part-packing-v1"},
+        "bundle_mode": {"enum": ["none", "tar-zstd"]},
+        "bundle_profile": {"const": "tar-zstd-bundle-v1"},
+        "partition_overrides": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 2, "maximum": 65536}}
+      },
+      "additionalProperties": false
+    },
+    "build": {
+      "type": "object",
+      "required": ["tool", "tool_version", "tool_repository", "tool_commit", "dependency_lock_sha256", "distribution_profile", "parameters", "parameters_sha256", "evidence_inputs_root_sha256", "migration_inputs_root_sha256", "build_input_profile_id", "build_inputs_sha256", "source_date_epoch"],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1, "maxLength": 64},
+        "tool_version": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/semver"},
+        "tool_repository": {"type": "string", "pattern": "^https://[^\\s]+$", "maxLength": 512},
+        "tool_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "dependency_lock_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "distribution_profile": {"const": "distribution-v1"},
+        "parameters": {"$ref": "#/$defs/parameters"},
+        "parameters_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "evidence_inputs_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "migration_inputs_root_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "build_input_profile_id": {"const": "release-build-input-v1"},
+        "build_inputs_sha256": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/sha256"},
+        "source_date_epoch": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  }
+}
