@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "mojilex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check --upgrade "pip>=26.2,<27"
+      - run: python -m pip install --disable-pip-version-check ".[dev]"
+      - run: python -m ruff format --check .
+      - run: python -m ruff check .
+      - run: python -m mypy src
+      - name: Scan tracked files for secrets
+        run: python tools/verify_no_secrets.py
+      - run: python -m pip_audit
+
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check --upgrade "pip>=26.2,<27"
+      - run: python -m pip install --disable-pip-version-check ".[dev]"
+      - run: python -m pytest --cov=mojilex_cli --cov-report=term-missing
+
+  package:
+    needs: [quality, tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check --upgrade "pip>=26.2,<27"
+      - run: python -m pip install --disable-pip-version-check build meson ninja
+      - name: Install FFmpeg on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - name: Install FFmpeg on macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
+      - name: Build pinned rlottie and RGBA adapter on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          RLOTTIE_SOURCE="$RUNNER_TEMP/rlottie"
+          RLOTTIE_BUILD="$RUNNER_TEMP/rlottie-build"
+          RLOTTIE_HELPER="$RUNNER_TEMP/mojilex-rlottie-rgba"
+          git clone --no-checkout --filter=blob:none https://github.com/Samsung/rlottie.git "$RLOTTIE_SOURCE"
+          git -C "$RLOTTIE_SOURCE" checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
+          meson setup "$RLOTTIE_BUILD" "$RLOTTIE_SOURCE" -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
+          meson compile -C "$RLOTTIE_BUILD"
+          c++ -std=c++14 -O2 -Wall -Wextra -Werror \
+            -I"$RLOTTIE_SOURCE/inc" tools/rlottie_rgba_renderer.cpp \
+            "$RLOTTIE_BUILD/src/librlottie.a" -pthread \
+            -o "$RLOTTIE_HELPER"
+          echo "MOJILEX_RLOTTIE_RGBA=$RLOTTIE_HELPER" >> "$GITHUB_ENV"
+      - name: Build pinned rlottie and RGBA adapter on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module (Join-Path $installation 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $source = Join-Path $env:RUNNER_TEMP 'rlottie'
+          $build = Join-Path $env:RUNNER_TEMP 'rlottie-build'
+          $helper = Join-Path $env:RUNNER_TEMP 'mojilex-rlottie-rgba.exe'
+          git clone --no-checkout --filter=blob:none https://github.com/Samsung/rlottie.git $source
+          git -C $source checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
+          meson setup $build $source -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
+          meson compile -C $build
+          cl /nologo /std:c++14 /EHsc /O2 /W4 /WX "/I$source\inc" tools\rlottie_rgba_renderer.cpp "/link" "/LIBPATH:$build\src" rlottie.lib Shlwapi.lib "/OUT:$helper"
+          "MOJILEX_RLOTTIE_RGBA=$helper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: python -m build
+      - name: Install wheel into a clean environment on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/mojilex-clean"
+          "$RUNNER_TEMP/mojilex-clean/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/mojilex-clean/bin/mojilex" --version
+          "$RUNNER_TEMP/mojilex-clean/bin/mojilex" --help
+      - name: Install wheel into a clean environment on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clean = Join-Path $env:RUNNER_TEMP 'mojilex-clean'
+          python -m venv $clean
+          & "$clean\Scripts\python.exe" -m pip install (Get-ChildItem dist\*.whl).FullName
+          & "$clean\Scripts\mojilex.exe" --version
+          & "$clean\Scripts\mojilex.exe" --help
+      - name: Smoke-test installed wheel media backends on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/mojilex-clean/bin/mojilex" doctor --json > "$RUNNER_TEMP/mojilex-doctor.json"
+          "$RUNNER_TEMP/mojilex-clean/bin/python" - "$RUNNER_TEMP/mojilex-doctor.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          media = report["result"]["checks"]["media"]
+          assert {item["name"] for item in media} == {"webp", "tgs/rlottie-rgba", "webm/ffmpeg"}
+          assert all(item["available"] and item["fixture_decoded"] for item in media), media
+          PY
+      - name: Smoke-test installed wheel media backends on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clean = Join-Path $env:RUNNER_TEMP 'mojilex-clean'
+          $reportPath = Join-Path $env:RUNNER_TEMP 'mojilex-doctor.json'
+          & "$clean\Scripts\mojilex.exe" doctor --json | Out-File -FilePath $reportPath -Encoding utf8
+          $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+          $media = @($report.result.checks.media)
+          $names = @($media | ForEach-Object { $_.name } | Sort-Object)
+          $expected = @('tgs/rlottie-rgba', 'webm/ffmpeg', 'webp') | Sort-Object
+          if (Compare-Object $names $expected) { throw "unexpected media backend names: $names" }
+          if ($media | Where-Object { -not $_.available -or -not $_.fixture_decoded }) {
+            throw "one or more media fixture probes failed: $($media | ConvertTo-Json -Compress)"
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error

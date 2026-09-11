@@ -1,0 +1,18 @@
+* text=auto eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Synthetic, rights-cleared decoder fixtures are binary when present.
+*.webp -text
+*.tgs -text
+*.webm -text
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.mp4 -text

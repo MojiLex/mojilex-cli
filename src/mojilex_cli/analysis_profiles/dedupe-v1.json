@@ -1,0 +1,169 @@
+{
+  "profile_id": "dedupe-v1",
+  "profile_version": "1.0.0",
+  "algorithm_ids": {
+    "decoded_payload": "decoded-rgba-framed-v1",
+    "canonical_render": "canonical-layout-stream-v1",
+    "shape": "binary-alpha-stream-v1",
+    "perceptual": "phash-dct32-q14-v1",
+    "decoder_backend_fingerprint": "decoder-backend-v1"
+  },
+  "decoder": {
+    "pixel_format": "straight-rgba8",
+    "alpha_representation": "unpremultiplied",
+    "orientation": "display-oriented",
+    "color_space": "srgb",
+    "icc_policy": "ignore-assume-srgb",
+    "transparent_rgb": "zero",
+    "supported_webm_codecs": ["av1", "vp8", "vp9"],
+    "pillow_versions": ">=11,<13",
+    "ffmpeg_versions": ">=6,<9",
+    "rlottie_adapter": "mojilex-lossless-rgba-stream-v1",
+    "rlottie_surface_word": "0xAARRGGBB-premultiplied",
+    "rlottie_unpremultiply": {
+      "alpha_zero": "rgba=0,0,0,0",
+      "alpha_opaque": "straight_channel=premultiplied_channel",
+      "alpha_intermediate": "straight_channel=min(255,(premultiplied_channel*255+alpha//2)//alpha)"
+    }
+  },
+  "decoder_backend_fingerprint": {
+    "encoding": "sha256-lowercase-hex",
+    "canonical_descriptor": "utf8-json-sort-keys-compact-v1",
+    "path_policy": "excluded",
+    "components": [
+      "media-kind",
+      "system",
+      "machine",
+      "python-implementation-version",
+      "pillow-version",
+      "relevant-codec-library-version",
+      "exact-external-executable-sha256",
+      "webm-codec-and-alpha-decode-mode"
+    ]
+  },
+  "decoded_payload": {
+    "algorithm": "sha256",
+    "magic_utf8_nul": "MLXDP1",
+    "integer_byte_order": "big",
+    "header": ["u32-width", "u32-height", "u32-frame-count", "u8-loop-mode"],
+    "frame": ["u64-duration-us", "u64-rgba-byte-length", "rgba8-bytes"],
+    "loop_modes": {"once": 0, "loop": 1, "unknown": 255}
+  },
+  "canonical_render": {
+    "algorithm": "sha256",
+    "magic_utf8_nul": "MLXCR1",
+    "canvas_size": 256,
+    "content_box_size": 224,
+    "resize": "nearest-pixel-center-v1",
+    "background": "transparent-black",
+    "frame_scope": "all-fully-decoded-composited-frames",
+    "stream": ["u32-frame-count", "u8-loop-mode", "repeated-u64-duration-us", "rgba8"]
+  },
+  "shape": {
+    "algorithm": "sha256",
+    "magic_utf8_nul": "MLXSH1",
+    "alpha_threshold_u8": 16,
+    "stream": ["u32-frame-count", "u8-loop-mode", "repeated-u64-duration-us", "binary-alpha-u8"]
+  },
+  "adaptive_content": {
+    "service_rgb_is_semantic": false,
+    "shape_source": "alpha-mask",
+    "fixed_palette_for_platform_adaptive": "omitted",
+    "cross-behavior_shape_match": "candidate-possible-recolor-only"
+  },
+  "perceptual": {
+    "encoding": "u64be-base64url-nopad",
+    "static_sample_count": 1,
+    "animated_sample_count": 16,
+    "sample_times": "t_i=(i+0.5)*D/N",
+    "layout": "full-native-canvas-fit-224-on-transparent-256",
+    "content": "visible-bbox-alpha16-plus-ceil-5pct-margin-fit-224-on-transparent-256",
+    "luminance": "integer-bt601-times-alpha",
+    "edge": "abs-horizontal-plus-abs-vertical-clamped-u8",
+    "phash": "dct32-low8-fixed-cosine-q14-median-ac-v1",
+    "temporal_energy": "mean-absolute-layout-luma-delta;cyclic-for-loop;basis-points-half-up"
+  },
+  "low_information": {
+    "visible_area_bp_max": 150,
+    "luminance_entropy_millibits_max": 250,
+    "edge_density_bp_max": 50,
+    "edge_threshold_u8": 32,
+    "rule": "visible-area-or-luminance-entropy-or-edge-density"
+  },
+  "candidate_thresholds": {
+    "static_primary_hamming_max": 8,
+    "static_alpha_hamming_max": 12,
+    "static_high_priority_primary_hamming_max": 4,
+    "static_high_priority_alpha_hamming_max": 8,
+    "adaptive_alpha_hamming_max": 8,
+    "adaptive_edge_hamming_max": 8,
+    "animation_median_hamming_max": 6,
+    "animation_p90_hamming_max": 12,
+    "speed_change_ratio": "1.15",
+    "review_ssim_min": "0.98",
+    "review_alpha_iou_min": "0.95",
+    "cyclic_alignment": true,
+    "dtw_band_frames": 2,
+    "reverse_playback_match": false,
+    "candidate_limit_default": 20,
+    "candidate_limit_hard_max": 200
+  },
+  "oversized_bucket_policy": {
+    "maximum_members": 512,
+    "low_information_shape_bucket": "suppress",
+    "secondary_keys": ["content-phash-prefix-16", "edge-phash-prefix-16"],
+    "remaining_overflow": "suppress-and-report-exact-count",
+    "pairwise_expansion": false
+  },
+  "resource_limits": {
+    "max_full_frames": 600,
+    "max_decoded_rgba_bytes": 1500000000,
+    "max_frame_metadata_bytes": 4194304
+  },
+  "normative_vectors": [
+    {
+      "id": "opaque-red-2x2",
+      "input": {
+        "width": 2,
+        "height": 2,
+        "frame_count": 1,
+        "loop_mode": "once",
+        "duration_us": [0],
+        "rgba_hex": ["ff0000ffff0000ffff0000ffff0000ff"]
+      },
+      "expected": {
+        "decoded_payload_sha256": "3ffd8d13aa7b53d9dc717059f2036c2957096d134b418aa0c17ff7bef92ca823",
+        "canonical_render_sha256": "8c119659cc6464ebf59003a532094597a0b1ac1bba09e67a67e64fd0c011292b",
+        "shape_sha256": "5655580898d12db1aa1e91048bf612fa65e8f5cdbdac176607d014edcf0748f0",
+        "layout_phash64": "gAAqACoAKgA",
+        "content_phash64": "gAAqACoAKgA",
+        "alpha_phash64": "gAAqACoAKgA",
+        "edge_phash64": "AAAAAAAAAAA",
+        "temporal_energy_bp": 0,
+        "low_information": true
+      }
+    },
+    {
+      "id": "transparent-hidden-rgb-2x2",
+      "input": {
+        "width": 2,
+        "height": 2,
+        "frame_count": 1,
+        "loop_mode": "once",
+        "duration_us": [0],
+        "rgba_hex": ["ff0000ff112233001122330011223300"]
+      },
+      "expected": {
+        "decoded_payload_sha256": "381edb7001f429677089edb61cb8a960d48b6979109540d5fda89fb53dde4089",
+        "canonical_render_sha256": "2bfea143ad53c44fd54df30b832614af9daf5e088ac19a131ca057c42f345efe",
+        "shape_sha256": "c737282757d633adc93f2c7ee69c6271387abad7b7a8c19bfb63f2a5c8687da7",
+        "layout_phash64": "xMQ7OzvAOTs",
+        "content_phash64": "xMQ7OzvAOTs",
+        "alpha_phash64": "xMQ7OzvAOTs",
+        "edge_phash64": "AAAAAAAAAAA",
+        "temporal_energy_bp": 0,
+        "low_information": true
+      }
+    }
+  ]
+}

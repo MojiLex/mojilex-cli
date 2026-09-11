@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+from typer.testing import CliRunner
+
+from mojilex_cli.cli import _unknown_cost_callback, app
+from mojilex_cli.commands import workflow
+from mojilex_cli.commands.runtime import CommandError, CommandResult
+from test_dataset_helpers import write_fixture
+
+
+def test_validate_json_is_one_machine_readable_object(tmp_path) -> None:
+    write_fixture(tmp_path)
+    result = CliRunner().invoke(app, ["validate", str(tmp_path), "--no-strict", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    assert result.stdout.count("\n") == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["command"] == "validate"
+    assert payload["status"] == "succeeded"
+    assert payload["result"]["issues"] == 0
+    assert payload["errors"] == []
+
+
+def test_validate_json_preserves_stable_validation_exit_code(tmp_path) -> None:
+    result = CliRunner().invoke(app, ["validate", str(tmp_path), "--strict", "--json"])
+
+    assert result.exit_code == 10
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "VALIDATION_FAILED"
+
+
+def test_unknown_ai_cost_fails_closed_in_machine_mode_with_opt_in_hint() -> None:
+    authorize = _unknown_cost_callback(yes=False, non_interactive=True, json_output=True)
+
+    with pytest.raises(CommandError) as captured:
+        authorize(3)
+
+    assert captured.value.error.code == "UNKNOWN_COST"
+    assert captured.value.error.details == {
+        "new_ai_requests": 3,
+        "estimated_cost_usd": None,
+    }
+    assert "--allow-unknown-cost" in captured.value.error.hint
+
+
+def test_yes_explicitly_authorizes_unknown_ai_cost() -> None:
+    authorize = _unknown_cost_callback(yes=True, non_interactive=True, json_output=True)
+
+    assert authorize(1)
+
+
+def test_sensitive_add_prompt_is_deferred_until_exact_plan_exists(monkeypatch) -> None:
+    def fake_add_command(sources, **kwargs):  # type: ignore[no-untyped-def]
+        assert sources == ("https://t.me/addemoji/TestPack",)
+        confirmed = kwargs["confirmation"](
+            "Exact affected IDs: mxe_exact. Exact changed paths: data/emojis/exact.json."
+        )
+        assert confirmed is True
+        return CommandResult(result={"planned": True})
+
+    monkeypatch.setattr(workflow, "add_command", fake_add_command)
+
+    result = CliRunner().invoke(
+        app,
+        ["add", "https://t.me/addemoji/TestPack", "--overwrite-reviewed"],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Exact affected IDs: mxe_exact" in result.output
+    assert "Proceed with the explicitly sensitive" not in result.output
+
+
+def test_resume_yes_forwards_non_persisted_runtime_authorization(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_resume_command(run_id, **kwargs):  # type: ignore[no-untyped-def]
+        captured["run_id"] = run_id
+        captured["confirmed"] = kwargs["confirmation"](
+            "Reconfirm exact new-identity plan for mxe_exact."
+        )
+        captured["unknown_cost"] = kwargs["unknown_cost_confirmation"](2)
+        return CommandResult(result={"resumed": True})
+
+    monkeypatch.setattr(workflow, "resume_command", fake_resume_command)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "resume",
+            "mlxrun_0123456789abcdef0123456789abcdef",
+            "--yes",
+            "--non-interactive",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "run_id": "mlxrun_0123456789abcdef0123456789abcdef",
+        "confirmed": True,
+        "unknown_cost": True,
+    }
+    assert "Reconfirm exact new-identity plan" not in result.output

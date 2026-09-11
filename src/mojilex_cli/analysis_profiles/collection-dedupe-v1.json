@@ -1,0 +1,18 @@
+{
+  "profile_id": "collection-dedupe-v1",
+  "profile_version": "1.0.0",
+  "matching": {
+    "algorithm": "maximum-cardinality-one-to-one",
+    "allowed_signals": ["binary-entity-exact", "decoded-entity-exact", "reviewed-same-artwork"],
+    "excluded_relations": ["variant-of"]
+  },
+  "clone_candidate": {
+    "minimum_each_coverage": "0.90",
+    "minimum_matches": 8
+  },
+  "subset_candidate": {
+    "minimum_smaller_coverage": "0.90",
+    "maximum_larger_coverage_exclusive": "0.80",
+    "minimum_matches": 8
+  }
+}

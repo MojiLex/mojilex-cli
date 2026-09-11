@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-once:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag and source commit
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid CLI version tag" >&2
+            exit 1
+          fi
+          PACKAGE_VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "${GITHUB_REF_NAME#v}" != "${PACKAGE_VERSION}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version ${PACKAGE_VERSION}" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check --upgrade "pip>=26.2,<27"
+      - run: python -m pip install --disable-pip-version-check ".[dev]"
+      - run: python -m ruff format --check .
+      - run: python -m ruff check .
+      - run: python -m mypy src
+      - name: Scan tracked files for secrets
+        run: python tools/verify_no_secrets.py
+      - run: python -m pip_audit
+      - run: python -m pytest
+      - name: Install media prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg meson ninja-build
+          git clone --no-checkout --filter=blob:none https://github.com/Samsung/rlottie.git /tmp/rlottie
+          git -C /tmp/rlottie checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
+          meson setup /tmp/rlottie-build /tmp/rlottie -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
+          meson compile -C /tmp/rlottie-build
+          c++ -std=c++14 -O2 -Wall -Wextra -Werror \
+            -I/tmp/rlottie/inc tools/rlottie_rgba_renderer.cpp \
+            /tmp/rlottie-build/src/librlottie.a -pthread \
+            -o /tmp/mojilex-rlottie-rgba
+      - name: Build reproducible distributions
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          python -m build --outdir dist
+          python -m build --outdir dist-rebuilt
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          first = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path("dist").iterdir()}
+          second = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in Path("dist-rebuilt").iterdir()
+          }
+          if first != second:
+              raise SystemExit(f"non-reproducible distributions: {first!r} != {second!r}")
+          PY
+      - run: python -m pip install --force-reinstall dist/*.whl
+      - run: mojilex --version
+      - name: Smoke-test installed wheel media backends
+        env:
+          MOJILEX_RLOTTIE_RGBA: /tmp/mojilex-rlottie-rgba
+        run: |
+          mojilex doctor --json > /tmp/mojilex-doctor.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("/tmp/mojilex-doctor.json").read_text(encoding="utf-8"))
+          media = report["result"]["checks"]["media"]
+          assert {item["name"] for item in media} == {"webp", "tgs/rlottie-rgba", "webm/ffmpeg"}
+          assert all(item["available"] and item["fixture_decoded"] for item in media), media
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build-once
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mojilex-cli/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+
+  github-release:
+    needs: [build-once, publish-pypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-release
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-distributions
+          path: dist/
+      - name: Create checksums
+        run: cd dist && sha256sum * | sort -k2 > SHA256SUMS
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag

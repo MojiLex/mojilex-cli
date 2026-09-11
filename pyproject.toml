@@ -1,0 +1,112 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mojilex-cli"
+version = "0.1.0"
+description = "Import, describe, validate, and publish MojiLex semantic emoji datasets."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "MojiLex" },
+]
+keywords = ["emoji", "telegram", "dataset", "cli", "accessibility", "metadata"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Text Processing :: Linguistic",
+]
+dependencies = [
+  "filelock>=3.30,<4",
+  "google-genai>=2.23,<3",
+  "httpx>=0.28,<1",
+  "jsonschema[format]>=4.23,<5",
+  "pillow>=11,<13",
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.10,<3",
+  "rfc8785>=0.1.4,<1",
+  "rich>=13.9,<15",
+  "typer>=0.16,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.13,<2",
+  "pip-audit>=2.7,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.9,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/MojiLex/mojilex-cli"
+Documentation = "https://github.com/MojiLex/mojilex-cli/tree/main/docs"
+Issues = "https://github.com/MojiLex/mojilex-cli/issues"
+Repository = "https://github.com/MojiLex/mojilex-cli.git"
+
+[project.scripts]
+mojilex = "mojilex_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mojilex_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/docs",
+  "/tools",
+  "/README.md",
+  "/LICENSE",
+  "/CONTRIBUTING.md",
+  "/SECURITY.md",
+  "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers -ra"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["mojilex_cli"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+packages = ["mojilex_cli"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+warn_required_dynamic_aliases = true

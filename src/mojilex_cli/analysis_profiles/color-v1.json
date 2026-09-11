@@ -1,0 +1,84 @@
+{
+  "profile_id": "color-v1",
+  "profile_version": "1.0.0",
+  "input": {
+    "pixel_format": "straight-rgba8",
+    "orientation": "display-oriented",
+    "color_space": "srgb",
+    "icc_policy": "ignore-assume-srgb",
+    "animation_scope": "full-decoded-for-alpha;16-midpoint-samples-for-layout-and-palette"
+  },
+  "alpha": {
+    "visible_threshold_u8": 16,
+    "palette_weight": "alpha-u8",
+    "mode_priority": ["translucent", "binary", "opaque"]
+  },
+  "layout": {
+    "canvas_size": 256,
+    "content_box_size": 224,
+    "background": "transparent-black",
+    "resize": "nearest-pixel-center-v1",
+    "visible_area_rounding": "nearest-half-up"
+  },
+  "palette": {
+    "algorithm": "weighted-rgb5-histogram-v1",
+    "seed": null,
+    "max_colors": 5,
+    "coverage_rounding": "selected-total-largest-remainder-v1",
+    "coverage_target": "nearest-half-up exact sum of selected shares, clamped to selected count..10000",
+    "coverage_initial": "floor each exact share, minimum 1",
+    "coverage_increment_order": "fractional remainder descending, then rgb5 bin lexicographic",
+    "coverage_excess_order": "fractional remainder ascending, then rgb5 bin lexicographic, round-robin minimum 1",
+    "frame_weight": "equal",
+    "changing_family_l1_bp": 2500,
+    "changing_family_presence_bp": 1500,
+    "changing_family_absence_bp": 250
+  },
+  "families": {
+    "neutral_saturation_max_bp": 1200,
+    "black_value_max_bp": 1500,
+    "white_value_min_bp": 9000,
+    "brown_hue_degrees": [15, 55],
+    "brown_value_max_bp": 6500,
+    "brown_saturation_min_bp": 2500,
+    "beige_hue_degrees": [25, 60],
+    "beige_value_min_bp": 6500,
+    "beige_saturation_bp": [1000, 4500],
+    "chromatic_hue_boundaries": [15, 45, 70, 165, 200, 255, 290, 345],
+    "chromatic_family_order": [
+      "red",
+      "orange",
+      "yellow",
+      "green",
+      "cyan",
+      "blue",
+      "purple",
+      "pink",
+      "red"
+    ]
+  },
+  "normative_vectors": [
+    {
+      "id": "opaque-red-2x2",
+      "rgba_hex": "ff0000ffff0000ffff0000ffff0000ff",
+      "width": 2,
+      "height": 2,
+      "alpha_mode": "opaque",
+      "visible_area_bp": 7656,
+      "dominant_colors": [
+        {"hex": "#ff0000", "family": "red", "coverage_bp": 10000}
+      ]
+    },
+    {
+      "id": "transparent-red-dot-2x2",
+      "rgba_hex": "ff0000ff112233001122330011223300",
+      "width": 2,
+      "height": 2,
+      "alpha_mode": "binary",
+      "visible_area_bp": 1914,
+      "dominant_colors": [
+        {"hex": "#ff0000", "family": "red", "coverage_bp": 10000}
+      ]
+    }
+  ]
+}
