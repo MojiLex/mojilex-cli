@@ -6,6 +6,7 @@ import os
 from pathlib import Path, PurePosixPath
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
 import mojilex_cli.dataset.index as index_module
 from mojilex_cli.dataset import build_index
@@ -14,10 +15,12 @@ from mojilex_cli.dataset.distribution import (
     PAYLOAD_NAMES,
     PROFILE_CONTRACT_SCHEMA_FILES,
     PROFILE_FILES,
+    DataError,
 )
 from mojilex_cli.dataset.index import _index_transaction_lock_name
 from mojilex_cli.dataset.transaction import AtomicWriteError, DurableDatasetTransaction
 from mojilex_cli.domain import jcs_bytes
+from mojilex_cli.read.snapshot import _embedded_schema_contracts
 from test_dataset_helpers import write_fixture
 
 DATA_COMMIT = "1" * 40
@@ -25,6 +28,7 @@ TOOL_COMMIT = "2" * 40
 LOCK_SHA256 = "3" * 64
 SNAPSHOT_ID = "data-2026.09.11.1"
 SOURCE_DATE_EPOCH = 1_789_084_800
+RELEASE_MANIFEST_SCHEMA_URI = "mlx://schemas/distribution/v1/release-manifest.schema.json"
 
 _CANONICAL_SCHEMAS = (
     "collection.schema.json",
@@ -168,6 +172,16 @@ def test_build_index_is_byte_deterministic_and_self_describing(tmp_path: Path) -
     manifest_bytes = first_bytes["manifest.json"]
     assert not manifest_bytes.endswith(b"\n")
     manifest = json.loads(manifest_bytes)
+    _schemas, registry, _resources = _embedded_schema_contracts()
+    counts_validator = Draft202012Validator(
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$ref": f"{RELEASE_MANIFEST_SCHEMA_URI}#/$defs/counts",
+        },
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+    assert not list(counts_validator.iter_errors(manifest["counts"]))
     assert manifest["snapshot_id"] == SNAPSHOT_ID
     assert manifest["git"] == {
         "repository": "https://github.com/MojiLex/mojilex",
@@ -180,6 +194,22 @@ def test_build_index_is_byte_deterministic_and_self_describing(tmp_path: Path) -
     assert manifest["build"]["tool"] == "mojilex-cli"
     assert manifest["build"]["tool_commit"] == TOOL_COMMIT
     assert manifest["build"]["dependency_lock_sha256"] == LOCK_SHA256
+    availability_statuses = {"active", "unavailable", "private", "deleted", "unknown"}
+    assert set(manifest["counts"]["availability_by_status"]["collections"]) == (
+        availability_statuses
+    )
+    assert set(manifest["counts"]["availability_by_status"]["emojis"]) == (availability_statuses)
+    assert set(manifest["counts"]["emoji_review_by_status"]) == {
+        "unreviewed",
+        "approved",
+        "changes_requested",
+        "rejected",
+    }
+    assert set(manifest["counts"]["memberships_by_status"]) == {
+        "active",
+        "removed_from_collection",
+        "unknown",
+    }
     assert {item["path"] for item in manifest["artifacts"]} == set(PAYLOAD_NAMES)
     for descriptor in manifest["artifacts"]:
         payload = first_bytes[descriptor["path"]]
@@ -211,6 +241,27 @@ def test_build_index_is_byte_deterministic_and_self_describing(tmp_path: Path) -
         for source_path, schema_ref in profile_resources.items()
         if source_path != "analysis-profiles/concept-candidates-v1.json"
     } == {"mlx://schemas/distribution/v1/delegated-profile.schema.json"}
+    descriptors = {item["logical_name"]: item for item in manifest["artifacts"]}
+    profile_selectors = {
+        "emojis-active": set(),
+        "duplicate-groups": {"/profiles/dedupe"},
+        "duplicate-group-memberships": {"/profiles/dedupe"},
+        "collection-facets": {"/profiles/collection_dedupe"},
+        "search-en": {"/profiles/lexical_search"},
+        "search-ru": {"/profiles/lexical_search"},
+    }
+    policy_selectors = {
+        "/policies/platform_profiles",
+        "/policies/rights_profiles",
+    }
+    for logical_name, specific_selectors in profile_selectors.items():
+        dependency = descriptors[logical_name]["derived_from"]
+        assert "/build/source_date_epoch" in {
+            item["manifest_pointer"] for item in dependency["manifest_inputs"]
+        }
+        assert {item["manifest_pointer"] for item in dependency["selectors"]} == (
+            policy_selectors | specific_selectors
+        )
 
 
 def test_search_record_has_exact_safe_filtering_fields(tmp_path: Path) -> None:
@@ -310,10 +361,24 @@ def test_builder_requires_immutable_release_inputs(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="snapshot_id"):
         _build(dataset, output, snapshot_id="latest")
+    with pytest.raises(ValueError, match="invalid UTC calendar date"):
+        _build(dataset, output, snapshot_id="data-2026.02.31.1")
     with pytest.raises(ValueError, match="source_date_epoch"):
         _build(dataset, output, source_date_epoch=True)
     with pytest.raises(ValueError, match="tool_commit"):
         _build(dataset, output, tool_commit="short")
+
+
+def test_builder_rejects_future_canonical_evidence(tmp_path: Path) -> None:
+    dataset = _prepare_distribution_fixture(tmp_path / "dataset")
+    output = tmp_path / "dist"
+    emoji_path = next((dataset / "data" / "telegram" / "emojis").rglob("*.jsonl"))
+    emoji = json.loads(emoji_path.read_bytes())
+    emoji["availability"]["last_verified_at"] = "2026-09-12T00:00:00Z"
+    emoji_path.write_bytes(jcs_bytes(emoji) + b"\n")
+
+    with pytest.raises(DataError, match="future evidence"):
+        _build(dataset, output)
 
 
 def test_missing_tool_checkout_requires_explicit_tool_commit(

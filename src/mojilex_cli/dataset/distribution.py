@@ -86,6 +86,9 @@ REQUIRED_FEATURES = [
     "state-roots-v1",
 ]
 REQUIRED_LANGUAGES = ["en", "ru"]
+_AVAILABILITY_STATUSES = ["active", "unavailable", "private", "deleted", "unknown"]
+_REVIEW_STATUSES = ["unreviewed", "approved", "changes_requested", "rejected"]
+_MEMBERSHIP_STATUSES = ["active", "removed_from_collection", "unknown"]
 
 PAYLOAD_NAMES = (
     "collection-facets.jsonl",
@@ -1101,8 +1104,13 @@ def build_distribution(
     epoch = source_date_epoch
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
         raise ValueError("source_date_epoch must be a non-negative integer")
-    if not re.fullmatch(r"data-[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*", snapshot_id):
+    snapshot_match = re.fullmatch(r"data-([0-9]{4}\.[0-9]{2}\.[0-9]{2})\.[1-9][0-9]*", snapshot_id)
+    if snapshot_match is None:
         raise ValueError("snapshot_id must be data-YYYY.MM.DD.N with positive N")
+    try:
+        datetime.strptime(snapshot_match.group(1), "%Y.%m.%d")
+    except ValueError as exc:
+        raise ValueError("snapshot_id contains an invalid UTC calendar date") from exc
 
     records = discover_records(root, snapshot=snapshot)
     dataset = snapshot.manifest if snapshot is not None else load_json(root / "dataset.json")
@@ -1336,6 +1344,31 @@ def build_distribution(
         and collection["id"] not in tombstoned_ids
     }
     build_time = datetime.fromtimestamp(epoch, tz=UTC)
+
+    def reject_future(record: dict[str, Any], field: str, value: str | None) -> None:
+        if value is None:
+            return
+        observed_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if observed_at > build_time:
+            record_id = record.get("id", record.get("target_id", "canonical-record"))
+            raise DataError(
+                f"canonical evidence {record_id}/{field} is future evidence for source_date_epoch"
+            )
+
+    for entity in [*collections, *emojis]:
+        availability = entity["availability"]
+        for field in ("first_seen_at", "last_changed_at", "last_verified_at"):
+            reject_future(entity, f"availability/{field}", availability.get(field))
+    for emoji in emojis:
+        reject_future(emoji, "provenance/generated_at", emoji["provenance"].get("generated_at"))
+        reject_future(emoji, "review/reviewed_at", emoji["review"].get("reviewed_at"))
+    for membership in memberships:
+        reject_future(membership, "first_seen_at", membership.get("first_seen_at"))
+        reject_future(membership, "last_changed_at", membership.get("last_changed_at"))
+    for tombstone in tombstones:
+        reject_future(tombstone, "withheld_at", tombstone.get("withheld_at"))
+    for relation in visual_relations:
+        reject_future(relation, "review/reviewed_at", relation["review"].get("reviewed_at"))
     for platform_id, profile in platform_by_id.items():
         for capability in profile["capabilities"]:
             observed_at = datetime.fromisoformat(capability["observed_at"].replace("Z", "+00:00"))
@@ -1402,7 +1435,14 @@ def build_distribution(
             ["/id"],
             None,
             "schemas/v1/emoji.schema.json",
-            derived_from(canonical_root),
+            derived_from(
+                canonical_root,
+                manifest_values=[("/build/source_date_epoch", epoch)],
+                selectors=[
+                    ("/policies/platform_profiles", policies["platform_profiles"]),
+                    ("/policies/rights_profiles", policies["rights_profiles"]),
+                ],
+            ),
         ),
         (
             "duplicate-groups",
@@ -1411,7 +1451,15 @@ def build_distribution(
             ["/group_type", "/group_id"],
             None,
             "schemas/distribution/v1/duplicate-group.schema.json",
-            derived_from(canonical_root, selectors=[("/profiles/dedupe", profiles["dedupe"])]),
+            derived_from(
+                canonical_root,
+                manifest_values=[("/build/source_date_epoch", epoch)],
+                selectors=[
+                    ("/policies/platform_profiles", policies["platform_profiles"]),
+                    ("/policies/rights_profiles", policies["rights_profiles"]),
+                    ("/profiles/dedupe", profiles["dedupe"]),
+                ],
+            ),
         ),
         (
             "duplicate-group-memberships",
@@ -1420,7 +1468,15 @@ def build_distribution(
             membership_key,
             ["/group_id"],
             "schemas/distribution/v1/duplicate-group-membership.schema.json",
-            derived_from(canonical_root, selectors=[("/profiles/dedupe", profiles["dedupe"])]),
+            derived_from(
+                canonical_root,
+                manifest_values=[("/build/source_date_epoch", epoch)],
+                selectors=[
+                    ("/policies/platform_profiles", policies["platform_profiles"]),
+                    ("/policies/rights_profiles", policies["rights_profiles"]),
+                    ("/profiles/dedupe", profiles["dedupe"]),
+                ],
+            ),
         ),
     ]
     for (
@@ -1476,7 +1532,12 @@ def build_distribution(
         payload=facet_payload,
         derived_from=derived_from(
             canonical_root,
-            selectors=[("/profiles/collection_dedupe", profiles["collection_dedupe"])],
+            manifest_values=[("/build/source_date_epoch", epoch)],
+            selectors=[
+                ("/policies/platform_profiles", policies["platform_profiles"]),
+                ("/policies/rights_profiles", policies["rights_profiles"]),
+                ("/profiles/collection_dedupe", profiles["collection_dedupe"]),
+            ],
             dependencies=[
                 descriptor_by_name["duplicate-groups"],
                 descriptor_by_name["duplicate-group-memberships"],
@@ -1793,20 +1854,20 @@ def build_distribution(
         "availability_by_status": {
             "collections": histogram(
                 (item["availability"]["status"] for item in collections),
-                ["active", "unavailable", "private", "deleted", "unknown"],
+                _AVAILABILITY_STATUSES,
             ),
             "emojis": histogram(
                 (item["availability"]["status"] for item in emojis),
-                ["active", "unavailable", "deleted", "unknown"],
+                _AVAILABILITY_STATUSES,
             ),
         },
         "emoji_review_by_status": histogram(
             (item["review"]["status"] for item in emojis),
-            ["unreviewed", "approved", "changes_requested", "rejected"],
+            _REVIEW_STATUSES,
         ),
         "memberships_by_status": histogram(
             (item["status"] for item in memberships),
-            ["active", "removed_from_collection", "unknown"],
+            _MEMBERSHIP_STATUSES,
         ),
     }
     manifest = {
