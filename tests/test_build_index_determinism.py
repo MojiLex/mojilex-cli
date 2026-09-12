@@ -18,8 +18,9 @@ from mojilex_cli.dataset.distribution import (
     DataError,
 )
 from mojilex_cli.dataset.index import _index_transaction_lock_name
+from mojilex_cli.dataset.staging import AtomicDatasetWriter
 from mojilex_cli.dataset.transaction import AtomicWriteError, DurableDatasetTransaction
-from mojilex_cli.domain import jcs_bytes
+from mojilex_cli.domain import ConceptMappingStatus, jcs_bytes
 from mojilex_cli.read.snapshot import _embedded_schema_contracts
 from test_dataset_helpers import write_fixture
 
@@ -77,7 +78,18 @@ def _write_jcs(path: Path, value: object) -> None:
 
 
 def _prepare_distribution_fixture(root: Path) -> Path:
-    write_fixture(root)
+    snapshot = write_fixture(root)
+    for emoji_id, emoji in snapshot.emojis.items():
+        snapshot.emojis[emoji_id] = emoji.model_copy(
+            update={
+                "concept_ids": ["animal.cat"],
+                "concept_mapping_status": ConceptMappingStatus.COMPLETE,
+            }
+        )
+    writer = AtomicDatasetWriter(root)
+    for path, payload in snapshot.to_files().items():
+        writer.stage_bytes(path, payload)
+    writer.commit()
     for name in _CANONICAL_SCHEMAS:
         _write_json(
             root / "schemas" / "v1" / name,

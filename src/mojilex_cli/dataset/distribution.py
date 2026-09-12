@@ -1407,6 +1407,12 @@ def build_distribution(
     eligible_emojis = [
         all_emojis[emoji_id] for emoji_id in sorted(collection_ids_by_emoji, key=str.encode)
     ]
+    for emoji in eligible_emojis:
+        if emoji["concept_mapping_status"] != "complete" or not emoji["concept_ids"]:
+            raise DataError(
+                f"eligible emoji {emoji['id']} has incomplete concept mapping; "
+                "complete concept mapping before building a release snapshot"
+            )
 
     duplicate_groups, duplicate_memberships = build_duplicate_groups(
         [emoji for emoji in emojis if emoji["id"] in eligible_ids],
