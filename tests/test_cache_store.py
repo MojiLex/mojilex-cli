@@ -240,7 +240,6 @@ def test_v1_ai_payload_is_ignored_then_safely_upgraded_with_immutable_time(
     )
     connection.commit()
     connection.close()
-
     with CacheStore(path) as cache:
         # A v1 entry has no trustworthy generation instant, so reusing it for
         # qualification would be unsafe.
@@ -268,3 +267,23 @@ def test_v1_ai_payload_is_ignored_then_safely_upgraded_with_immutable_time(
     connection = sqlite3.connect(path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     connection.close()
+
+
+def test_read_only_inspection_never_creates_wal_sidecars(tmp_path: Path) -> None:
+    path = tmp_path / "cache.sqlite3"
+    with CacheStore(path) as cache:
+        cache.put_ai("key", _result())
+    before = {item.name: item.read_bytes() for item in tmp_path.iterdir()}
+    with CacheStore(path, read_only=True) as cache:
+        assert cache.get_ai("key") == _result()
+    assert {item.name: item.read_bytes() for item in tmp_path.iterdir()} == before
+
+
+def test_read_only_inspection_rejects_live_wal_instead_of_silently_reading_stale_cache(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cache.sqlite3"
+    with CacheStore(path) as writer:
+        writer.put_ai("key", _result())
+        with pytest.raises(CacheError, match="checkpointed WAL"):
+            CacheStore(path, read_only=True)

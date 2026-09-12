@@ -63,6 +63,7 @@ def test_prompt_and_request_parameter_hashes_are_exact_and_stable() -> None:
     assert len(prompt_sha256()) == 64
     assert gemini_request_parameters_sha256() == gemini_request_parameters_sha256()
     parameters = gemini_request_parameters()
-    assert parameters["temperature"] == 0
-    assert parameters["response_mime_type"] == "application/json"
-    assert "properties" in parameters["response_schema"]
+    assert parameters["api_surface"] == "interactions"
+    assert parameters["store"] is False
+    assert parameters["response_format"]["mime_type"] == "application/json"
+    assert "properties" in parameters["response_format"]["schema"]

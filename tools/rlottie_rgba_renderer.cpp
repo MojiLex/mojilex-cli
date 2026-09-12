@@ -11,11 +11,13 @@
 // The pinned upstream header has no separate static-consumer switch. Avoid
 // dllimport indirection when linking rlottie.lib into this standalone helper.
 #define RLOTTIE_BUILD
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4251)  // upstream export annotation exposes a private STL member
 #endif
+#endif
 #include <rlottie.h>
-#ifdef _WIN32
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
 

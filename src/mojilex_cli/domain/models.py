@@ -838,6 +838,22 @@ class Provenance(StrictModel):
     description_profile: Literal["standard-v1"] | None = None
     prompt_sha256: Sha256 | None = None
     request_parameters_sha256: Sha256 | None = None
+    concept_registry_id: (
+        Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128)]
+        | None
+    ) = None
+    concept_registry_sha256: Sha256 | None = None
+    concept_candidate_set_sha256: Sha256 | None = None
+    concept_candidate_profile_id: (
+        Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128)]
+        | None
+    ) = None
+    concept_candidate_profile_sha256: Sha256 | None = None
+    model_routing_policy_id: (
+        Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128)]
+        | None
+    ) = None
+    model_routing_policy_sha256: Sha256 | None = None
     qualification_id: (
         Annotated[
             str,
@@ -886,6 +902,23 @@ class Provenance(StrictModel):
 
     @model_validator(mode="after")
     def validate_origin(self) -> Provenance:
+        concept_binding = (
+            self.concept_registry_id,
+            self.concept_registry_sha256,
+            self.concept_candidate_set_sha256,
+            self.concept_candidate_profile_id,
+            self.concept_candidate_profile_sha256,
+            self.model_routing_policy_id,
+            self.model_routing_policy_sha256,
+        )
+        if any(value is not None for value in concept_binding) and any(
+            value is None for value in concept_binding
+        ):
+            raise ValueError("concept generation binding requires all seven exact fields")
+        if self.origin is ProvenanceOrigin.HUMAN and any(
+            value is not None for value in concept_binding
+        ):
+            raise ValueError("human provenance cannot contain AI concept generation binding")
         ai_fields = (
             self.provider,
             self.model,

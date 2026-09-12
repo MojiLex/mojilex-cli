@@ -54,6 +54,8 @@ def init_command(
     publish: str,
     config_path: Path | None,
     force: bool,
+    languages: Sequence[str] = ("ru", "en"),
+    prompt: Callable[[str, str], str] | None = None,
 ) -> CommandResult:
     """Load authoring diagnostics only when the init command is invoked."""
 
@@ -66,6 +68,8 @@ def init_command(
         publish=publish,
         config_path=config_path,
         force=force,
+        languages=languages,
+        prompt=prompt,
     )
 
 
@@ -155,6 +159,10 @@ def initialize(
         Path | None, typer.Option("--config", help="Config file to create.")
     ] = None,
     force: Annotated[bool, typer.Option("--force", help="Replace an existing config.")] = False,
+    lang: Annotated[
+        list[str] | None, typer.Option("--lang", help="Repeat for each language.")
+    ] = None,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
@@ -168,6 +176,10 @@ def initialize(
             publish=publish,
             config_path=config_path,
             force=force,
+            languages=tuple(lang or ("ru", "en")),
+            prompt=(lambda label, default: typer.prompt(label, default=default, err=True))
+            if sys.stdin.isatty() and not (non_interactive or json_output or quiet)
+            else None,
         ),
         json_output=json_output,
         quiet=quiet,
@@ -220,7 +232,6 @@ def add(
     no_color: Annotated[bool, typer.Option("--no-color")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
 ) -> None:
-    del verbose, no_color
     from mojilex_cli.commands.workflow import add_command, collect_sources
 
     def action():  # type: ignore[no-untyped-def]
@@ -267,7 +278,15 @@ def add(
             ),
         )
 
-    execute("add", action, json_output=json_output, quiet=quiet, debug=debug)
+    execute(
+        "add",
+        action,
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+        verbose=verbose,
+        no_color=no_color,
+    )
 
 
 @app.command("import")

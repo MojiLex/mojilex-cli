@@ -33,6 +33,38 @@ _MACHINE_JSON_MODE: ContextVar[bool] = ContextVar("mojilex_machine_json_mode", d
 _ENVELOPE_EMITTED: ContextVar[bool] = ContextVar("mojilex_envelope_emitted", default=False)
 
 
+@dataclass(slots=True)
+class _CommandContext:
+    run_id: str
+    quiet: bool = False
+    verbose: bool = False
+    no_color: bool = False
+
+
+_COMMAND_CONTEXT: ContextVar[_CommandContext | None] = ContextVar(
+    "mojilex_command_context", default=None
+)
+
+
+def report_run_id(run_id: str) -> None:
+    """Bind the durable checkpoint ID to the enclosing synchronous CLI invocation."""
+
+    context = _COMMAND_CONTEXT.get()
+    if context is not None:
+        # The shared holder survives asyncio.run's copied ContextVar context.
+        context.run_id = run_id
+
+
+def report_progress(message: str, *, verbose: bool = False) -> None:
+    """Human diagnostics always go to stderr, leaving machine stdout untouched."""
+
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.quiet or (verbose and not context.verbose):
+        return
+    console = Console(stderr=True, no_color=context.no_color)
+    console.print(f"[{context.run_id}] {redact(message)}", markup=False)
+
+
 class CommandError(RuntimeError):
     """Expected public failure carrying a stable machine-readable code."""
 
@@ -199,18 +231,22 @@ def execute(
     json_output: bool,
     quiet: bool = False,
     debug: bool = False,
+    verbose: bool = False,
+    no_color: bool = False,
 ) -> None:
     """Run one command and emit either one JSON object or concise human output."""
 
     effective_json = json_output or _MACHINE_JSON_MODE.get()
     run_id = new_run_id()
+    context = _CommandContext(run_id, quiet=quiet, verbose=verbose, no_color=no_color)
+    context_token = _COMMAND_CONTEXT.set(context)
     try:
         command_result = action()
         envelope = OutputEnvelope(
             ok=not command_result.errors,
             command=command,
             status=command_result.status,
-            run_id=command_result.run_id or run_id,
+            run_id=command_result.run_id or context.run_id,
             result=command_result.result,
             publication=command_result.publication,
             warnings=command_result.warnings,
@@ -222,7 +258,7 @@ def execute(
             ok=False,
             command=command,
             status=RunStatus.INTERRUPTED,
-            run_id=run_id,
+            run_id=context.run_id,
             errors=[error],
         )
     except BaseException as exc:  # commands must always preserve the output contract
@@ -242,21 +278,23 @@ def execute(
             ok=False,
             command=command,
             status=status,
-            run_id=run_id,
+            run_id=context.run_id,
             errors=[error],
         )
+    finally:
+        _COMMAND_CONTEXT.reset(context_token)
 
     if effective_json:
         typer.echo(envelope.to_json())
     elif not quiet or not envelope.ok:
-        _render_human(envelope)
+        _render_human(envelope, no_color=no_color)
     _ENVELOPE_EMITTED.set(True)
     if envelope.exit_code:
         raise typer.Exit(code=int(envelope.exit_code))
 
 
-def _render_human(envelope: OutputEnvelope) -> None:
-    console = Console(stderr=not envelope.ok)
+def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
+    console = Console(stderr=not envelope.ok, no_color=no_color)
     if envelope.ok:
         label = str(envelope.status).replace("RunStatus.", "").lower()
         console.print(f"[green]MojiLex {envelope.command}: {label}[/green]")

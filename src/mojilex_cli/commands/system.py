@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from mojilex_cli.config import (
     load_credentials,
     safe_config_dict,
 )
+from mojilex_cli.config.secrets import assert_no_secret_keys
 from mojilex_cli.github import GitHubCLI, GitHubError, RepositoryRef
 from mojilex_cli.media import probe_media_backends
 
@@ -47,6 +50,8 @@ def init_command(
     publish: str,
     config_path: Path | None,
     force: bool,
+    languages: Sequence[str] = ("ru", "en"),
+    prompt: Callable[[str, str], str] | None = None,
 ) -> CommandResult:
     target = (config_path or default_user_config_path()).expanduser().resolve()
     if target.exists() and not force:
@@ -55,6 +60,18 @@ def init_command(
             f"Configuration already exists: {target}",
             hint="Use --force only after reviewing the existing non-secret configuration.",
         )
+    if prompt is not None:
+        repo = prompt("Target dataset path or OWNER/REPO", repo).strip()
+        provider = prompt("AI provider (MVP: gemini)", provider).strip()
+        model = prompt("Exact AI model ID (no model is selected automatically)", model).strip()
+        languages = tuple(
+            part.strip()
+            for part in prompt(
+                "Languages, comma-separated (MVP requires ru,en)", ",".join(languages)
+            ).split(",")
+            if part.strip()
+        )
+        publish = prompt("Publication mode (local or pr)", publish).strip()
     selected_provider = provider.strip().lower()
     selected_model = model.strip()
     if selected_provider != "gemini":
@@ -71,16 +88,30 @@ def init_command(
         )
 
     identity = _effective_git_identity(repo)
+    configured_identity = False
+    if identity is None and prompt is not None:
+        name = prompt("Git author name to save only in MojiLex config (blank to skip)", "").strip()
+        if name:
+            email = prompt("Git author email to save only in MojiLex config", "").strip()
+            if not email or any(ord(char) < 32 or ord(char) == 127 for char in name + email):
+                raise CommandError(
+                    "CONFIG_INVALID",
+                    "Git identity requires a valid name and email.",
+                    hint="Enter non-empty values without control characters, or skip the name.",
+                )
+            identity = (name, email)
+            configured_identity = True
     candidate_payload: dict[str, Any] = {
         "repository": {"target": repo, "base_branch": "main", "publish": publish},
         "ai": {
             "provider": selected_provider,
             "model": selected_model,
-            "languages": ["ru", "en"],
+            "languages": list(languages),
         },
     }
     if identity is not None:
         candidate_payload["git_identity"] = {"name": identity[0], "email": identity[1]}
+    assert_no_secret_keys(candidate_payload)
     candidate = MojiLexConfig.model_validate(candidate_payload)
     credentials = load_credentials()
     checks = _system_checks(
@@ -88,6 +119,13 @@ def init_command(
         github_token=credentials.github_token,
         include_github=True,
     )
+    if configured_identity:
+        checks["git_identity"] = {
+            "available": True,
+            "name_configured": True,
+            "email_configured": True,
+            "source": "non-secret MojiLex configuration (Git global config unchanged)",
+        }
     content = _config_toml(candidate)
     target.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=".mojilex-config-", dir=target.parent)
@@ -141,7 +179,15 @@ def init_command(
 
 
 def doctor_command() -> CommandResult:
-    checks = _system_checks(include_github=False)
+    config = load_config()
+    checks = _system_checks(repository=config.repository.target, include_github=False)
+    if config.git_identity.name and config.git_identity.email:
+        checks["git_identity"] = {
+            "available": True,
+            "name_configured": True,
+            "email_configured": True,
+            "source": "non-secret MojiLex configuration",
+        }
     credentials = load_credentials()
     checks["credentials"] = {
         "telegram": bool(credentials.telegram_bot_token),
@@ -339,7 +385,8 @@ def _run_git(arguments: list[str], *, cwd: Path | None = None) -> str | None:
 
 
 def _quoted(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    # JSON's basic-string escapes are also valid TOML, including controls.
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _config_toml(config: MojiLexConfig) -> str:
@@ -357,7 +404,7 @@ def _config_toml(config: MojiLexConfig) -> str:
         "[ai]",
         f"provider = {_quoted(config.ai.provider)}",
         f"model = {_quoted(config.ai.model)}",
-        'languages = ["ru", "en"]',
+        "languages = [" + ", ".join(_quoted(language) for language in config.ai.languages) + "]",
         f"max_ai_requests = {config.ai.max_ai_requests}",
         f"ai_concurrency = {config.ai.ai_concurrency}",
         "",

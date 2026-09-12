@@ -539,6 +539,33 @@
         "request_parameters_sha256": {
           "$ref": "#/$defs/sha256"
         },
+        "concept_registry_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "maxLength": 128
+        },
+        "concept_registry_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "concept_candidate_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "concept_candidate_profile_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "maxLength": 128
+        },
+        "concept_candidate_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "model_routing_policy_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "maxLength": 128
+        },
+        "model_routing_policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "qualification_id": {
           "type": "string",
           "minLength": 1,
@@ -601,6 +628,31 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {"required": ["concept_registry_id"]},
+              {"required": ["concept_registry_sha256"]},
+              {"required": ["concept_candidate_set_sha256"]},
+              {"required": ["concept_candidate_profile_id"]},
+              {"required": ["concept_candidate_profile_sha256"]},
+              {"required": ["model_routing_policy_id"]},
+              {"required": ["model_routing_policy_sha256"]}
+            ]
+          },
+          "then": {
+            "properties": {"origin": {"enum": ["ai", "mixed"]}},
+            "required": [
+              "concept_registry_id",
+              "concept_registry_sha256",
+              "concept_candidate_set_sha256",
+              "concept_candidate_profile_id",
+              "concept_candidate_profile_sha256",
+              "model_routing_policy_id",
+              "model_routing_policy_sha256"
+            ]
+          }
+        },
         {
           "if": {
             "properties": {

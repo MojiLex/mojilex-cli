@@ -40,6 +40,25 @@ each required class, development and holdout splits isolated by declared artwork
 hash, three holdout runs, complete human-bound adjudication, and all quality/security gates from
 MLX-SPEC-002. A small development manifest may run, but its report fails closed and exits with the
 validation exit code. Unit tests use injected providers and make no network requests.
+Each holdout pass performs fresh provider requests under the same request/cost budget; transport
+retries do not count as additional runs. Reports bind every `(case_id, run_index)` observation,
+derive the completed run count from that evidence, and fail qualification when declared runs are
+missing or any response lacks exact hash-bound human adjudication. Repeated observations do not
+increase the number of unique fixtures or satisfy missing stratum coverage.
+
+Multiple distinct repeated responses can be reviewed through a case's
+`additional_adjudications`, uniquely sorted by response hash; these supplement the original
+`adjudication`. A different response never inherits another response's review.
+
+The manifest also embeds the exact `concept_registry` and `concept_candidate_profile` documents.
+The current prompt requires their active candidate set. Reports preserve the seven exact
+concept/routing identity fields and local routing body; this is generation evidence, not a
+signed model-qualification attestation or an automatically granted qualification.
+
+Multilabel macro-F1 averages per-label F1 over labels present in references or predictions;
+micro-F1 pools weighted label decisions. Repeated attempts are separately measured observations,
+including hallucination rate. A budget-blocked request that never reached the provider does not
+count as an actual holdout run.
 
 Never run the live model benchmark for an untrusted fork with provider secrets. Images, URLs,
 local paths, secrets, and raw structured descriptions are not copied into reports; only bounded

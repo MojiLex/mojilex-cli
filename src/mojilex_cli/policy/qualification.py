@@ -14,6 +14,15 @@ from mojilex_cli.dataset.serialization import parse_json
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+CONCEPT_BINDING_FIELDS = (
+    "concept_registry_id",
+    "concept_registry_sha256",
+    "concept_candidate_set_sha256",
+    "concept_candidate_profile_id",
+    "concept_candidate_profile_sha256",
+    "model_routing_policy_id",
+    "model_routing_policy_sha256",
+)
 
 
 class QualificationRegistryError(ValueError):
@@ -32,7 +41,32 @@ class QualificationStatus(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
-class ModelQualification(BaseModel):
+class ConceptQualificationBinding(BaseModel):
+    """Optional only for legacy results without a generated concept mapping."""
+
+    concept_registry_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128
+    )
+    concept_registry_sha256: str | None = Field(default=None, pattern=_SHA256)
+    concept_candidate_set_sha256: str | None = Field(default=None, pattern=_SHA256)
+    concept_candidate_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128
+    )
+    concept_candidate_profile_sha256: str | None = Field(default=None, pattern=_SHA256)
+    model_routing_policy_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$", max_length=128
+    )
+    model_routing_policy_sha256: str | None = Field(default=None, pattern=_SHA256)
+
+    @model_validator(mode="after")
+    def complete_concept_binding(self) -> ConceptQualificationBinding:
+        values = tuple(getattr(self, name) for name in CONCEPT_BINDING_FIELDS)
+        if any(value is not None for value in values) and any(value is None for value in values):
+            raise ValueError("concept generation binding requires all seven exact fields")
+        return self
+
+
+class ModelQualification(ConceptQualificationBinding):
     """One immutable qualification tuple from the public registry."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -90,6 +124,8 @@ class ModelQualification(BaseModel):
         return self
 
     def tuple_matches(self, query: QualificationQuery) -> bool:
+        if any(getattr(self, name) != getattr(query, name) for name in CONCEPT_BINDING_FIELDS):
+            return False
         return all(
             (
                 self.provider == query.provider,
@@ -113,7 +149,7 @@ class ModelQualification(BaseModel):
         return self.valid_until is None or instant < _parse_utc(self.valid_until)
 
 
-class QualificationQuery(BaseModel):
+class QualificationQuery(ConceptQualificationBinding):
     """Exact provenance tuple whose qualification is being resolved."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)

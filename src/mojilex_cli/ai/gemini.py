@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import date
 from decimal import Decimal
@@ -20,7 +21,8 @@ from .base import (
     ProviderCapabilities,
     validate_result_labels,
 )
-from .prompts import build_context_prompt, build_prompt
+from .prompts import build_context_prompt, build_prompt, gemini_request_parameters
+from .runtime_parameters import MAX_OUTPUT_TOKENS
 
 
 class ModelPricing(BaseModel):
@@ -62,7 +64,9 @@ class GeminiVisionProvider:
                     http_options=types.HttpOptions(
                         timeout=int(timeout_seconds * 1000),
                         # The outer budget counts every logical call. Disable hidden SDK retries.
-                        retry_options=types.HttpRetryOptions(attempts=1),
+                        # The SDK bridge also needs the per-instance guard below:
+                        # google-genai 2.23 mutates zero to one during initialization.
+                        retry_options=types.HttpRetryOptions(attempts=0),
                     ),
                 )
             except Exception as exc:
@@ -84,7 +88,8 @@ class GeminiVisionProvider:
             await self._client.aio.models.get(model=self.model)
         except Exception as exc:
             raise AIError(
-                f"Gemini credential/model validation failed: {type(exc).__name__}"
+                f"Gemini credential/model validation failed: "
+                f"{type(exc).__name__}{_safe_provider_status(exc)}"
             ) from None
 
     def estimate(self, request: DescriptionRequest) -> CostEstimate:
@@ -95,7 +100,12 @@ class GeminiVisionProvider:
                 upper_bound_usd=None,
                 note="No current externally supplied price record exists for this model.",
             )
-        prompt_tokens = max(1, len(_request_prompt(request)) // 3)
+        # Count UTF-8 bytes conservatively, including the output schema, instead
+        # of the non-conservative characters/3 heuristic (not safe for Cyrillic).
+        prompt_tokens = max(1, len(_request_prompt(request).encode("utf-8")))
+        prompt_tokens += (
+            len(json.dumps(DescriptionBatch.model_json_schema()).encode("utf-8")) + 2048
+        )
         input_tokens = (
             prompt_tokens + len(request.images) * self._pricing.conservative_tokens_per_image
         )
@@ -103,7 +113,7 @@ class GeminiVisionProvider:
             Decimal(input_tokens) * self._pricing.input_usd_per_million_tokens / Decimal(1_000_000)
         )
         output_cost = (
-            Decimal(self._pricing.conservative_output_tokens)
+            Decimal(max(MAX_OUTPUT_TOKENS, self._pricing.conservative_output_tokens))
             * self._pricing.output_usd_per_million_tokens
             / Decimal(1_000_000)
         )
@@ -117,54 +127,152 @@ class GeminiVisionProvider:
         if request.model != self.model:
             raise AIError("request model differs from the configured Gemini model")
         try:
-            from google.genai import types
-
-            contents: list[Any] = [_request_prompt(request)]
-            contents.extend(
-                types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
+            parameters = gemini_request_parameters()
+            content: list[dict[str, Any]] = [{"type": "text", "text": _request_prompt(request)}]
+            content.extend(
+                {
+                    "type": "image",
+                    "data": base64.b64encode(image.data).decode("ascii"),
+                    "mime_type": image.mime_type,
+                }
                 for image in request.images
             )
-            response = await self._client.aio.models.generate_content(
+            interactions = self._client.aio.interactions
+            _disable_interaction_retries(interactions)
+            response = await interactions.create(
                 model=self.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=DescriptionBatch,
-                    temperature=0,
-                ),
+                api_version=parameters["api_version"],
+                input=[{"type": "user_input", "content": content}],
+                store=parameters["store"],
+                background=parameters["background"],
+                stream=parameters["stream"],
+                response_format=parameters["response_format"],
+                generation_config=parameters["generation_config"],
             )
         except AIError:
             raise
         except Exception as exc:
             # Deliberately omit exception text: SDK errors can include request details.
-            raise AIError(f"Gemini request failed: {type(exc).__name__}") from None
+            raise AIError(
+                f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
+            ) from None
         try:
-            parsed = getattr(response, "parsed", None)
-            if isinstance(parsed, DescriptionBatch):
-                batch = parsed
-            elif parsed is not None:
-                batch = DescriptionBatch.model_validate(parsed)
-            else:
-                text = getattr(response, "text", None)
-                if not isinstance(text, str):
-                    raise ValueError("missing structured response")
-                batch = DescriptionBatch.model_validate_json(text)
-        except (ValidationError, ValueError, TypeError) as exc:
-            raise AIOutputError("Gemini returned invalid structured JSON") from exc
-        usage_metadata = getattr(response, "usage_metadata", None)
+            if getattr(response, "status", None) != "completed":
+                raise ValueError("interaction is incomplete")
+            if getattr(response, "model", None) not in {self.model, f"models/{self.model}"}:
+                raise ValueError("interaction returned a different model")
+            text = getattr(response, "output_text", None)
+            if not isinstance(text, str) or not text:
+                raise ValueError("missing structured response")
+            batch = DescriptionBatch.model_validate_json(text)
+        except (ValidationError, ValueError, TypeError):
+            # Validation errors may quote generated content; never preserve their chain.
+            raise AIOutputError("Gemini returned invalid or incomplete structured JSON") from None
+        usage_metadata = getattr(response, "usage", None)
         usage = AIUsage(
-            input_tokens=_int_or_none(getattr(usage_metadata, "prompt_token_count", None)),
-            output_tokens=_int_or_none(getattr(usage_metadata, "candidates_token_count", None)),
+            input_tokens=_int_or_none(getattr(usage_metadata, "total_input_tokens", None)),
+            output_tokens=_output_token_count(usage_metadata),
         )
         result = DescriptionResult(
             batch=batch,
             provider=self.name,
             model=self.model,
-            model_revision=_string_or_none(getattr(response, "model_version", None)),
+            # Interactions returns a model alias, not a documented immutable revision.
+            # Never upgrade that alias to revision evidence.
+            model_revision=None,
             usage=usage,
         )
         validate_result_labels(result, request.expected_labels)
         return result
+
+
+def _disable_interaction_retries(interactions: Any) -> None:
+    """One budget reservation must mean one HTTP attempt, including SDK errors.
+
+    google-genai 2.23's bridge turns legacy attempts=0 into one *extra* retry.
+    Configure only this resource instance, never mutate the installed SDK.
+    """
+
+    configuration = getattr(interactions, "sdk_configuration", None)
+    if configuration is None:
+        return  # Injected provider doubles have no SDK-owned retry machinery.
+    retry = getattr(configuration, "retry_config", None)
+    if retry is None or not hasattr(retry, "strategy"):
+        raise AIError("Gemini SDK cannot enforce the one-attempt request budget")
+    retry.strategy = "none"
+    retry.max_retries = 0
+    retry.retry_connection_errors = False
+
+
+def _safe_provider_status(exc: Exception) -> str:
+    """Keep only bounded status values from documented closed vocabularies."""
+
+    parts: list[str] = []
+    code = getattr(exc, "code", getattr(exc, "status_code", None))
+    if type(code) is int and 100 <= code <= 599:
+        parts.append(f"http={code}")
+    status = getattr(exc, "status", None)
+    if isinstance(status, str) and status in {
+        "CANCELLED",
+        "UNKNOWN",
+        "INVALID_ARGUMENT",
+        "DEADLINE_EXCEEDED",
+        "NOT_FOUND",
+        "ALREADY_EXISTS",
+        "PERMISSION_DENIED",
+        "RESOURCE_EXHAUSTED",
+        "FAILED_PRECONDITION",
+        "ABORTED",
+        "OUT_OF_RANGE",
+        "UNIMPLEMENTED",
+        "INTERNAL",
+        "UNAVAILABLE",
+        "DATA_LOSS",
+        "UNAUTHENTICATED",
+    }:
+        parts.append(f"status={status}")
+    body = getattr(exc, "body", None)
+    provider_error = body.get("error") if isinstance(body, dict) else None
+    provider_code = provider_error.get("code") if isinstance(provider_error, dict) else None
+    if isinstance(provider_code, str) and provider_code in {
+        "invalid_request",
+        "failed_precondition",
+        "out_of_range",
+        "parameter_unknown",
+        "authentication",
+        "permission_denied",
+        "not_found",
+        "model_not_found",
+        "already_exists",
+        "aborted",
+        "rate_limit_exceeded",
+        "quota_exceeded",
+        "too_many_requests",
+        "cancelled",
+        "api_error",
+        "unimplemented",
+        "service_unavailable",
+        "deadline_exceeded",
+        "safety",
+        "recitation",
+        "language",
+        "prohibited_content",
+        "spii",
+        "blocklist",
+        "image_safety",
+        "image_prohibited_content",
+        "image_recitation",
+        "image_other",
+        "content_blocked",
+        "malformed_function_call",
+        "malformed_tool_call",
+        "unexpected_tool_call",
+        "no_image",
+        "too_many_tool_calls",
+        "missing_thought_signature",
+    }:
+        parts.append(f"provider_code={provider_code}")
+    return " (" + ", ".join(parts) + ")" if parts else ""
 
 
 def _animated(request: DescriptionRequest) -> bool:
@@ -175,8 +283,13 @@ def _request_prompt(request: DescriptionRequest) -> str:
     allowed_context = {
         label: request.context[label].model_dump(mode="json") for label in request.expected_labels
     }
+    context_payload = (
+        {"items": allowed_context, "concept_context": request.concept_context}
+        if request.concept_context is not None
+        else allowed_context
+    )
     context_json = json.dumps(
-        allowed_context, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        context_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return (
         build_prompt(request.expected_labels, animated=_animated(request))
@@ -185,9 +298,14 @@ def _request_prompt(request: DescriptionRequest) -> str:
     )
 
 
+def _output_token_count(metadata: Any) -> int | None:
+    # Interactions reports response and thought tokens separately (not double-counted).
+    candidates = _int_or_none(getattr(metadata, "total_output_tokens", None))
+    thoughts = _int_or_none(getattr(metadata, "total_thought_tokens", None))
+    if candidates is None:
+        return None
+    return candidates + (thoughts or 0)
+
+
 def _int_or_none(value: object) -> int | None:
-    return value if isinstance(value, int) and value >= 0 else None
-
-
-def _string_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return value if type(value) is int and value >= 0 else None

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from mojilex_cli import __version__
 from mojilex_cli.ai import DescriptionItem
+from mojilex_cli.ai.prompts import PROMPT_VERSION as PROMPT_VERSION
 from mojilex_cli.dataset import (
     DatasetSnapshot,
     IdentityContinuity,
@@ -38,8 +39,6 @@ from mojilex_cli.domain import (
 from mojilex_cli.media import PIPELINE_VERSION, ProcessedMedia
 from mojilex_cli.sources import SourceCollection, SourceEmoji
 
-PROMPT_VERSION = "1.0.0"
-
 
 class IdentityConflictError(ValueError):
     code = "IDENTITY_CONFLICT"
@@ -60,6 +59,13 @@ class SemanticGenerationMetadata:
     routing_policy_version: str = "1.0.0"
     routing_reason_codes: tuple[str, ...] = ()
     generated_at: str | None = None
+    concept_registry_id: str | None = None
+    concept_registry_sha256: str | None = None
+    concept_candidate_set_sha256: str | None = None
+    concept_candidate_profile_id: str | None = None
+    concept_candidate_profile_sha256: str | None = None
+    model_routing_policy_id: str | None = None
+    model_routing_policy_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,8 +407,8 @@ def _emoji(
         fingerprints=analysis.fingerprints.model_copy(deep=True),
         descriptions=localized,
         facets=facets,
-        concept_ids=[],
-        concept_mapping_status="pending",
+        concept_ids=list(description.concept_ids),
+        concept_mapping_status="complete" if description.concept_ids else "pending",
         semantic_tags=sorted(description.semantic_tags),
         content=Content(
             rating=description.content.rating,
@@ -423,6 +429,13 @@ def _emoji(
             routing_policy_version=generation.routing_policy_version,
             routing_reason_codes=sorted(generation.routing_reason_codes),
             generated_at=generation.generated_at or now,
+            concept_registry_id=generation.concept_registry_id,
+            concept_registry_sha256=generation.concept_registry_sha256,
+            concept_candidate_set_sha256=generation.concept_candidate_set_sha256,
+            concept_candidate_profile_id=generation.concept_candidate_profile_id,
+            concept_candidate_profile_sha256=generation.concept_candidate_profile_sha256,
+            model_routing_policy_id=generation.model_routing_policy_id,
+            model_routing_policy_sha256=generation.model_routing_policy_sha256,
             input_media_sha256=[media.sha256],
             tool=ToolProvenance(name="mojilex-cli", version=__version__),
         ),

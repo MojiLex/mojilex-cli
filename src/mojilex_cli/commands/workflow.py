@@ -220,6 +220,7 @@ def describe_command(
         selectors,
         config.repository.target,
         base_branch=config.repository.base_branch,
+        cache_dir=config.cache_dir,
     )
     return run_add(
         sources,
@@ -257,6 +258,8 @@ def update_command(
             config.repository.target,
             base_branch=config.repository.base_branch,
             select_all=True,
+            cache_dir=config.cache_dir,
+            read_only=dry_run,
         )
     elif selector is not None and "://" in selector:
         sources = (selector,)
@@ -265,6 +268,8 @@ def update_command(
             (cast(str, selector),),
             config.repository.target,
             base_branch=config.repository.base_branch,
+            cache_dir=config.cache_dir,
+            read_only=dry_run,
         )
     return run_add(
         sources,
@@ -340,9 +345,22 @@ def _sources_for_selectors(
     *,
     base_branch: str,
     select_all: bool = False,
+    cache_dir: Path | None = None,
+    read_only: bool = False,
 ) -> tuple[str, ...]:
     with repository_workspace(repository, base_branch) as workspace:
-        snapshot = load_dataset(workspace.root)
+        snapshot = None
+        if cache_dir is not None and not select_all:
+            from mojilex_cli.cache.lookup import lookup_authoring_snapshot
+
+            snapshot = lookup_authoring_snapshot(
+                workspace.root,
+                cache_dir / "lookup-v1.sqlite3",
+                selectors,
+                read_only=read_only,
+            )
+        if snapshot is None:
+            snapshot = load_dataset(workspace.root)
         if select_all:
             return tuple(
                 sorted(

@@ -4,13 +4,16 @@ import httpx
 import pytest
 
 from mojilex_cli.sources import (
+    SourceAuthError,
     SourceNetworkError,
+    SourceNotFoundError,
     SourceRateLimitError,
     TelegramBotAPI,
     TelegramMediaLimitError,
     UnsupportedSourceError,
     parse_telegram_source,
 )
+from mojilex_cli.sources.telegram import TelegramProtocolError
 
 
 @pytest.mark.parametrize(
@@ -186,3 +189,106 @@ async def test_download_is_streamed_and_enforces_limit() -> None:
     with pytest.raises(TelegramMediaLimitError):
         _ = b"".join([chunk async for chunk in adapter.fetch_media(item)])
     await client.aclose()
+
+
+@pytest.mark.parametrize("http_status", [200, 400])
+async def test_missing_set_requires_valid_auth_and_bounded_confirmation(http_status: int) -> None:
+    methods: list[str] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {}}, request=request)
+        return httpx.Response(
+            http_status,
+            json={"ok": False, "error_code": 400, "description": "Bad Request: STICKERSET_INVALID"},
+            request=request,
+        )
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TelegramBotAPI(
+            "12345:abcdefghijklmnopqrstuvwxyz", client=client, sleep=sleep, jitter=lambda _: 0
+        )
+        with pytest.raises(SourceNotFoundError):
+            await adapter.fetch_collection(adapter.canonicalize("Pack"))
+
+    assert methods == ["getStickerSet", "getMe", "getStickerSet", "getStickerSet", "getStickerSet"]
+    assert sleeps == [1, 2, 4]
+
+
+async def test_transient_missing_set_recovers_without_revalidating_known_credentials() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {}}, request=request)
+        if methods.count("getStickerSet") == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: STICKERSET_INVALID",
+                },
+                request=request,
+            )
+        return httpx.Response(200, json={"ok": True, "result": _sticker_set()}, request=request)
+
+    async def sleep(_: float) -> None:
+        pass
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TelegramBotAPI("12345:abcdefghijklmnopqrstuvwxyz", client=client, sleep=sleep)
+        await adapter.validate_credentials()
+        assert await adapter.check_collection_availability(adapter.canonicalize("Pack")) is True
+
+    assert methods == ["getMe", "getStickerSet", "getStickerSet"]
+
+
+@pytest.mark.parametrize(
+    "description", ["Bad Request: invalid request", "file not found", "STICKERSET_INVALID suffix"]
+)
+async def test_arbitrary_bad_request_is_not_set_unavailability(description: str) -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.url.path.rsplit("/", 1)[-1])
+        return httpx.Response(
+            400, json={"ok": False, "error_code": 400, "description": description}, request=request
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TelegramBotAPI("12345:abcdefghijklmnopqrstuvwxyz", client=client)
+        with pytest.raises(TelegramProtocolError):
+            await adapter.check_collection_availability(adapter.canonicalize("Pack"))
+
+    assert methods == ["getStickerSet"]
+
+
+async def test_missing_set_with_invalid_credentials_never_reports_unavailable() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "getMe":
+            return httpx.Response(401, json={"ok": False, "error_code": 401}, request=request)
+        return httpx.Response(
+            400,
+            json={"ok": False, "error_code": 400, "description": "Bad Request: STICKERSET_INVALID"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = TelegramBotAPI("12345:abcdefghijklmnopqrstuvwxyz", client=client)
+        with pytest.raises(SourceAuthError):
+            await adapter.check_collection_availability(adapter.canonicalize("Pack"))
+
+    assert methods == ["getStickerSet", "getMe"]

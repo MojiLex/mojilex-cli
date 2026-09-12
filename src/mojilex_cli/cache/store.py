@@ -93,7 +93,13 @@ class CacheStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if read_only:
-                uri = f"file:{self.path.as_posix()}?mode=ro"
+                # Plain mode=ro may still create WAL/SHM files. Immutable reads
+                # never touch the persistent cache, but must not ignore a live
+                # non-empty WAL containing newer committed results.
+                wal_path = self.path.with_name(self.path.name + "-wal")
+                if wal_path.exists() and wal_path.stat().st_size:
+                    raise CacheError("read-only cache inspection requires a checkpointed WAL")
+                uri = f"{self.path.as_uri()}?mode=ro&immutable=1"
                 self._connection = sqlite3.connect(uri, uri=True, timeout=5)
                 self._cache_schema_version = int(
                     self._connection.execute("PRAGMA user_version").fetchone()[0]
@@ -505,6 +511,13 @@ def ai_cache_key(
     request_parameters_sha256: str,
     request_identity_sha256: str | None = None,
     item_label: str = "E001",
+    concept_registry_id: str | None = None,
+    concept_registry_sha256: str | None = None,
+    concept_candidate_set_sha256: str | None = None,
+    concept_candidate_profile_id: str | None = None,
+    concept_candidate_profile_sha256: str | None = None,
+    model_routing_policy_id: str | None = None,
+    model_routing_policy_sha256: str | None = None,
 ) -> str:
     if request_identity_sha256 is None:
         request_identity_sha256 = hashlib.sha256(
@@ -563,6 +576,24 @@ def ai_cache_key(
         "shown_media_sha256": list(shown_media_sha256),
         "request_parameters_sha256": request_parameters_sha256,
     }
+    concept_binding = {
+        "concept_registry_id": concept_registry_id,
+        "concept_registry_sha256": concept_registry_sha256,
+        "concept_candidate_set_sha256": concept_candidate_set_sha256,
+        "concept_candidate_profile_id": concept_candidate_profile_id,
+        "concept_candidate_profile_sha256": concept_candidate_profile_sha256,
+        "model_routing_policy_id": model_routing_policy_id,
+        "model_routing_policy_sha256": model_routing_policy_sha256,
+    }
+    if any(part is not None for part in concept_binding.values()):
+        if any(
+            not isinstance(part, str)
+            or not part
+            or (name.endswith("_sha256") and _SHA256.fullmatch(part) is None)
+            for name, part in concept_binding.items()
+        ):
+            raise CacheError("concept generation cache binding requires all seven exact fields")
+        value.update(concept_binding)
     return hashlib.sha256(rfc8785.dumps(value)).hexdigest()
 
 

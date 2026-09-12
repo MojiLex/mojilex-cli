@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from mojilex_cli.commands import system
 from mojilex_cli.commands.runtime import CommandError
-from mojilex_cli.config import Credentials
+from mojilex_cli.config import Credentials, MojiLexConfig
 
 
 def _checks(*, can_write: bool = True, can_publish_pr: bool = True) -> dict[str, object]:
@@ -167,8 +168,125 @@ def test_doctor_includes_active_python_probe(monkeypatch: pytest.MonkeyPatch) ->
     checks.pop("github_access")
     monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
     monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(system, "load_config", MojiLexConfig)
 
     result = system.doctor_command()
 
     assert result.result["checks"]["python"]["available"] is True
     assert result.result["ready"] is True
+
+
+def test_doctor_recognizes_identity_saved_by_the_setup_wizard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = _checks()
+    checks["git_identity"] = {"available": False}
+    config = MojiLexConfig.model_validate(
+        {"git_identity": {"name": "Author", "email": "author@example.test"}}
+    )
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(system, "load_config", lambda: config)
+    result = system.doctor_command()
+    assert result.result["checks"]["git_identity"]["available"] is True
+    assert not any("Git user.name" in str(warning) for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['quoted "name"', "line\nbreak", "tab\tvalue", "control\x00end", r"C:\local\path", "Кириллица"],
+)
+def test_init_toml_string_roundtrips_without_escaping_into_configuration(value: str) -> None:
+    parsed = tomllib.loads("value = " + system._quoted(value) + "\n")
+    assert parsed == {"value": value}
+
+
+def test_init_wizard_selects_config_and_saves_missing_identity_only_in_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "wizard.toml"
+    answers = iter(
+        (
+            "Example/dataset",
+            "gemini",
+            "chosen-model",
+            "en,ru",
+            "local",
+            "Author",
+            "author@example.test",
+        )
+    )
+    prompts: list[str] = []
+
+    def prompt(label: str, _default: str) -> str:
+        prompts.append(label)
+        return next(answers)
+
+    checks = _checks()
+    checks["git_identity"] = {"available": False}
+    monkeypatch.setattr(system, "_effective_git_identity", lambda _repo: None)
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(
+        system,
+        "_run_git",
+        lambda *_args, **_kwargs: pytest.fail("wizard must not change Git config"),
+    )
+    result = system.init_command(
+        repo="MojiLex/mojilex",
+        provider="gemini",
+        model="",
+        publish="pr",
+        config_path=target,
+        force=False,
+        prompt=prompt,
+    )
+    parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+    assert parsed["repository"]["target"] == "Example/dataset"
+    assert parsed["repository"]["publish"] == "local"
+    assert parsed["ai"]["model"] == "chosen-model"
+    assert parsed["ai"]["languages"] == ["en", "ru"]
+    assert parsed["git_identity"] == {"name": "Author", "email": "author@example.test"}
+    assert result.result["checks"]["git_identity"]["available"] is True
+    assert len(prompts) == 7
+
+
+def test_init_existing_file_refuses_before_any_wizard_prompt(tmp_path: Path) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text("preserved", encoding="utf-8")
+    with pytest.raises(CommandError, match="already exists"):
+        system.init_command(
+            repo="MojiLex/mojilex",
+            provider="gemini",
+            model="",
+            publish="pr",
+            config_path=target,
+            force=False,
+            prompt=lambda *_args: pytest.fail("must not prompt before overwrite refusal"),
+        )
+    assert target.read_text(encoding="utf-8") == "preserved"
+
+
+@pytest.mark.parametrize("mode", ("tty", "noninteractive", "json", "quiet", "pipe"))
+def test_init_cli_never_prompts_in_machine_or_noninteractive_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from mojilex_cli import cli
+    from mojilex_cli.commands.runtime import CommandResult
+
+    selected: list[object] = []
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: mode != "pipe"))
+    monkeypatch.setattr(cli, "execute", lambda _command, operation, **_kwargs: operation())
+
+    def initialize(**kwargs):
+        selected.append(kwargs["prompt"])
+        return CommandResult()
+
+    monkeypatch.setattr(cli, "init_command", initialize)
+    cli.initialize(
+        model="configured-model",
+        non_interactive=mode == "noninteractive",
+        json_output=mode == "json",
+        quiet=mode == "quiet",
+    )
+    assert callable(selected[0]) is (mode == "tty")

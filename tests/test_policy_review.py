@@ -95,3 +95,28 @@ def test_review_policy_computes_high_and_exact_group_conflict_without_persisting
     assert ReviewReason.EXACT_GROUP_DESCRIPTION_CONFLICT in by_id[second.id].reason_codes
     assert "review_priority" not in first.as_dict()
     assert "review_reason_codes" not in first.as_dict()
+
+
+@pytest.mark.parametrize(
+    ("uncertainty", "reason"),
+    [
+        (Uncertainty.TEXT, ReviewReason.TEXT_UNCERTAINTY),
+        (Uncertainty.CULTURAL_REFERENCE, ReviewReason.CULTURAL_REFERENCE_UNCERTAINTY),
+    ],
+)
+def test_text_and_cultural_uncertainties_always_receive_high_priority(
+    tmp_path: Path, uncertainty: Uncertainty, reason: ReviewReason
+) -> None:
+    snapshot = write_fixture(tmp_path)
+    emoji = next(iter(snapshot.emojis.values()))
+    emoji.facets.uncertainties = [uncertainty]
+    emoji.review = Review(
+        status="approved",
+        reviewed_at="2026-09-11T20:00:00Z",
+        reviewer="reviewer",
+        reviewed_content_sha256=reviewed_content_sha256(emoji),
+        review_hash_profile_id="semantic-review-content-v3",
+    )
+    item = _report(snapshot).items[0]
+    assert item.priority is ReviewPriority.HIGH
+    assert reason in item.reason_codes

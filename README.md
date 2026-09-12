@@ -52,6 +52,11 @@ not supported. See
    The model ID is deliberately explicit so the selected provider target is visible in the
    configuration and provenance. `init` writes only non-secret settings, runs the same real media
    fixture probes as `doctor`, and reports credential, Git identity, and GitHub access readiness.
+   In a terminal, `mojilex init` opens a setup wizard for the target, provider, exact model,
+   languages and publication mode. If Git identity is missing, the wizard offers to save it
+   only in the MojiLex configuration; it never changes global Git settings. Use
+   `--non-interactive` with explicit options for scripts. JSON, quiet and piped-input modes
+   never prompt; a missing model is an error. Repeat `--lang` to select languages (ru/en required).
 
 2. Provide credentials through environment variables or hidden interactive input. Never put
    them in `.mojilex.toml` or a command-line argument:

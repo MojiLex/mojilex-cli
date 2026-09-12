@@ -1276,6 +1276,14 @@ def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationI
         provenance = emoji.provenance
         path_display = str(emoji_bucket_path(emoji.platform, emoji.id))
         qualification_id = provenance.qualification_id
+        if emoji.concept_ids and provenance.concept_registry_id is None:
+            _issue(
+                issues,
+                "QUALIFICATION",
+                path_display,
+                "unreviewed AI concept output requires exact concept generation binding",
+            )
+            continue
         if qualification_id is None:
             _issue(
                 issues,
@@ -1297,6 +1305,13 @@ def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationI
             routing_policy_version=str(provenance.routing_policy_version),
             languages=tuple(emoji.descriptions),
             generated_at=str(provenance.generated_at),
+            concept_registry_id=provenance.concept_registry_id,
+            concept_registry_sha256=provenance.concept_registry_sha256,
+            concept_candidate_set_sha256=provenance.concept_candidate_set_sha256,
+            concept_candidate_profile_id=provenance.concept_candidate_profile_id,
+            concept_candidate_profile_sha256=provenance.concept_candidate_profile_sha256,
+            model_routing_policy_id=provenance.model_routing_policy_id,
+            model_routing_policy_sha256=provenance.model_routing_policy_sha256,
         )
         match = match_qualification(
             registry,

@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID
 
+from mojilex_cli.commands.dedupe_backfill import backfill_fingerprints
 from mojilex_cli.commands.runtime import CommandError, CommandResult
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
@@ -87,23 +88,69 @@ def dedupe_scan_command(
     )
     _require_profile(config)
     with repository_workspace(config.repository.target, config.repository.base_branch) as workspace:
-        validate_dataset(workspace.root, strict=False).raise_for_errors()
-        snapshot = load_dataset(workspace.root)
+        snapshot = load_dataset(workspace.root, allow_missing_fingerprints=True)
+        validate_snapshot(snapshot).raise_for_errors()
         selected = None if all_items else _resolve_selector(snapshot, cast(str, selector))
+        selected_ids = set(snapshot.emojis) if selected is None else selected
+        if workspace.temporary and any(
+            snapshot.emojis[identifier].fingerprints.status.value != "complete"
+            for identifier in selected_ids
+        ):
+            raise CommandError(
+                "CONFIG_INVALID",
+                "Fingerprint backfill requires a persistent local checkout.",
+                hint="Clone the data repository locally and pass its directory with --repo.",
+            )
+        after, backfilled = asyncio.run(backfill_fingerprints(snapshot, selected_ids, config))
+        changed: tuple[PurePosixPath, ...] = ()
+        before_files = snapshot.to_files()
+        after_files = after.to_files()
+        needs_write = after_files != before_files
+        if needs_write:
+            if any(item.fingerprints.status.value == "partial" for item in after.emojis.values()):
+                raise CommandError(
+                    "VALIDATION_FAILED",
+                    "Unselected legacy records still need fingerprint backfill.",
+                    hint="Use dedupe scan --all so no partial fingerprint set is written.",
+                )
+            validated = after.clone()
+            validated.source_bytes = validated.to_files()
+            validate_snapshot(
+                validated,
+                canonical=True,
+                schemas=(workspace.root / "schemas/v1").is_dir(),
+                repository_files=True,
+            ).raise_for_errors()
+            # apply_snapshot preserves bytes of semantically unchanged files. Validate
+            # that actual projected view too, not only fully reserialized model bytes.
+            validated.source_bytes = dict(snapshot.source_bytes)
+            for path in set(before_files) | set(after_files):
+                if before_files.get(path) != after_files.get(path):
+                    if path in after_files:
+                        validated.source_bytes[path] = after_files[path]
+                    else:
+                        validated.source_bytes.pop(path, None)
+            validate_snapshot(validated, canonical=True).raise_for_errors()
         index_path = cast(Path, config.cache_dir) / "dedupe-index-v1.sqlite3"
         with DedupeIndex(index_path, repository_root=workspace.root) as index:
             report = index.update(
-                snapshot,
+                after,
                 rebuild=all_items,
                 selected_emoji_ids=selected,
                 max_candidates=config.dedupe.max_candidates,
             )
+        # All fallible media/validation/index work finishes before canonical publication.
+        # The writer still compares original source bytes under its transaction lock.
+        if needs_write:
+            changed = apply_snapshot(snapshot, after)
         return CommandResult(
             result={
                 **report.as_dict(),
                 "index_path": str(index_path),
-                "selected_emoji_ids": sorted(selected or snapshot.emojis),
-                "canonical_writes": 0,
+                "selected_emoji_ids": sorted(selected_ids),
+                "canonical_writes": len(changed),
+                "backfilled_emoji_ids": list(backfilled),
+                "changed_paths": [str(path) for path in changed],
             }
         )
 

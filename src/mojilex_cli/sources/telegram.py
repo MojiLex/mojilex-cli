@@ -171,6 +171,7 @@ class TelegramBotAPI(SourceAdapter):
         self._sleep = sleep
         self._jitter = jitter or (lambda delay: random.uniform(0.0, min(0.25, delay / 4)))
         self._collections: dict[str, SourceCollection] = {}
+        self._credentials_validated = False
 
     async def __aenter__(self) -> TelegramBotAPI:
         return self
@@ -206,6 +207,7 @@ class TelegramBotAPI(SourceAdapter):
 
     async def validate_credentials(self) -> None:
         await self._request("getMe")
+        self._credentials_validated = True
 
     async def fetch_collection(self, native_ref: SourceReference) -> SourceCollection:
         if native_ref.platform != "telegram":
@@ -327,6 +329,17 @@ class TelegramBotAPI(SourceAdapter):
                     raise SourceNetworkError("Telegram service remained temporarily unavailable")
                 await self._backoff(attempt)
                 continue
+            if response.status_code in {200, 400} and self._is_missing_sticker_set(
+                method, error_code, parsed
+            ):
+                # A missing set must not turn an invalid credential or one
+                # transient/ambiguous response into an availability change.
+                if not self._credentials_validated:
+                    await self.validate_credentials()
+                if attempt + 1 < self._max_attempts:
+                    await self._backoff(attempt)
+                    continue
+                raise SourceNotFoundError("Telegram custom emoji set was not found")
             if not 200 <= response.status_code < 300:
                 if response.status_code == 404:
                     raise SourceAuthError("Telegram rejected the configured credential")
@@ -336,12 +349,6 @@ class TelegramBotAPI(SourceAdapter):
             if not isinstance(parsed, Mapping):
                 raise TelegramProtocolError("Telegram returned invalid JSON")
             if parsed.get("ok") is not True:
-                description = str(parsed.get("description", ""))
-                if error_code == 400 and any(
-                    marker in description.lower()
-                    for marker in ("not found", "stickerset_invalid", "invalid sticker set")
-                ):
-                    raise SourceNotFoundError("Telegram custom emoji set was not found")
                 raise TelegramProtocolError(
                     redact_text("Telegram rejected the read request", self._secrets)
                 )
@@ -353,6 +360,25 @@ class TelegramBotAPI(SourceAdapter):
                 self._secrets,
             )
         ) from None
+
+    @staticmethod
+    def _is_missing_sticker_set(method: str, error_code: int, payload: Any) -> bool:
+        if (
+            method != "getStickerSet"
+            or error_code != 400
+            or not isinstance(payload, Mapping)
+            or payload.get("ok") is not False
+        ):
+            return False
+        description = payload.get("description")
+        return isinstance(description, str) and description.lower() in {
+            "bad request: stickerset_invalid",
+            "bad request: sticker set not found",
+            "bad request: invalid sticker set",
+            "stickerset_invalid",
+            "sticker set not found",
+            "invalid sticker set",
+        }
 
     @staticmethod
     def _parse_response_json(response: httpx.Response) -> Any:

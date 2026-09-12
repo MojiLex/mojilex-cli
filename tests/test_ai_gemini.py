@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 import sys
 import textwrap
@@ -11,7 +12,6 @@ import pytest
 from mojilex_cli.ai import (
     BudgetExceededError,
     CostEstimate,
-    DescriptionBatch,
     DescriptionRequest,
     GeminiVisionProvider,
     ModelPricing,
@@ -70,30 +70,32 @@ class _FakeModels:
     async def get(self, *, model: str) -> object:
         return {"name": model}
 
-    async def generate_content(self, **kwargs: object) -> object:
+    async def create(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
         return SimpleNamespace(
-            parsed=DescriptionBatch.model_validate(_payload()),
-            model_version="gemini-test-revision",
-            usage_metadata=SimpleNamespace(prompt_token_count=10, candidates_token_count=20),
+            output_text=json.dumps(_payload()),
+            model=kwargs["model"],
+            status="completed",
+            usage=SimpleNamespace(total_input_tokens=10, total_output_tokens=20),
         )
 
 
 @pytest.mark.asyncio
 async def test_gemini_uses_official_async_structured_schema() -> None:
     models = _FakeModels()
-    client = SimpleNamespace(aio=SimpleNamespace(models=models))
+    client = SimpleNamespace(aio=SimpleNamespace(models=models, interactions=models))
     provider = GeminiVisionProvider(model="gemini-test", client=client)
     await provider.validate_credentials()
     result = await provider.describe(_request())
 
     assert result.batch.items[0].label == "E001"
-    assert result.model_revision == "gemini-test-revision"
+    assert result.model_revision is None
     call = models.calls[0]
     assert call["model"] == "gemini-test"
-    config = call["config"]
-    assert config.response_mime_type == "application/json"
-    assert config.response_schema is DescriptionBatch
+    assert call["response_format"]["mime_type"] == "application/json"
+    assert call["response_format"]["schema"]["type"] == "object"
+    assert call["generation_config"]["max_output_tokens"] == 8192
+    assert call["store"] is False
 
 
 @pytest.mark.asyncio
@@ -263,3 +265,56 @@ def test_pricing_must_be_external_and_model_specific() -> None:
     estimate = provider.estimate(_request())
     assert estimate.known
     assert estimate.pricing_updated_at == date(2026, 9, 11)
+    assert estimate.upper_bound_usd >= Decimal(8192) * Decimal(2) / Decimal(1_000_000)
+
+
+def test_gemini_usage_includes_billable_thinking_tokens() -> None:
+    from mojilex_cli.ai.gemini import _output_token_count
+
+    assert (
+        _output_token_count(SimpleNamespace(total_output_tokens=20, total_thought_tokens=35)) == 55
+    )
+    assert _output_token_count(SimpleNamespace(total_output_tokens=20)) == 20
+    assert _output_token_count(SimpleNamespace(total_thought_tokens=35)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code,status,expected",
+    [
+        (400, "INVALID_ARGUMENT", " (http=400, status=INVALID_ARGUMENT)"),
+        (403, "PERMISSION_DENIED", " (http=403, status=PERMISSION_DENIED)"),
+        (429, "RESOURCE_EXHAUSTED", " (http=429, status=RESOURCE_EXHAUSTED)"),
+        (429, "SYNTHETIC_SECRET_VALUE", " (http=429)"),
+        ("429?synthetic-credential", "bad status\nrequest-data", ""),
+        (True, ["RESOURCE_EXHAUSTED"], ""),
+        (999999999, None, ""),
+    ],
+)
+async def test_provider_diagnostics_never_include_error_message_or_request(code, status, expected):
+    from mojilex_cli.ai import AIError
+
+    class SyntheticProviderError(Exception):
+        pass
+
+    error = SyntheticProviderError("synthetic-credential-not-real; private request and response")
+    error.code = code
+    error.status = status
+    error.details = {"synthetic-secret": "never-output-this"}
+
+    class FailingModels:
+        async def create(self, **kwargs):
+            raise error
+
+    provider = GeminiVisionProvider(
+        model="gemini-test",
+        client=SimpleNamespace(aio=SimpleNamespace(interactions=FailingModels())),
+    )
+    with pytest.raises(AIError) as captured:
+        await provider.describe(_request())
+    assert str(captured.value) == "Gemini request failed: SyntheticProviderError" + expected
+    assert "synthetic-credential" not in str(captured.value)
+    assert "private request" not in str(captured.value)
+    assert "never-output-this" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True

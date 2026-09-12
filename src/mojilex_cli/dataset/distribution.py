@@ -396,6 +396,8 @@ def _rights_summary(
         status = "unknown"
     elif profile.get("withdrawn_from_distribution") is True:
         status = "withdrawn"
+    elif any(value in {"deny", "conditional", "not-granted"} for value in decisions):
+        status = "restricted"
     elif "unknown" in decisions or any(
         value not in {"allow", "deny", "conditional", "not-granted"} for value in decisions
     ):

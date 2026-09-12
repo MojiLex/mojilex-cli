@@ -38,9 +38,10 @@ from mojilex_cli.benchmark import (
     run_model_benchmark,
 )
 from mojilex_cli.benchmark.common import BenchmarkError
-from mojilex_cli.benchmark.model import _safety_pass
+from mojilex_cli.benchmark.model import _macro_f1_bp, _micro_f1_bp, _safety_pass
 from mojilex_cli.commands import benchmark as benchmark_commands
 from mojilex_cli.commands.runtime import CommandError
+from test_ai_concepts import PROFILE, _registry
 
 
 def _description(*, animated: bool, ambiguous: bool = False) -> DescriptionItem:
@@ -60,6 +61,7 @@ def _description(*, animated: bool, ambiguous: bool = False) -> DescriptionItem:
     return DescriptionItem.model_validate(
         {
             "label": "E001",
+            "concept_ids": ["animal.cat"],
             "descriptions": {"ru": ru, "en": en},
             "facets": {
                 "text_content": {
@@ -203,6 +205,8 @@ def _manifest(
         max_cost_usd=Decimal("10"),
         holdout_run_count=3,
         single_review_limitation=True,
+        concept_registry=_registry(),
+        concept_candidate_profile=PROFILE,
     )
 
 
@@ -228,7 +232,11 @@ def _observation(case: ModelBenchmarkCase) -> ModelObservation:
 def test_model_golden_report_passes_all_hard_gates_deterministically() -> None:
     cases = tuple(_case(index, MANDATORY_MODEL_STRATA[index // 30]) for index in range(240))
     manifest = _manifest(cases)
-    observations = tuple(_observation(case) for case in cases)
+    observations = tuple(
+        _observation(case).model_copy(update={"run_index": run_index})
+        for case in cases
+        for run_index in range(1, 4 if case.split == "holdout" else 2)
+    )
 
     first = evaluate_model_benchmark(manifest, observations, manifest_sha256="d" * 64)
     second = evaluate_model_benchmark(manifest, observations, manifest_sha256="d" * 64)
@@ -239,6 +247,59 @@ def test_model_golden_report_passes_all_hard_gates_deterministically() -> None:
     assert first["metrics"]["literal_precision_bp"] == 10_000
     assert first["strata"]["animated"]["case_count"] == 60
     assert "text_presence_f1_bp" in first["strata"]["text"]["metric_ci95_bp"]
+    assert first["case_count"] == 240
+    assert first["observation_count"] == 480
+    assert first["holdout_run_count"] == 3
+
+
+def test_three_run_declaration_without_three_observations_fails_closed() -> None:
+    case = _case(15, "static-full-color")
+    report = evaluate_model_benchmark(
+        _manifest((case,)), (_observation(case),), manifest_sha256="d" * 64
+    )
+    assert report["requested_holdout_run_count"] == 3
+    assert report["holdout_run_count"] == 1
+    assert report["gates"]["complex_holdout_has_at_least_3_runs"] is False
+    assert report["gates"]["declared_runs_complete"] is False
+    assert report["passed"] is False
+
+
+@pytest.mark.parametrize("run_indices", [(1, 1, 2), (1, 2, 4), (2, 3)])
+def test_duplicate_foreign_or_missing_initial_runs_are_rejected(run_indices) -> None:
+    case = _case(15, "static-full-color")
+    observations = tuple(
+        _observation(case).model_copy(update={"run_index": index}) for index in run_indices
+    )
+    with pytest.raises(BenchmarkError, match="unique declared runs"):
+        evaluate_model_benchmark(_manifest((case,)), observations, manifest_sha256="d" * 64)
+
+
+def test_repeats_do_not_inflate_fixture_coverage_and_unreviewed_variation_blocks() -> None:
+    case = _case(15, "static-full-color")
+    altered_payload = case.expected.model_dump(mode="json")
+    altered_payload["descriptions"]["en"]["text"] = "A different observation."
+    altered = DescriptionItem.model_validate(altered_payload)
+    observations = (
+        *(_observation(case).model_copy(update={"run_index": index}) for index in (1, 2)),
+        ModelObservation(
+            **{
+                **_observation(case).model_dump(mode="python"),
+                "run_index": 3,
+                "response": altered,
+                "response_sha256": description_item_sha256(altered),
+            }
+        ),
+    )
+    report = evaluate_model_benchmark(_manifest((case,)), observations, manifest_sha256="d" * 64)
+    assert report["gates"]["complex_holdout_has_at_least_3_runs"] is True
+    assert report["gates"]["every_response_human_bound"] is False
+    assert report["holdout_critical_error_count"] == 1
+    assert report["case_count"] == 1
+    assert report["observation_count"] == 3
+    assert report["mandatory_strata_counts"]["static-full-color"] == 1
+    assert report["strata"]["static"]["case_count"] == 1
+    assert report["strata"]["static"]["observation_count"] == 3
+    assert report["passed"] is False
 
 
 class _FakeProvider:
@@ -264,6 +325,8 @@ class _FakeProvider:
         return CostEstimate(upper_bound_usd=Decimal("0.001"), note="test")
 
     async def describe(self, request: DescriptionRequest) -> DescriptionResult:
+        assert request.concept_context is not None
+        assert request.concept_context["candidate_ids"] == ["animal.cat"]
         self.calls += 1
         return DescriptionResult(
             batch=DescriptionBatch(items=(self.response,)),
@@ -322,6 +385,50 @@ async def test_live_runner_rejects_tampered_input_before_provider_call(tmp_path:
     assert provider.calls == 0
 
 
+@pytest.mark.asyncio
+async def test_live_runner_executes_three_independent_holdout_requests(tmp_path: Path) -> None:
+    image = b"\x89PNG\r\n\x1a\nsynthetic"
+    case = _case(15, "static-full-color", image_sha256=hashlib.sha256(image).hexdigest())
+    image_path = tmp_path / case.image.path
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(image)
+    manifest_path = tmp_path / "benchmark.json"
+    manifest_path.write_text(_manifest((case,)).model_dump_json(), encoding="utf-8")
+    provider = _FakeProvider(case.expected)
+    report = await run_model_benchmark(manifest_path, provider)
+    assert provider.calls == 3
+    binding = report["concept_generation_binding"]
+    assert binding["concept_registry_id"] == _registry()["registry_id"]
+    assert binding["model_routing_policy_id"] == "model-routing-local-v1"
+    assert binding["model_routing_policy"]["trigger_order"] == []
+    assert report["gates"]["concept_generation_context_bound"] is True
+    assert report["holdout_run_count"] == 3
+    assert report["gates"]["declared_runs_complete"] is True
+    assert [item["run_index"] for item in report["cases"]] == [1, 2, 3]
+    assert sum(item["requests_used"] for item in report["cases"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_repeated_holdout_requests_share_one_budget(tmp_path: Path) -> None:
+    image = b"\x89PNG\r\n\x1a\nsynthetic"
+    case = _case(15, "static-full-color", image_sha256=hashlib.sha256(image).hexdigest())
+    image_path = tmp_path / case.image.path
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(image)
+    manifest = _manifest((case,)).model_copy(update={"max_requests": 1})
+    manifest_path = tmp_path / "benchmark.json"
+    manifest_path.write_text(manifest.model_dump_json(), encoding="utf-8")
+    provider = _FakeProvider(case.expected)
+    report = await run_model_benchmark(manifest_path, provider)
+    assert provider.calls == 1
+    assert [item["schema_success"] for item in report["cases"]] == [True, False, False]
+    assert report["holdout_run_count"] == 1
+    assert report["gates"]["complex_holdout_has_at_least_3_runs"] is False
+    assert report["gates"]["declared_runs_complete"] is False
+    assert report["gates"]["schema_success_100_percent"] is False
+    assert report["passed"] is False
+
+
 def test_unbound_adjudication_and_security_failure_are_fail_closed() -> None:
     case = _case(0, "static-full-color")
     manifest = _manifest((case,))
@@ -377,3 +484,66 @@ def test_model_command_requires_explicit_secret_before_network(
             benchmark_manifest=manifest_path,
         )
     assert captured.value.error.code == "CREDENTIAL_MISSING"
+
+
+def test_repeat_hallucination_rate_counts_observations_without_dilution() -> None:
+    case = _case(15, "static-full-color")
+    assert case.adjudication is not None
+    adjudication = case.adjudication.model_copy(
+        update={"hallucinated_observable_fact": True, "full_pass": False}
+    )
+    case = case.model_copy(update={"adjudication": adjudication})
+    report = evaluate_model_benchmark(
+        _manifest((case,)),
+        tuple(_observation(case).model_copy(update={"run_index": index}) for index in (1, 2, 3)),
+        manifest_sha256="d" * 64,
+    )
+    assert report["metrics"]["hallucination_count"] == 3
+    assert report["metrics"]["hallucination_bp"] == 10_000
+    assert report["gates"]["hallucinations_at_most_2_percent"] is False
+
+
+def test_additional_human_adjudication_binds_varied_repeat_response() -> None:
+    case = _case(15, "static-full-color")
+    assert case.adjudication is not None
+    altered = case.expected.model_copy(update={"semantic_tags": ("face", "happy", "smile")})
+    altered_hash = description_item_sha256(altered)
+    case = case.model_copy(
+        update={
+            "additional_adjudications": (
+                case.adjudication.model_copy(update={"response_sha256": altered_hash}),
+            )
+        }
+    )
+    report = evaluate_model_benchmark(
+        _manifest((case,)),
+        (
+            _observation(case),
+            _observation(case).model_copy(update={"run_index": 2}),
+            _observation(case).model_copy(
+                update={"run_index": 3, "response": altered, "response_sha256": altered_hash}
+            ),
+        ),
+        manifest_sha256="d" * 64,
+    )
+    assert report["gates"]["every_response_human_bound"] is True
+    assert report["metrics"]["human_bound_count"] == 3
+    assert report["holdout_critical_error_count"] == 0
+
+
+def test_missing_generation_documents_cannot_pass_concept_gate() -> None:
+    case = _case(0, "static-full-color")
+    manifest = _manifest((case,)).model_copy(
+        update={"concept_registry": None, "concept_candidate_profile": None}
+    )
+    report = evaluate_model_benchmark(manifest, (_observation(case),), manifest_sha256="d" * 64)
+    assert report["gates"]["concept_generation_context_bound"] is False
+    assert report["concept_generation_binding"] is None
+
+
+def test_macro_f1_weights_labels_equally_instead_of_hiding_rare_label_errors() -> None:
+    pairs = [({"common"}, {"common"}, 9), ({"rare"}, set(), 1)]
+    assert _macro_f1_bp(pairs) == 5_000
+    assert _micro_f1_bp(pairs) == 9_474
+    assert _macro_f1_bp([(set(), set(), 1)]) == 10_000
+    assert _macro_f1_bp([]) == 0

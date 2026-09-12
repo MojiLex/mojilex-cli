@@ -38,10 +38,12 @@ class ReviewPriority(StrEnum):
 
 
 class ReviewReason(StrEnum):
+    CULTURAL_REFERENCE_UNCERTAINTY = "cultural-reference-uncertainty"
     EXACT_GROUP_DESCRIPTION_CONFLICT = "exact-group-description-conflict"
     MODERATION_UNCERTAINTY = "moderation-uncertainty"
     MOTION_UNCERTAINTY = "motion-uncertainty"
     OCR_CONFLICT = "ocr-conflict"
+    TEXT_UNCERTAINTY = "text-uncertainty"
     UNKNOWN_CHARACTER_OR_BRAND = "unknown-character-or-brand"
     UNQUALIFIED_MODEL = "unqualified-model"
 
@@ -92,6 +94,14 @@ class ReviewRule(BaseModel):
 
 
 _EXPECTED_RULES = {
+    ReviewReason.CULTURAL_REFERENCE_UNCERTAINTY: (
+        ReviewPriority.HIGH,
+        "facets-uncertainties-contains-cultural-reference",
+    ),
+    ReviewReason.TEXT_UNCERTAINTY: (
+        ReviewPriority.HIGH,
+        "facets-uncertainties-contains-text",
+    ),
     ReviewReason.UNQUALIFIED_MODEL: (
         ReviewPriority.BLOCKING,
         "ai-result-has-no-exact-active-qualification-and-review-is-not-approved",
@@ -226,6 +236,10 @@ def compute_review_routing(
             reasons.add(ReviewReason.MODERATION_UNCERTAINTY)
         if Uncertainty.MOTION in emoji.facets.uncertainties:
             reasons.add(ReviewReason.MOTION_UNCERTAINTY)
+        if Uncertainty.TEXT in emoji.facets.uncertainties:
+            reasons.add(ReviewReason.TEXT_UNCERTAINTY)
+        if Uncertainty.CULTURAL_REFERENCE in emoji.facets.uncertainties:
+            reasons.add(ReviewReason.CULTURAL_REFERENCE_UNCERTAINTY)
         if RoutingReason.OCR_CONFLICT in (emoji.provenance.routing_reason_codes or []):
             reasons.add(ReviewReason.OCR_CONFLICT)
         if Uncertainty.CHARACTER_OR_BRAND in emoji.facets.uncertainties:
@@ -271,6 +285,8 @@ def _is_unqualified(emoji: Emoji, registry: ModelQualificationRegistry) -> bool:
     provenance = emoji.provenance
     if provenance.origin not in {ProvenanceOrigin.AI, ProvenanceOrigin.MIXED}:
         return False
+    if emoji.concept_ids and provenance.concept_registry_id is None:
+        return True
     required = (
         provenance.provider,
         provenance.model,
@@ -296,6 +312,13 @@ def _is_unqualified(emoji: Emoji, registry: ModelQualificationRegistry) -> bool:
         routing_policy_version=str(provenance.routing_policy_version),
         languages=tuple(emoji.descriptions),
         generated_at=str(provenance.generated_at),
+        concept_registry_id=provenance.concept_registry_id,
+        concept_registry_sha256=provenance.concept_registry_sha256,
+        concept_candidate_set_sha256=provenance.concept_candidate_set_sha256,
+        concept_candidate_profile_id=provenance.concept_candidate_profile_id,
+        concept_candidate_profile_sha256=provenance.concept_candidate_profile_sha256,
+        model_routing_policy_id=provenance.model_routing_policy_id,
+        model_routing_policy_sha256=provenance.model_routing_policy_sha256,
     )
     return not match_qualification(
         registry,

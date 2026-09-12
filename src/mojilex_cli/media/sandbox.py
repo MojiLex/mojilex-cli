@@ -214,15 +214,36 @@ def _unix_limits(memory_bytes: int) -> Callable[[], None]:
     return apply
 
 
+def _windows_kernel32() -> Any:
+    """Resolve Windows-only APIs at runtime, with pointer-sized handle signatures."""
+    import ctypes
+    from ctypes import wintypes
+
+    ctypes_api = cast(Any, ctypes)
+    kernel32 = ctypes_api.windll.kernel32
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
 class _WindowsJob:
     def __init__(self, handle: int) -> None:
         self.handle = handle
 
     def close(self) -> None:
-        import ctypes
-
         if self.handle:
-            ctypes.windll.kernel32.CloseHandle(self.handle)
+            _windows_kernel32().CloseHandle(self.handle)
             self.handle = 0
 
 
@@ -269,7 +290,7 @@ def _attach_windows_job(process: subprocess.Popen[bytes], memory_bytes: int) -> 
                 ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _windows_kernel32()
         handle = kernel32.CreateJobObjectW(None, None)
         if not handle:
             return None
@@ -328,8 +349,6 @@ def hard_resource_limits_available() -> bool:
             return False
     # A real attach is verified during the fixture probe; availability of APIs is a first check.
     try:
-        import ctypes
-
-        return bool(ctypes.windll.kernel32.CreateJobObjectW)
+        return bool(_windows_kernel32().CreateJobObjectW)
     except (AttributeError, OSError):
         return False

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -37,6 +39,7 @@ from mojilex_cli.ai import (
 from mojilex_cli.ai import (
     LocalizedDescription as AILocalizedDescription,
 )
+from mojilex_cli.ai.concepts import ConceptContext, load_concept_context
 from mojilex_cli.ai.prompts import (
     gemini_request_parameters_sha256,
     prompt_sha256,
@@ -59,7 +62,13 @@ from mojilex_cli.cache import (
 from mojilex_cli.cache import (
     media_digest as cache_media_digest,
 )
-from mojilex_cli.commands.runtime import CommandError, CommandResult, structured_exception
+from mojilex_cli.commands.runtime import (
+    CommandError,
+    CommandResult,
+    report_progress,
+    report_run_id,
+    structured_exception,
+)
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
     DatasetSnapshot,
@@ -114,6 +123,8 @@ from mojilex_cli.policy import (
     semantic_routing_reasons,
     should_escalate,
 )
+from mojilex_cli.policy.model_routing import build_model_routing_binding
+from mojilex_cli.policy.qualification import CONCEPT_BINDING_FIELDS
 from mojilex_cli.runs import (
     AIRequestCheckpoint,
     DedupeScanCheckpoint,
@@ -213,6 +224,63 @@ class _AIState:
     providers: dict[str, Any] = field(default_factory=dict)
     credentials_validated: set[str] = field(default_factory=set)
     initialization_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cache_hits: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationInputs:
+    concepts: ConceptContext
+    routing_fields: dict[str, str]
+    routing_body: dict[str, Any]
+
+    @property
+    def fields(self) -> dict[str, str]:
+        return {**self.concepts.provenance_fields, **self.routing_fields}
+
+
+_GENERATION_INPUTS: ContextVar[_GenerationInputs | None] = ContextVar(
+    "mojilex_generation_inputs", default=None
+)
+
+
+def _generation_binding_fields() -> dict[str, str]:
+    inputs = _GENERATION_INPUTS.get()
+    return inputs.fields if inputs is not None else {}
+
+
+def _load_generation_inputs(
+    snapshot: DatasetSnapshot, config: MojiLexConfig
+) -> _GenerationInputs | None:
+    registry = snapshot.root / "taxonomy" / "v1" / "concepts.json"
+    profile = snapshot.root / "analysis-profiles" / "concept-candidates-v1.json"
+    if not registry.exists() and not profile.exists():
+        # Legacy/local fixtures have no Stage-B concept rollout. They remain
+        # pending and cannot gain trust merely by using a newer importer.
+        return None
+    concepts = load_concept_context(snapshot.root)
+    if not config.ai.model:
+        return None  # Metadata-only dry runs do not require an AI model.
+    primary = {
+        "provider": config.ai.provider,
+        "model": config.ai.model,
+        "model_revision": None,
+        "description_profile": "standard-v1",
+        "schema_version": SCHEMA_VERSION,
+        "taxonomy_version": str(snapshot.manifest["taxonomy_version"]),
+        "pipeline_version": PIPELINE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "prompt_sha256": prompt_sha256(),
+        "request_parameters_sha256": gemini_request_parameters_sha256(),
+        "languages": sorted(config.ai.languages),
+        **concepts.provenance_fields,
+    }
+    escalation = (
+        {**primary, "model": config.ai.escalation_model}
+        if config.ai.model_routing == "rules"
+        else None
+    )
+    routing = build_model_routing_binding(primary, escalation, mode=config.ai.model_routing)
+    return _GenerationInputs(concepts, routing.provenance_fields, routing.body)
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +462,7 @@ async def _run_add(
         git = GitRunner(workspace.root, github_token=credentials.github_token)
         base_sha = git.current_sha()
         run_identifier = resume_id or new_run_id()
+        report_run_id(run_identifier)
         run_store = RunStore(
             cast(Path, config.runs_dir),
             repository_root=workspace.root,
@@ -499,9 +568,18 @@ async def _run_add(
             )
 
         cache: CacheStore | None = None
-        if not options.dry_run:
+        cache_path = cast(Path, config.cache_dir) / "cache-v1.sqlite3"
+        if options.dry_run and cache_path.is_file():
+            try:
+                cache = CacheStore(cache_path, repository_root=workspace.root, read_only=True)
+            except CacheError:
+                # A broken optional cache cannot make a read-only source preview fail.
+                report_progress(
+                    "The existing AI cache could not be inspected; plan assumes misses."
+                )
+        elif not options.dry_run:
             cache = CacheStore(
-                cast(Path, config.cache_dir) / "cache-v1.sqlite3",
+                cache_path,
                 repository_root=workspace.root,
             )
 
@@ -541,6 +619,13 @@ async def _run_add(
             "memberships_removed": 0,
         }
         source_collections: list[SourceCollection] = []
+        preview_ai = {
+            "ai_items_planned": 0,
+            "ai_batches_planned": 0,
+            "ai_cache_hits_estimated": 0,
+            "ai_cache_hits_unknown": 0,
+            "ai_requests_estimated_upper_bound": 0,
+        }
         successful_source_indexes: set[int] = set()
         dedupe_emoji_ids: set[str] = set()
         dedupe_report: dict[str, Any] | None = None
@@ -555,6 +640,7 @@ async def _run_add(
                 updated = _checkpoint_media_item(checkpoint, item, value)
                 run_store.save(updated)
                 checkpoint = updated
+                report_progress(f"Media verified: {item.native_id}", verbose=True)
 
         async def record_ai_chunk_completion(
             items: Sequence[SourceEmoji],
@@ -590,8 +676,23 @@ async def _run_add(
                 updated = _checkpoint_budget(updated, budget)
                 run_store.save(updated)
                 checkpoint = updated
+                report_progress(f"Semantic results cached: {len(items)} item(s)", verbose=True)
 
+        generation_token = _GENERATION_INPUTS.set(None)
         try:
+            generation_inputs = _load_generation_inputs(current, config)
+            _GENERATION_INPUTS.set(generation_inputs)
+            if checkpoint is not None and generation_inputs is not None:
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "safe_parameters": {
+                            **checkpoint.safe_parameters,
+                            "concept_generation_binding": generation_inputs.fields,
+                            "model_routing_policy": generation_inputs.routing_body,
+                        }
+                    }
+                )
+                run_store.save(checkpoint)
             async with TelegramBotAPI(
                 credentials.telegram_bot_token,
                 timeout_seconds=config.telegram.timeout_seconds,
@@ -604,6 +705,10 @@ async def _run_add(
                     lock_entered = False
                     try:
                         reference = adapter.canonicalize(source_text)
+                        report_progress(
+                            f"Checking source {source_index + 1}/{len(all_sources)}: "
+                            f"{reference.native_id}"
+                        )
                         if not options.dry_run:
                             collection_lock = run_store.collection_lock(
                                 reference.platform, reference.native_id
@@ -654,6 +759,11 @@ async def _run_add(
                             )
                         if options.dry_run and not options.check_media:
                             _accumulate_preview(totals, current, source)
+                            preview_plan = await _preview_ai_plan(
+                                current, source, config=config, options=options, cache=cache
+                            )
+                            for key, value in preview_plan.items():
+                                preview_ai[key] += value
                             source_collections.append(source)
                             successful_source_indexes.add(source_index)
                             continue
@@ -667,7 +777,7 @@ async def _run_add(
                                 processor,
                                 concurrency=config.telegram.download_concurrency,
                                 expected_hashes=expected_hashes,
-                                cache=cache,
+                                cache=None if options.dry_run else cache,
                                 resume_elements=(
                                     checkpoint.elements if checkpoint is not None else None
                                 ),
@@ -686,6 +796,17 @@ async def _run_add(
                                 run_store.save(checkpoint)
                             if options.dry_run:
                                 _accumulate_preview(totals, current, source, processed=processed)
+                                preview_plan = await _preview_ai_plan(
+                                    current,
+                                    source,
+                                    config=config,
+                                    options=options,
+                                    cache=cache,
+                                    processed=processed,
+                                    temporary=temporary,
+                                )
+                                for key, value in preview_plan.items():
+                                    preview_ai[key] += value
                                 source_collections.append(source)
                                 successful_source_indexes.add(source_index)
                                 continue
@@ -868,10 +989,14 @@ async def _run_add(
                     result={
                         **totals,
                         "sources_checked": len(source_collections),
-                        "ai_cache_hits_estimated": None,
-                        "ai_requests_estimated_upper_bound": (
-                            totals["items_added"] + totals["items_updated"]
+                        **preview_ai,
+                        "ai_requests_estimated_upper_bound": min(
+                            config.ai.max_ai_requests,
+                            preview_ai["ai_requests_estimated_upper_bound"],
                         ),
+                        "ai_plan_basis": "verified-media"
+                        if options.check_media
+                        else "source-metadata",
                         "persistent_writes": 0,
                     },
                     warnings=warnings,
@@ -1032,6 +1157,7 @@ async def _run_add(
                     "sources_processed": len(source_collections),
                     "changed_paths": [str(path) for path in changed_paths],
                     "ai_requests": budget.requests_used,
+                    "ai_cache_hits": ai_state.cache_hits,
                     "ai_cost_reserved_usd": str(budget.cost_reserved),
                     "dedupe": dedupe_report,
                     "review_routing": review_routing.as_dict(),
@@ -1048,6 +1174,7 @@ async def _run_add(
                 run_store.save(checkpoint)
             raise
         finally:
+            _GENERATION_INPUTS.reset(generation_token)
             if cache is not None:
                 cache.close()
 
@@ -1119,6 +1246,7 @@ async def _run_import(
         safe_parameters.setdefault("source_memberships", {})
         checkpoint = checkpoint.model_copy(update={"safe_parameters": safe_parameters})
         store.save(checkpoint)
+        report_run_id(checkpoint.run_id)
         imported = 0
         failures: list[StructuredError] = []
         cache = CacheStore(
@@ -1217,6 +1345,7 @@ async def _run_describe(
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
     checkpoint = store.load_for_resume(run_id, schema_version=SCHEMA_VERSION)
+    report_run_id(checkpoint.run_id)
     if checkpoint.command not in {"import", "describe"}:
         raise CommandError(
             "CONFIG_INVALID",
@@ -1277,6 +1406,7 @@ async def run_resume(
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
     checkpoint = store.load_for_resume(run_id, schema_version=SCHEMA_VERSION)
+    report_run_id(checkpoint.run_id)
     parameters = checkpoint.safe_parameters
     sources = _string_sequence(parameters.get("sources"))
     options = _options_from_safe(parameters)
@@ -1326,6 +1456,7 @@ async def _run_submit(
     configured = load_config()
     credentials = load_credentials()
     run_identifier = new_run_id()
+    report_run_id(run_identifier)
     checkpoint: RunCheckpoint | None = None
     staged_repository: Path | None = None
     review_routing: ReviewRoutingReport | None = None
@@ -1340,6 +1471,7 @@ async def _run_submit(
                 hint="Complete `mojilex describe RUN_ID`, resolve review items, then submit.",
             )
         run_identifier = checkpoint.run_id
+        report_run_id(run_identifier)
         repository = repository or checkpoint.target_repository
         staged_repository = _staging_path_from_checkpoint(checkpoint)
     elif target:
@@ -2527,9 +2659,15 @@ async def _descriptions_for_collection(
             )
         elif verified_resume_outcomes is not None and item.native_id in verified_resume_outcomes:
             outcomes_by_native[item.native_id] = verified_resume_outcomes[item.native_id]
+            ai_state.cache_hits += 1
         else:
             candidates.append(item)
     chunks = _description_chunks(candidates, processed, config)
+    report_progress(
+        f"AI plan: {len(candidates)} item(s), {len(chunks)} candidate batch(es), "
+        f"provider={config.ai.provider}, model={config.ai.model}. Exact cache hits can reduce "
+        f"requests; retries and escalation share the {budget.max_requests}-request limit."
+    )
     taxonomy_version = str(snapshot.manifest["taxonomy_version"])
 
     semaphore = asyncio.Semaphore(config.ai.ai_concurrency)
@@ -2668,6 +2806,205 @@ def _trace_cache_key(
     return matches[0].cache_key if len(matches) == 1 else None
 
 
+async def _preview_cached_batch(
+    items: Sequence[SourceEmoji],
+    processed: Mapping[str, ProcessedMedia],
+    *,
+    model: str,
+    config: MojiLexConfig,
+    cache: CacheStore | None,
+    temporary: TemporaryMediaRun,
+    taxonomy_version: str,
+) -> list[CachedAIResult] | None:
+    """Inspect exact would-be request keys without repairing aliases or touching timestamps."""
+
+    if not items or cache is None:
+        return None
+    prepared = await _prepare_ai_request(items, processed, model=model, temporary=temporary)
+    hits: list[CachedAIResult] = []
+    for item in items:
+        context = _vision_context(item, processed[item.native_id])
+        label = prepared.identity.label_for(item.native_id)
+        key = _cache_key(
+            item,
+            processed[item.native_id],
+            context,
+            config,
+            model=model,
+            model_revision=None,
+            taxonomy_version=taxonomy_version,
+            request_identity=prepared.identity,
+            item_label=label,
+        )
+        try:
+            hit = _load_cached_description(
+                cache,
+                key,
+                source=item,
+                processed=processed[item.native_id],
+                context=context,
+                config=config,
+                model=model,
+                taxonomy_version=taxonomy_version,
+                resume_cache_key=None,
+                cache_alias_scope=None,
+                request_identity=prepared.identity,
+                item_label=label,
+            )
+        except (AIError, CacheError, ValueError, sqlite3.Error):
+            return None
+        if hit is None:
+            return None
+        hits.append(hit)
+    if len({hit.result.model_revision for hit in hits}) != 1:
+        return None
+    return hits
+
+
+async def _preview_ai_plan(
+    snapshot: DatasetSnapshot,
+    source: SourceCollection,
+    *,
+    config: MojiLexConfig,
+    options: PipelineOptions,
+    cache: CacheStore | None,
+    processed: Mapping[str, ProcessedMedia] | None = None,
+    temporary: TemporaryMediaRun | None = None,
+) -> dict[str, int]:
+    candidates: list[SourceEmoji] = []
+    for item in source.items:
+        if processed is not None:
+            needed = _needs_generated_description(
+                snapshot,
+                source.platform,
+                item,
+                processed[item.native_id],
+                redescribe=options.redescribe,
+                overwrite_reviewed=options.overwrite_reviewed,
+            )
+        else:
+            existing = _existing_emoji(snapshot, source.platform, item.native_id)
+            extension = existing.extensions.get("telegram", {}) if existing else {}
+            needed = existing is None or extension.get("file_unique_id") != item.file_unique_id
+            if existing is not None and not needed:
+                # Metadata-only previews may estimate reuse, but cannot verify bytes or
+                # derive the exact contact-sheet request/cache key without --check-media.
+                approximate = ProcessedMedia(
+                    frame_paths=(),
+                    metadata=MediaMetadata.model_validate(
+                        existing.media[0].model_dump(
+                            exclude={"role", "variant_id"}, exclude_none=True
+                        )
+                    ),
+                )
+                needed = _needs_generated_description(
+                    snapshot,
+                    source.platform,
+                    item,
+                    approximate,
+                    redescribe=options.redescribe,
+                    overwrite_reviewed=options.overwrite_reviewed,
+                )
+        if needed:
+            candidates.append(item)
+    plan = {
+        "ai_items_planned": len(candidates),
+        "ai_batches_planned": 0,
+        "ai_cache_hits_estimated": 0,
+        "ai_cache_hits_unknown": 0,
+        "ai_requests_estimated_upper_bound": 0,
+    }
+    if not candidates:
+        return plan
+    if processed is None:
+        for animated, size in (
+            (False, config.processing.static_batch_size),
+            (True, config.processing.animated_batch_size),
+        ):
+            for adaptive in (False, True):
+                count = sum(
+                    (item.media_format != "webp") is animated and item.needs_repainting is adaptive
+                    for item in candidates
+                )
+                plan["ai_batches_planned"] += (count + size - 1) // size
+        plan["ai_cache_hits_unknown"] = len(candidates) if cache is not None else 0
+        # Unknown backgrounds/routing may split batches; include bounded retries.
+        plan["ai_requests_estimated_upper_bound"] = len(candidates) * (
+            6 if config.ai.model_routing == "rules" else 4
+        )
+        return plan
+    assert temporary is not None
+    taxonomy_version = str(snapshot.manifest["taxonomy_version"])
+    qualifications = ModelQualificationRegistry.load(snapshot.root)
+    routing = RoutingReasonRegistry.load(snapshot.root)
+
+    async def inspect_single(item: SourceEmoji) -> None:
+        hit = await _preview_cached_batch(
+            (item,),
+            processed,
+            model=config.ai.escalation_model,
+            config=config,
+            cache=cache,
+            temporary=temporary,
+            taxonomy_version=taxonomy_version,
+        )
+        if hit is not None:
+            plan["ai_cache_hits_estimated"] += 1
+        else:
+            plan["ai_batches_planned"] += 1
+            plan["ai_requests_estimated_upper_bound"] += 2
+
+    for chunk in _description_chunks(candidates, processed, config):
+        primary: list[SourceEmoji] = []
+        for item in chunk:
+            reasons = routing.canonicalize(deterministic_routing_reasons(processed[item.native_id]))
+            if should_escalate(
+                config.ai.model_routing, reasons, escalation_model=config.ai.escalation_model
+            ):
+                await inspect_single(item)
+            else:
+                primary.append(item)
+        if not primary:
+            continue
+        hits = await _preview_cached_batch(
+            primary,
+            processed,
+            model=config.ai.model,
+            config=config,
+            cache=cache,
+            temporary=temporary,
+            taxonomy_version=taxonomy_version,
+        )
+        if hits is None:
+            plan["ai_batches_planned"] += 1
+            plan["ai_requests_estimated_upper_bound"] += 2 + len(primary) * (
+                4 if config.ai.model_routing == "rules" else 2
+            )
+            continue
+        for item, hit in zip(primary, hits, strict=True):
+            outcome = _semantic_outcome(
+                hit,
+                generation_stage="primary",
+                routing_reasons=(),
+                config=config,
+                taxonomy_version=taxonomy_version,
+                qualifications=qualifications,
+                routing_registry=routing,
+            )
+            semantic_reasons = set(semantic_routing_reasons(outcome.description))
+            if outcome.generation.qualification_id is None:
+                semantic_reasons.add(RoutingReason.UNQUALIFIED_MODEL)
+            if should_escalate(
+                config.ai.model_routing,
+                semantic_reasons,
+                escalation_model=config.ai.escalation_model,
+            ):
+                await inspect_single(item)
+            else:
+                plan["ai_cache_hits_estimated"] += 1
+    return plan
+
+
 async def _load_or_describe_primary_batch(
     items: Sequence[SourceEmoji],
     processed: Mapping[str, ProcessedMedia],
@@ -2759,6 +3096,7 @@ async def _load_or_describe_primary_batch(
             len(items) == 1
             or len({cached.result.model_revision for cached, _trace in hits.values()}) == 1
         ):
+            ai_state.cache_hits += len(items)
             return _cache_ai_request_results(
                 cache,
                 tuple(
@@ -3448,6 +3786,7 @@ async def _load_or_describe_single(
             raise
         cached = None
     if cached is not None:
+        ai_state.cache_hits += 1
         storage_key = _cache_key(
             source,
             processed,
@@ -3612,6 +3951,12 @@ async def _provider_for_model(
                     "GEMINI_API_KEY is required for uncached descriptions.",
                     hint="Set it in the process environment or use an already populated cache.",
                 )
+            report_progress(
+                f"Derived contact-sheet PNG images will be sent to provider={config.ai.provider}, "
+                f"model={model}. Provider processing terms: "
+                "https://ai.google.dev/gemini-api/terms . "
+                "MojiLex does not guarantee zero retention by the provider."
+            )
             provider = default_registry().create(
                 config.ai.provider,
                 model=model,
@@ -3635,6 +3980,13 @@ def _validate_actual_result(
         raise AIOutputError("AI provider returned a result for a different provider or model")
     if require_single and len(result.batch.items) != 1:
         raise AIOutputError("per-item semantic result must contain exactly one full object")
+    inputs = _GENERATION_INPUTS.get()
+    if inputs is not None:
+        for item in result.batch.items:
+            try:
+                inputs.concepts.validate_selection(item.concept_ids)
+            except ValueError as exc:
+                raise AIOutputError("AI concepts do not match the exact candidate set") from exc
 
 
 def _semantic_outcome(
@@ -3666,6 +4018,7 @@ def _semantic_outcome(
             routing_policy_version=ROUTING_POLICY_VERSION,
             languages=config.ai.languages,
             generated_at=generated_at,
+            **_generation_binding_fields(),
         ),
     )
     reasons = set(routing_reasons)
@@ -3686,6 +4039,7 @@ def _semantic_outcome(
             routing_policy_version=ROUTING_POLICY_VERSION,
             routing_reason_codes=tuple(reason.value for reason in canonical_reasons),
             generated_at=generated_at,
+            **_generation_binding_fields(),
         ),
         request_trace=request_trace,
     )
@@ -3862,6 +4216,7 @@ def _generation_from_existing(
                 reason.value for reason in (provenance.routing_reason_codes or [])
             ),
             generated_at=provenance.generated_at,
+            **{name: getattr(provenance, name) for name in CONCEPT_BINDING_FIELDS},
         )
     # The merge preserves human provenance whenever these existing semantics are
     # protected.  A complete placeholder is still required by the transform API.
@@ -3895,6 +4250,8 @@ def _ai_request_plan_sha256(
             for index, item in enumerate(items, start=1)
         ],
     }
+    if _generation_binding_fields():
+        payload["concept_generation_binding"] = _generation_binding_fields()
     return hashlib.sha256(rfc8785.dumps(cast(Any, payload))).hexdigest()
 
 
@@ -3948,11 +4305,15 @@ async def _prepare_ai_request(
         )
         for sheet, data in zip(sheets, image_data, strict=True)
     )
+    generation_inputs = _GENERATION_INPUTS.get()
     request = DescriptionRequest(
         model=model,
         images=images,
         expected_labels=labels,
         context=contexts,
+        concept_context=(
+            generation_inputs.concepts.prompt_context if generation_inputs is not None else None
+        ),
     )
     shown_media_sha256 = tuple(hashlib.sha256(image.data).hexdigest() for image in images)
     request_payload = {
@@ -3969,6 +4330,8 @@ async def _prepare_ai_request(
         ],
         "contexts": {label: contexts[label].model_dump(mode="json") for label in labels},
     }
+    if _generation_binding_fields():
+        request_payload["concept_generation_binding"] = _generation_binding_fields()
     identity = _AIRequestIdentity(
         plan_sha256=_ai_request_plan_sha256(items, processed, model=model),
         request_sha256=hashlib.sha256(rfc8785.dumps(cast(Any, request_payload))).hexdigest(),
@@ -4074,6 +4437,7 @@ def _cache_key(
         routing_policy_version="1.0.0",
         shown_media_sha256=shown_media_sha256,
         request_parameters_sha256=gemini_request_parameters_sha256(),
+        **_generation_binding_fields(),
         request_identity_sha256=request_identity_sha256,
         item_label=item_label,
     )
@@ -4100,6 +4464,7 @@ def _description_from_existing(emoji: Emoji) -> DescriptionItem:
 
     return DescriptionItem(
         label="E001",
+        concept_ids=tuple(emoji.concept_ids),
         descriptions=BilingualDescriptions(ru=localized("ru"), en=localized("en")),
         facets=SemanticFacets.model_validate(
             {

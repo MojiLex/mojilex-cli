@@ -122,7 +122,12 @@ def _insert(target: dict[str, Any], entity: Any, source_path: Path) -> None:
     target[entity_id] = entity
 
 
-def load_dataset(root: str | Path) -> DatasetSnapshot:
+def load_dataset(root: str | Path, *, allow_missing_fingerprints: bool = False) -> DatasetSnapshot:
+    """Load canonical data, optionally exposing absent legacy fingerprints as staging only.
+
+    The opt-in never repairs malformed existing fingerprints or changes source bytes;
+    its partial records must be verified and canonically validated before publication.
+    """
     unresolved_root = Path(root)
     try:
         assert_no_link_or_reparse(unresolved_root)
@@ -130,10 +135,14 @@ def load_dataset(root: str | Path) -> DatasetSnapshot:
         raise DatasetLoadError(str(exc)) from exc
     root_path = unresolved_root.resolve()
     with locked_dataset_transaction_view(root_path):
-        return _load_dataset_unlocked(root_path)
+        return _load_dataset_unlocked(
+            root_path, allow_missing_fingerprints=allow_missing_fingerprints
+        )
 
 
-def _load_dataset_unlocked(root_path: Path) -> DatasetSnapshot:
+def _load_dataset_unlocked(
+    root_path: Path, *, allow_missing_fingerprints: bool = False
+) -> DatasetSnapshot:
     manifest_path = root_path / "dataset.json"
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise DatasetLoadError(f"missing or unsafe dataset manifest: {manifest_path}")
@@ -164,6 +173,26 @@ def _load_dataset_unlocked(root_path: Path) -> DatasetSnapshot:
                 for raw in parse_jsonl(
                     _read(bucket_file, root_path, source), source=str(bucket_file)
                 ):
+                    if allow_missing_fingerprints and "fingerprints" not in raw:
+                        # Only the explicit backfill command may load this local staging
+                        # shape. No media hashes or successful fingerprints are invented.
+                        from mojilex_cli.domain import Media, media_digest
+
+                        if "dedupe_profile" not in manifest or not isinstance(
+                            raw.get("media"), list
+                        ):
+                            raise DatasetLoadError(
+                                "legacy fingerprint backfill requires pinned profile and media"
+                            )
+                        raw = dict(raw)
+                        raw["fingerprints"] = {
+                            "status": "partial",
+                            "profile": manifest["dedupe_profile"],
+                            "input_media_digest": media_digest(
+                                [Media.model_validate(item) for item in raw["media"]]
+                            ),
+                            "items": [],
+                        }
                     emoji = Emoji.model_validate(raw)
                     _insert(snapshot.emojis, emoji, bucket_file)
             relation_root = data_root / "relations" / "visual"

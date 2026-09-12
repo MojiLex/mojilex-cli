@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from datetime import date
 from decimal import Decimal
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -123,6 +123,7 @@ class DescriptionRequest(BaseModel):
     images: tuple[VisionImage, ...] = Field(min_length=1, max_length=32, repr=False)
     expected_labels: tuple[str, ...] = Field(min_length=1, max_length=16)
     context: dict[str, VisionContext]
+    concept_context: dict[str, Any] | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def labels_match(self) -> DescriptionRequest:
@@ -389,8 +390,23 @@ class DescriptionItem(BaseModel):
     label: str = Field(pattern=r"^E[0-9]{3}$")
     descriptions: BilingualDescriptions
     facets: SemanticFacets
+    concept_ids: tuple[str, ...] = Field(default=(), max_length=16)
     semantic_tags: tuple[str, ...] = Field(min_length=1, max_length=12)
     content: ContentClassification
+
+    @field_validator("concept_ids")
+    @classmethod
+    def concepts_are_canonical(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or tuple(sorted(value)) != value:
+            raise ValueError("concept IDs must be unique and bytewise sorted")
+        if any(
+            len(identifier) > 128
+            or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+", identifier)
+            is None
+            for identifier in value
+        ):
+            raise ValueError("concept IDs must be controlled dotted identifiers")
+        return value
 
     @field_validator("semantic_tags")
     @classmethod

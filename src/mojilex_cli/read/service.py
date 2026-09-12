@@ -476,6 +476,8 @@ class SnapshotReader:
 
     def _runtime_trust(self, record: dict[str, Any]) -> dict[str, Any]:
         review = _mapping(record.get("review"))
+        origin = review.get("provenance_origin", _mapping(record.get("provenance")).get("origin"))
+        default_ai_status = "missing" if origin == "ai" else "not-applicable"
         review_status = _status(review, "unreviewed")
         attested = bool(review.get("attested"))
         if attested:
@@ -495,10 +497,10 @@ class SnapshotReader:
             "review_attestation_status": attestation_status,
             "review_hash_profile_status": hash_profile_status,
             "model_qualification_status": review.get(
-                "model_qualification_status", "not-applicable"
+                "model_qualification_status", default_ai_status
             ),
             "generation_attestation_status": review.get(
-                "generation_attestation_status", "not-applicable"
+                "generation_attestation_status", default_ai_status
             ),
             "safe_eligible": False,
         }
@@ -904,6 +906,18 @@ class SnapshotReader:
                 "Use a complete rights-v1 snapshot.",
             )
         profile = matches[0]
+        build_time = datetime.fromtimestamp(
+            self.snapshot.manifest["build"]["source_date_epoch"], UTC
+        )
+        effective_from = datetime.fromisoformat(profile["effective_from"].replace("Z", "+00:00"))
+        effective_until = (
+            datetime.fromisoformat(profile["effective_until"].replace("Z", "+00:00"))
+            if "effective_until" in profile
+            else None
+        )
+        in_effective_interval = build_time >= effective_from and (
+            effective_until is None or build_time < effective_until
+        )
         operations = _mapping(profile.get("operations"))
         operation_names = ["publish-metadata"]
         if require_generated_annotations:
@@ -911,8 +925,12 @@ class SnapshotReader:
         decisions = [
             _mapping(operations.get(name)).get("decision", "unknown") for name in operation_names
         ]
-        if profile.get("withdrawn_from_distribution") is True:
+        if not in_effective_interval:
+            distribution_status = "unknown"
+        elif profile.get("withdrawn_from_distribution") is True:
             distribution_status = "withdrawn"
+        elif any(decision in {"deny", "conditional", "not-granted"} for decision in decisions):
+            distribution_status = "restricted"
         elif any(
             decision not in {"allow", "deny", "conditional", "not-granted"}
             for decision in decisions
@@ -1043,10 +1061,16 @@ class SnapshotReader:
         if target_id in self.tombstones:
             return False
         target = self.emojis.get(target_id) or self.collections.get(target_id)
-        if target is None or _status(target.get("availability")) in {"private", "deleted"}:
+        if target is None or _status(target.get("availability")) == "private":
+            return False
+        if _status(target.get("availability")) != "active" and not include_history:
             return False
         if row.get("reference_status") != "current" and not include_history:
             return False
+        if target.get("entity_type") == "emoji":
+            content = _mapping(target.get("content"))
+            if content.get("rating") != "general" or _string_list(content.get("warnings")):
+                return False
         # Resolve is metadata-only. Search rows summarize the stricter
         # metadata+annotation decision and are never the rights authority.
         self._require_platform_metadata_rights(str(target.get("platform", "")))
@@ -1240,11 +1264,11 @@ class SnapshotReader:
                 "Collection is not active in the pinned snapshot.",
                 "Use --include-history for permitted diagnostic history.",
             )
-        if collection_status in {"private", "deleted"}:
+        if collection_status == "private":
             raise _failure(
                 "CONTENT_POLICY_BLOCKED",
                 "Collection metadata is not publishable.",
-                "Do not disclose private or deleted collection metadata.",
+                "Do not disclose private collection metadata.",
             )
         self._require_platform_metadata_rights(str(collection.get("platform", "")))
         candidates: list[dict[str, Any]] = []
@@ -1262,7 +1286,9 @@ class SnapshotReader:
             if _status(membership.get("status")) != "active" and not include_history:
                 continue
             target = self.emojis.get(emoji_id)
-            if target is None or _status(target.get("availability")) in {"private", "deleted"}:
+            if target is None or _status(target.get("availability")) == "private":
+                continue
+            if _status(target.get("availability")) != "active" and not include_history:
                 continue
             self._require_platform_metadata_rights(str(target.get("platform", "")))
             content = cast(dict[str, Any], target.get("content", {}))

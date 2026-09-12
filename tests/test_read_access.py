@@ -174,6 +174,7 @@ class FakeSnapshot:
                     {
                         "rights_profile_id": "telegram-index-only-v1",
                         "status": "active",
+                        "effective_from": "2026-09-11T00:00:00Z",
                         "operations": {
                             "publish-metadata": {"decision": "allow"},
                             "publish-generated-annotations": {"decision": "allow"},
@@ -709,6 +710,20 @@ def test_canonical_rights_are_authoritative_over_search_summary() -> None:
     assert failure.value.error.code == "INDEX_CORRUPT"
 
 
+@pytest.mark.parametrize("origin", ["ai", "mixed", "human"])
+def test_canonical_runtime_trust_preserves_ai_dependency(origin: str) -> None:
+    snapshot = FakeSnapshot()
+    emoji = snapshot._rows["emojis"][0]
+    emoji["provenance"] = {"origin": origin}
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    response = reader.get(emoji["id"], view="canonical", language=None, include_sensitive=False)
+    trust = response["item"]["runtime_trust"]
+    expected = "missing" if origin == "ai" else "not-applicable"
+    assert trust["model_qualification_status"] == expected
+    assert trust["generation_attestation_status"] == expected
+    assert trust["safe_eligible"] is False
+
+
 def test_collection_filter_excludes_inactive_requested_collection() -> None:
     snapshot = FakeSnapshot()
     inactive_id = "mxc_44444444-4444-5444-8444-444444444444"
@@ -760,6 +775,182 @@ def test_resolve_preserves_large_native_identifier_as_string() -> None:
     assert result["resolution_status"] == "current"
     assert result["candidate_count"] == 1
     assert isinstance(result["candidates"][0]["reference_id"], str)
+
+
+@pytest.mark.parametrize("status", ["unavailable", "unknown", "deleted"])
+@pytest.mark.parametrize("include_history", [False, True])
+def test_collection_and_resolve_gate_target_availability(
+    status: str, include_history: bool
+) -> None:
+    snapshot = FakeSnapshot()
+    emoji = snapshot._rows["emojis"][0]
+    emoji["availability"]["status"] = status
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    collection = reader.get_collection(
+        snapshot._rows["collections"][0]["id"],
+        include_history=include_history,
+        limit=20,
+        cursor=None,
+    )
+    resolved = reader.resolve(
+        platform="telegram",
+        namespace="custom_emoji.id",
+        scope="global",
+        native_id=emoji["native_id"],
+        identity_epoch=None,
+        as_of=None,
+        include_history=include_history,
+        limit=20,
+        cursor=None,
+    )
+    assert len(collection["memberships"]) == int(include_history)
+    assert resolved["candidate_count"] == int(include_history)
+    if not include_history:
+        assert resolved["resolution_status"] == "not_found"
+        assert resolved["resolution_path"] == "none"
+
+
+@pytest.mark.parametrize("status", ["unavailable", "unknown", "deleted"])
+def test_collection_history_can_return_non_private_collection(status: str) -> None:
+    snapshot = FakeSnapshot()
+    collection = snapshot._rows["collections"][0]
+    collection["availability"]["status"] = status
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    with pytest.raises(CommandError) as failure:
+        reader.get_collection(collection["id"], include_history=False, limit=20, cursor=None)
+    assert failure.value.error.code == "ENTITY_NOT_FOUND"
+    response = reader.get_collection(collection["id"], include_history=True, limit=20, cursor=None)
+    assert response["collection"]["record"] == collection
+    assert response["collection"]["runtime_trust"]["safe_eligible"] is False
+
+
+@pytest.mark.parametrize("include_history", [False, True])
+def test_collection_history_does_not_bypass_privacy(include_history: bool) -> None:
+    snapshot = FakeSnapshot()
+    collection = snapshot._rows["collections"][0]
+    collection["availability"]["status"] = "private"
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    with pytest.raises(CommandError):
+        reader.get_collection(
+            collection["id"], include_history=include_history, limit=20, cursor=None
+        )
+    resolved = reader.resolve(
+        platform="telegram",
+        namespace="sticker_set.name",
+        scope="global",
+        native_id=collection["native_id"],
+        identity_epoch=None,
+        as_of=None,
+        include_history=include_history,
+        limit=20,
+        cursor=None,
+    )
+    assert resolved["candidate_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"rating": "sensitive", "warnings": []},
+        {"rating": "adult", "warnings": []},
+        {"rating": "general", "warnings": ["violence"]},
+    ],
+)
+@pytest.mark.parametrize("include_history", [False, True])
+def test_resolve_applies_target_content_gate(
+    content: dict[str, Any], include_history: bool
+) -> None:
+    snapshot = FakeSnapshot()
+    emoji = snapshot._rows["emojis"][0]
+    emoji["content"] = content
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    response = reader.resolve(
+        platform="telegram",
+        namespace="custom_emoji.id",
+        scope="global",
+        native_id=emoji["native_id"],
+        identity_epoch=None,
+        as_of=None,
+        include_history=include_history,
+        limit=20,
+        cursor=None,
+    )
+    assert response["resolution_status"] == "not_found"
+    assert response["candidate_count"] == 0
+    assert response["candidates"] == []
+
+
+@pytest.mark.parametrize(
+    ("interval", "allowed"),
+    [
+        ({"effective_from": "2026-09-11T23:59:59Z"}, True),
+        ({"effective_from": "2026-09-12T00:00:00Z"}, False),
+        ({"effective_until": "2026-09-11T23:59:59Z"}, False),
+        ({"effective_until": "2026-09-12T00:00:00Z"}, True),
+    ],
+)
+@pytest.mark.parametrize("command", ["get", "get-collection", "resolve"])
+def test_read_rights_use_pinned_half_open_validity_interval(
+    interval: dict[str, str], allowed: bool, command: str
+) -> None:
+    snapshot = FakeSnapshot()
+    snapshot._documents["rights-profiles"]["profiles"][0].update(interval)
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    emoji = snapshot._rows["emojis"][0]
+
+    def invoke() -> dict[str, Any]:
+        if command == "get":
+            return reader.get(emoji["id"], view="canonical", language=None, include_sensitive=False)
+        if command == "get-collection":
+            return reader.get_collection(
+                snapshot._rows["collections"][0]["id"],
+                include_history=False,
+                limit=20,
+                cursor=None,
+            )
+        return reader.resolve(
+            platform="telegram",
+            namespace="custom_emoji.id",
+            scope="global",
+            native_id=emoji["native_id"],
+            identity_epoch=None,
+            as_of=None,
+            include_history=False,
+            limit=20,
+            cursor=None,
+        )
+
+    if allowed:
+        assert invoke()
+    else:
+        with pytest.raises(CommandError) as failure:
+            invoke()
+        assert failure.value.error.code == "RIGHTS_POLICY_BLOCKED"
+
+
+@pytest.mark.parametrize("decision", ["deny", "not-granted", "conditional"])
+@pytest.mark.parametrize("unknown", ["unknown", None])
+def test_rights_summary_restriction_precedes_unknown(decision: str, unknown: str | None) -> None:
+    from mojilex_cli.dataset.distribution import _rights_summary
+
+    snapshot = FakeSnapshot()
+    rights = snapshot._documents["rights-profiles"]
+    operations = rights["profiles"][0]["operations"]
+    operations["publish-metadata"] = {"decision": decision}
+    if unknown is None:
+        del operations["publish-generated-annotations"]
+    else:
+        operations["publish-generated-annotations"] = {"decision": unknown}
+    reader = SnapshotReader(snapshot)  # type: ignore[arg-type]
+    summary = reader._effective_rights_summary("telegram", require_generated_annotations=True)
+    builder_summary = _rights_summary(
+        snapshot._rows["emojis"][0],
+        {"telegram": snapshot._documents["platform-profiles"]["entries"][0]},
+        rights,
+        snapshot.manifest["build"]["source_date_epoch"],
+    )
+    assert summary["distribution_status"] == "restricted"
+    assert builder_summary == summary
 
 
 def test_jsonl_item_ordinals_start_at_zero_and_are_contiguous(

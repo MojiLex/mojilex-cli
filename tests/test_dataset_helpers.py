@@ -351,10 +351,12 @@ def write_fixture(root: Path) -> DatasetSnapshot:
         "entries": [
             {"id": reason, "definition": f"Synthetic definition for {reason}."}
             for reason in (
+                "cultural-reference-uncertainty",
                 "exact-group-description-conflict",
                 "moderation-uncertainty",
                 "motion-uncertainty",
                 "ocr-conflict",
+                "text-uncertainty",
                 "unknown-character-or-brand",
                 "unqualified-model",
             )
@@ -365,6 +367,16 @@ def write_fixture(root: Path) -> DatasetSnapshot:
         "policy_id": "review-routing-v1",
         "priority_order": ["blocking", "high", "normal", "low"],
         "rules": [
+            {
+                "reason_code": "cultural-reference-uncertainty",
+                "priority": "high",
+                "condition": "facets-uncertainties-contains-cultural-reference",
+            },
+            {
+                "reason_code": "text-uncertainty",
+                "priority": "high",
+                "condition": "facets-uncertainties-contains-text",
+            },
             {
                 "reason_code": "unqualified-model",
                 "priority": "blocking",
