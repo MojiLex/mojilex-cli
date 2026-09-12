@@ -108,6 +108,7 @@ class MojiLexConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    ui_language: Literal["en", "ru"] = "en"
     repository: RepositoryConfig = RepositoryConfig()
     telegram: TelegramConfig = TelegramConfig()
     ai: AIConfig = AIConfig()

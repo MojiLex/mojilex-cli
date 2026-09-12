@@ -16,6 +16,7 @@ from .models import ConfigError, Credentials, MojiLexConfig
 from .secrets import SECRET_ENV_NAMES, assert_no_secret_keys, redact_mapping, redact_text
 
 _ENV_PATHS: dict[str, tuple[str, ...]] = {
+    "MOJILEX_UI_LANGUAGE": ("ui_language",),
     "MOJILEX_REPO": ("repository", "target"),
     "MOJILEX_BASE_BRANCH": ("repository", "base_branch"),
     "MOJILEX_PUBLISH": ("repository", "publish"),
@@ -146,6 +147,16 @@ def load_config(
         raise ConfigError(str(exc)) from exc
     try:
         return MojiLexConfig.model_validate(merged)
+    except ValidationError as exc:
+        raise ConfigError(_safe_validation_error(exc)) from exc
+
+
+def load_config_file(path: Path) -> MojiLexConfig:
+    """Load one non-secret configuration document without project or environment overrides."""
+
+    data = _read_toml(path)
+    try:
+        return MojiLexConfig.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(_safe_validation_error(exc)) from exc
 

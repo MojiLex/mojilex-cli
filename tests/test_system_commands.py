@@ -268,6 +268,93 @@ def test_media_installer_reruns_doctor_after_success(
     assert system.install_media_dependencies_command(checks) is expected
 
 
+def test_windows_tgs_installer_links_meson_archive_and_contains_object_in_temp() -> None:
+    script = (
+        Path(system.__file__).resolve().parents[1] / "installers" / "install_media_windows.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "src\\librlottie.a" in script
+    assert "/MD /W4 /WX" in script
+    assert '"/Fo$adapterObject"' in script
+    assert "rlottie.lib" not in script
+
+
+def test_setting_ui_language_preserves_all_non_secret_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text(
+        """ui_language = "en"
+cache_dir = "custom-cache"
+runs_dir = "custom-runs"
+
+[repository]
+target = "Example/data"
+base_branch = "stable"
+publish = "local"
+
+[telegram]
+timeout_seconds = 42
+download_concurrency = 7
+max_attempts = 6
+
+[ai]
+provider = "gemini"
+model = "custom-model"
+languages = ["en", "ru"]
+max_ai_requests = 17
+max_cost_usd = 3.25
+ai_concurrency = 4
+allow_unknown_cost = true
+model_routing = "rules"
+escalation_model = "strong-model"
+
+[dedupe]
+mode = "near"
+max_candidates = 77
+profile = "dedupe-v1"
+
+[processing]
+static_batch_size = 9
+animated_batch_size = 5
+keyframes = 12
+render_timeout_seconds = 23
+max_download_bytes = 123456
+max_temp_bytes = 234567
+
+[git_identity]
+name = "Example User"
+email = "user@example.test"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(system, "default_user_config_path", lambda: target)
+
+    before = system.load_config_file(target)
+    result = system.config_set_ui_language_command("ru")
+    after = system.load_config_file(target)
+    parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+
+    assert result.result["ui_language"] == "ru"
+    assert after == before.model_copy(update={"ui_language": "ru"})
+    assert parsed["ui_language"] == "ru"
+    assert parsed["repository"] == {
+        "target": "Example/data",
+        "base_branch": "stable",
+        "publish": "local",
+    }
+    assert parsed["telegram"] == {
+        "timeout_seconds": 42,
+        "download_concurrency": 7,
+        "max_attempts": 6,
+    }
+    assert parsed["ai"]["max_cost_usd"] == 3.25
+    assert parsed["ai"]["model_routing"] == "rules"
+    assert parsed["dedupe"]["max_candidates"] == 77
+    assert parsed["processing"]["max_temp_bytes"] == 234567
+    assert parsed["git_identity"]["email"] == "user@example.test"
+
+
 def test_uninstall_preview_preserves_shared_dependencies(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

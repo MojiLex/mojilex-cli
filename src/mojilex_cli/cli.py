@@ -31,6 +31,7 @@ from mojilex_cli.commands.runtime import (
     require_confirmation,
 )
 from mojilex_cli.i18n import (
+    current_ui_language,
     extract_ui_language,
     localize_command_tree,
     use_ui_language,
@@ -63,6 +64,7 @@ def init_command(
     force: bool,
     languages: Sequence[str] = ("ru", "en"),
     prompt: Callable[[str, str], str] | None = None,
+    ui_language: str = "en",
 ) -> CommandResult:
     """Load authoring diagnostics only when the init command is invoked."""
 
@@ -77,6 +79,7 @@ def init_command(
         force=force,
         languages=languages,
         prompt=prompt,
+        ui_language=ui_language,
     )
 
 
@@ -293,6 +296,7 @@ def initialize(
             prompt=(lambda label, default: typer.prompt(label, default=default, err=True))
             if sys.stdin.isatty() and not (non_interactive or json_output or quiet)
             else None,
+            ui_language=current_ui_language(),
         ),
         json_output=json_output,
         quiet=quiet,
@@ -1021,6 +1025,24 @@ def config_set_credentials(
     execute(
         "config set-credentials",
         action,
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
+@config_app.command("set-ui-language")
+def config_set_ui_language(
+    language: Annotated[str, typer.Argument(help="Human interface language: en or ru.")],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    from mojilex_cli.commands.system import config_set_ui_language_command
+
+    execute(
+        "config set-ui-language",
+        lambda: config_set_ui_language_command(language),
         json_output=json_output,
         quiet=quiet,
         debug=debug,

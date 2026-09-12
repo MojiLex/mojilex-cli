@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Literal
 
 UiLanguage = Literal["en", "ru"]
@@ -131,6 +133,10 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
     "config show": (
         "Show the resolved non-secret configuration.",
         "Показать итоговую несекретную конфигурацию.",
+    ),
+    "config set-ui-language": (
+        "Persist the human interface language without changing other settings.",
+        "Сохранить язык интерфейса, не меняя остальные настройки.",
     ),
     "config set-credentials": (
         "Save API credentials in the operating-system keyring using hidden input.",
@@ -337,7 +343,10 @@ def normalize_ui_language(value: str) -> UiLanguage:
 
 
 def extract_ui_language(
-    argv: Sequence[str], *, environment: Mapping[str, str] | None = None
+    argv: Sequence[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+    user_path: Path | None = None,
 ) -> tuple[UiLanguage, list[str]]:
     """Extract a global UI language flag from any pre-command position."""
 
@@ -364,10 +373,26 @@ def extract_ui_language(
             continue
         cleaned.append(argument)
         index += 1
-    source = selected
+    selected_environment = os.environ if environment is None else environment
+    source = selected if selected is not None else selected_environment.get(UI_LANGUAGE_ENV)
     if source is None:
-        source = (environment or os.environ).get(UI_LANGUAGE_ENV, "en")
+        source = _saved_ui_language(user_path=user_path) or "en"
     return normalize_ui_language(source), cleaned
+
+
+def _saved_ui_language(*, user_path: Path | None) -> str | None:
+    if user_path is None:
+        from mojilex_cli.config import default_user_config_path
+
+        user_path = default_user_config_path()
+    if not user_path.is_file():
+        return None
+    try:
+        with user_path.open("rb") as stream:
+            value = tomllib.load(stream).get("ui_language")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return value if isinstance(value, str) else None
 
 
 @contextmanager

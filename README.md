@@ -29,19 +29,20 @@ new terminal and verify the installation:
 mojilex --version
 ```
 
-Select Russian for one command, or persist it for future PowerShell and Command
-Prompt windows:
+Select Russian for the first setup or one command. `init` stores the selected
+interface language in the user configuration, outside the installed package:
 
 ```powershell
+mojilex --ui-language ru init
 mojilex --ui-language ru --help
-$env:MOJILEX_UI_LANGUAGE = "ru"
-setx MOJILEX_UI_LANGUAGE ru
+mojilex config set-ui-language ru
 ```
 
-`$env:MOJILEX_UI_LANGUAGE` applies immediately to the current PowerShell
-process. Open a new terminal after `setx`, which persists the language only for
-future processes. Command names, option names, and JSON fields remain stable in
-English.
+`mojilex config set-ui-language` changes only the saved interface language and
+preserves the other non-secret settings. Package upgrades do not overwrite this
+user configuration. `MOJILEX_UI_LANGUAGE` remains available as a temporary
+environment override. Command names, option names, and JSON fields remain stable
+in English.
 
 Authenticate with GitHub once and create the non-secret configuration:
 

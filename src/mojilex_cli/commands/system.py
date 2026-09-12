@@ -16,6 +16,7 @@ from mojilex_cli.config import (
     MojiLexConfig,
     default_user_config_path,
     load_config,
+    load_config_file,
     load_credentials,
     safe_config_dict,
 )
@@ -68,6 +69,37 @@ def config_clear_credentials_command() -> CommandResult:
     )
 
 
+def config_set_ui_language_command(language: str) -> CommandResult:
+    from mojilex_cli.i18n import normalize_ui_language
+
+    try:
+        selected = normalize_ui_language(language)
+    except ValueError as exc:
+        raise CommandError(
+            "CONFIG_INVALID",
+            str(exc),
+            hint="Pass `mojilex config set-ui-language en` or `... ru`.",
+        ) from exc
+    target = default_user_config_path().expanduser().resolve()
+    if not target.is_file():
+        raise CommandError(
+            "CONFIG_INVALID",
+            f"Configuration does not exist: {target}",
+            hint="Run `mojilex --ui-language ru init` first to create it in Russian.",
+        )
+    try:
+        current = load_config_file(target)
+    except ValueError as exc:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "The existing configuration is invalid and was not changed.",
+            hint="Fix the reported configuration error before changing its UI language.",
+        ) from exc
+    updated = current.model_copy(update={"ui_language": selected})
+    _write_config(target, updated)
+    return CommandResult(result={"config_path": str(target), "ui_language": selected})
+
+
 def init_command(
     *,
     repo: str,
@@ -78,6 +110,7 @@ def init_command(
     force: bool,
     languages: Sequence[str] = ("ru", "en"),
     prompt: Callable[[str, str], str] | None = None,
+    ui_language: str = "en",
 ) -> CommandResult:
     target = (config_path or default_user_config_path()).expanduser().resolve()
     if target.exists() and not force:
@@ -133,6 +166,7 @@ def init_command(
             identity = (name, email)
             configured_identity = True
     candidate_payload: dict[str, Any] = {
+        "ui_language": ui_language,
         "repository": {"target": repo, "base_branch": "main", "publish": publish},
         "ai": {
             "provider": selected_provider,
@@ -157,22 +191,7 @@ def init_command(
             "email_configured": True,
             "source": "non-secret MojiLex configuration (Git global config unchanged)",
         }
-    content = _config_toml(candidate)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(prefix=".mojilex-config-", dir=target.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-        try:
-            os.chmod(target, 0o600)
-        except OSError:
-            pass
-    finally:
-        temporary.unlink(missing_ok=True)
+    _write_config(target, candidate)
     selected_credential = credentials.gemini_api_key
     warnings = _check_warnings(checks, required_publication=publish)
     if not credentials.telegram_bot_token:
@@ -647,29 +666,58 @@ def _quoted(value: str) -> str:
 def _config_toml(config: MojiLexConfig) -> str:
     lines = [
         "# Non-secret MojiLex configuration. Keep API tokens in the system keyring or environment.",
-        "[repository]",
-        f"target = {_quoted(config.repository.target)}",
-        f"base_branch = {_quoted(config.repository.base_branch)}",
-        f"publish = {_quoted(config.repository.publish)}",
-        "",
-        "[telegram]",
-        f"timeout_seconds = {config.telegram.timeout_seconds:g}",
-        f"download_concurrency = {config.telegram.download_concurrency}",
-        "",
-        "[ai]",
-        f"provider = {_quoted(config.ai.provider)}",
-        f"model = {_quoted(config.ai.model)}",
-        "languages = [" + ", ".join(_quoted(language) for language in config.ai.languages) + "]",
-        f"max_ai_requests = {config.ai.max_ai_requests}",
-        f"ai_concurrency = {config.ai.ai_concurrency}",
-        "",
-        "[processing]",
-        f"static_batch_size = {config.processing.static_batch_size}",
-        f"animated_batch_size = {config.processing.animated_batch_size}",
-        f"keyframes = {config.processing.keyframes}",
-        f"render_timeout_seconds = {config.processing.render_timeout_seconds:g}",
-        "",
+        f"ui_language = {_quoted(config.ui_language)}",
     ]
+    if config.cache_dir is not None:
+        lines.append(f"cache_dir = {_quoted(str(config.cache_dir))}")
+    if config.runs_dir is not None:
+        lines.append(f"runs_dir = {_quoted(str(config.runs_dir))}")
+    lines.extend(
+        [
+            "",
+            "[repository]",
+            f"target = {_quoted(config.repository.target)}",
+            f"base_branch = {_quoted(config.repository.base_branch)}",
+            f"publish = {_quoted(config.repository.publish)}",
+            "",
+            "[telegram]",
+            f"timeout_seconds = {config.telegram.timeout_seconds:g}",
+            f"download_concurrency = {config.telegram.download_concurrency}",
+            f"max_attempts = {config.telegram.max_attempts}",
+            "",
+            "[ai]",
+            f"provider = {_quoted(config.ai.provider)}",
+            f"model = {_quoted(config.ai.model)}",
+            "languages = ["
+            + ", ".join(_quoted(language) for language in config.ai.languages)
+            + "]",
+            f"max_ai_requests = {config.ai.max_ai_requests}",
+        ]
+    )
+    if config.ai.max_cost_usd is not None:
+        lines.append(f"max_cost_usd = {config.ai.max_cost_usd}")
+    lines.extend(
+        [
+            f"ai_concurrency = {config.ai.ai_concurrency}",
+            f"allow_unknown_cost = {str(config.ai.allow_unknown_cost).lower()}",
+            f"model_routing = {_quoted(config.ai.model_routing)}",
+            f"escalation_model = {_quoted(config.ai.escalation_model)}",
+            "",
+            "[dedupe]",
+            f"mode = {_quoted(config.dedupe.mode)}",
+            f"max_candidates = {config.dedupe.max_candidates}",
+            f"profile = {_quoted(config.dedupe.profile)}",
+            "",
+            "[processing]",
+            f"static_batch_size = {config.processing.static_batch_size}",
+            f"animated_batch_size = {config.processing.animated_batch_size}",
+            f"keyframes = {config.processing.keyframes}",
+            f"render_timeout_seconds = {config.processing.render_timeout_seconds:g}",
+            f"max_download_bytes = {config.processing.max_download_bytes}",
+            f"max_temp_bytes = {config.processing.max_temp_bytes}",
+            "",
+        ]
+    )
     if config.git_identity.name is not None and config.git_identity.email is not None:
         lines.extend(
             [
@@ -680,3 +728,22 @@ def _config_toml(config: MojiLexConfig) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def _write_config(target: Path, config: MojiLexConfig) -> None:
+    content = _config_toml(config)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(prefix=".mojilex-config-", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)

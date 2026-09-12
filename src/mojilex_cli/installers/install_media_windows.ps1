@@ -87,6 +87,7 @@ if ($InstallTgs) {
     $source = Join-Path $temporaryRoot 'rlottie'
     $build = Join-Path $temporaryRoot 'rlottie-build'
     $buildEnvironment = Join-Path $temporaryRoot 'build-environment'
+    $adapterObject = Join-Path $temporaryRoot 'rlottie_rgba_renderer.obj'
     $destinationDirectory = Join-Path $env:USERPROFILE '.local\bin'
     $destination = Join-Path $destinationDirectory 'mojilex-rlottie-rgba.exe'
 
@@ -125,8 +126,9 @@ if ($InstallTgs) {
     }
 
     New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
-    & cl.exe /nologo /std:c++14 /EHsc /O2 /W4 /WX "/I$source\inc" $adapterSource `
-        /link "/LIBPATH:$build\src" rlottie.lib Shlwapi.lib "/OUT:$destination"
+    $rlottieLibrary = Join-Path $build 'src\librlottie.a'
+    & cl.exe /nologo /std:c++14 /EHsc /O2 /MD /W4 /WX "/I$source\inc" `
+        "/Fo$adapterObject" $adapterSource /link $rlottieLibrary Shlwapi.lib "/OUT:$destination"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination)) {
         throw "MojiLex TGS adapter build failed with exit code $LASTEXITCODE."
     }
