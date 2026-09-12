@@ -1,6 +1,6 @@
 # MojiLex CLI
 
-[Русское описание и инструкция](README_RU.md)
+English | [Русский](README_RU.md)
 
 `mojilex` imports public Telegram custom-emoji sets, prepares temporary media for
 deterministic analysis, creates Russian and English semantic metadata, finds duplicate
@@ -18,19 +18,45 @@ This repository contains the `0.2.0` MVP. It adds bounded, offline, read-only ac
 explicitly selected `distribution-v1` snapshot. The data format has its own independently
 versioned JSON Schema (`1.0.0`). Python 3.11 or newer is required.
 
-## Install
+## Installation
+
+Clone the CLI and data repositories side by side:
 
 ```console
-pipx install mojilex-cli
+git clone https://github.com/MojiLex/mojilex-cli.git
+git clone https://github.com/MojiLex/mojilex.git
+cd mojilex-cli
 ```
 
-or:
+Install on Windows with PowerShell:
+
+```powershell
+python --version
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\mojilex.exe --version
+.\.venv\Scripts\mojilex.exe doctor
+```
+
+If `python` is not available, install a supported Python release from
+[python.org](https://www.python.org/downloads/) with the PATH option enabled,
+then open a new terminal. MojiLex requires Python 3.11 or newer.
+
+Install on Linux or macOS:
 
 ```console
-uv tool install mojilex-cli
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install .
+.venv/bin/mojilex --version
+.venv/bin/mojilex doctor
 ```
 
-Verify the installation and optional media backends:
+Activation is optional. After activation, the shorter `mojilex` command can be
+used in the examples below.
+
+Verify the optional media backends at any time:
 
 ```console
 mojilex --version
@@ -42,26 +68,14 @@ adapter are external prerequisites for WebM and TGS. The lossy upstream `lottie2
 not supported. See
 [Media prerequisites](docs/media-prerequisites.md).
 
+`MojiLex doctor: succeeded` means that the diagnostic command completed. The
+environment is ready only when the reported `ready` value is `true`. A TGS
+import requires an available `mojilex-rlottie-rgba` adapter.
+
 ## Quick start
 
-1. Clone the data repository and initialize a non-secret local configuration:
-
-   ```console
-   git clone https://github.com/MojiLex/mojilex.git
-   mojilex init --repo ./mojilex --provider gemini --model "YOUR_EXACT_GEMINI_MODEL_ID"
-   ```
-
-   The model ID is deliberately explicit so the selected provider target is visible in the
-   configuration and provenance. `init` writes only non-secret settings, runs the same real media
-   fixture probes as `doctor`, and reports credential, Git identity, and GitHub access readiness.
-   In a terminal, `mojilex init` opens a setup wizard for the target, provider, exact model,
-   languages and publication mode. If Git identity is missing, the wizard offers to save it
-   only in the MojiLex configuration; it never changes global Git settings. Use
-   `--non-interactive` with explicit options for scripts. JSON, quiet and piped-input modes
-   never prompt; a missing model is an error. Repeat `--lang` to select languages (ru/en required).
-
-2. Provide credentials through environment variables or hidden interactive input. Never put
-   them in `.mojilex.toml` or a command-line argument:
+1. Provide credentials through the process environment before initialization or
+   import:
 
    ```text
    TELEGRAM_BOT_TOKEN
@@ -69,16 +83,58 @@ not supported. See
    GH_TOKEN or GITHUB_TOKEN (only for GitHub publication)
    ```
 
+   `init` deliberately does not request or store secrets. It only reports
+   whether the required variables are present. Never put credentials in
+   `.mojilex.toml` or command-line arguments.
+
+   On Windows PowerShell, read secrets into the current process without
+   displaying them or placing their values in command history:
+
+   ```powershell
+   function Set-SessionSecret([string]$Name) {
+       $secure = Read-Host "Enter $Name" -AsSecureString
+       $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+       try {
+           $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+           [Environment]::SetEnvironmentVariable($Name, $value, "Process")
+       }
+       finally {
+           [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+       }
+   }
+
+   Set-SessionSecret "TELEGRAM_BOT_TOKEN"
+   Set-SessionSecret "GEMINI_API_KEY"
+   ```
+
+   On Linux or macOS, use `read -s` and export the resulting variables in the
+   same shell session.
+
+2. Initialize a non-secret project configuration for the adjacent data
+   repository:
+
+   ```console
+   mojilex init --repo ../mojilex --provider gemini --model "EXACT_MODEL_ID" --publish local --lang ru --lang en --config .mojilex.toml --non-interactive
+   ```
+
+   The model ID is deliberately explicit so the selected provider target is visible in the
+   configuration and provenance. `init` writes only non-secret settings, runs the same real media
+   fixture probes as `doctor`, and reports credential, Git identity, and GitHub access readiness.
+   Running `mojilex init` without `--non-interactive` opens a setup wizard for
+   non-secret settings. If Git identity is missing, the wizard can save it only
+   in the MojiLex configuration; it never changes global Git settings. JSON,
+   quiet and piped-input modes never prompt; a missing model is an error.
+
 3. Preview an import without AI calls or persistent changes:
 
    ```console
-   mojilex add https://t.me/addemoji/PackName --repo ./mojilex --dry-run
+   mojilex add https://t.me/addemoji/PackName --repo ../mojilex --dry-run
    ```
 
 4. Import and describe locally, or create a contributor pull request:
 
    ```console
-   mojilex add https://t.me/addemoji/PackName --repo ./mojilex --publish local
+   mojilex add https://t.me/addemoji/PackName --repo ../mojilex --publish local
    mojilex add https://t.me/addemoji/PackName --repo MojiLex/mojilex --publish pr
    ```
 

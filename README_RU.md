@@ -1,131 +1,201 @@
-# MojiLex CLI — описание и инструкция
+# MojiLex CLI
 
-[English README](README.md)
+[English](README.md) | Русский
 
-`mojilex` — консольная утилита для создания и поддержки открытого каталога
-кастомных эмодзи. Она умеет:
+MojiLex CLI — консольная утилита для создания, проверки и публикации открытого
+каталога метаданных кастомных эмодзи.
 
-- импортировать публичные наборы кастомных эмодзи Telegram;
-- локально извлекать технические признаки WebP, TGS и WebM;
-- получать через Gemini описания, теги и семантические признаки на русском и
-  английском языках;
-- находить точные и визуально похожие дубликаты;
-- проверять структуру и целостность репозитория данных;
-- подготовить локальное изменение или pull request в репозиторий данных;
-- читать заранее собранный snapshot полностью офлайн.
+Основные возможности:
 
-Исходные изображения, анимации, кадры, contact sheet, токены и временные ссылки
-Telegram не сохраняются в Git. В репозиторий данных попадают только метаданные,
-проверяемые хеши и результаты анализа.
+- импорт публичных наборов кастомных эмодзи Telegram;
+- локальный анализ WebP, TGS и WebM;
+- создание русских и английских описаний, тегов и семантических признаков с
+  помощью поддерживаемого AI-провайдера;
+- поиск точных и визуально похожих дубликатов;
+- проверка структуры и целостности набора данных;
+- подготовка локальных изменений и pull request;
+- полностью офлайн-доступ к собранным snapshot.
 
-## Что где находится
+Исходные изображения, анимации, декодированные кадры, contact sheet, токены и
+временные ссылки Telegram не сохраняются в Git. В репозиторий данных включаются
+только метаданные, проверяемые хеши и результаты анализа.
 
-Используются два соседних репозитория:
+## Репозитории
+
+- [mojilex-cli](https://github.com/MojiLex/mojilex-cli) — исходный код CLI;
+- [mojilex](https://github.com/MojiLex/mojilex) — схемы и канонические данные.
+
+Для локальной работы репозитории размещаются рядом:
 
 ```text
-projects\
-├── mojilex-cli\   код утилиты, единственный проект PyCharm
-└── mojilex\       данные и JSON Schema
+workspace\
+├── mojilex-cli\
+└── mojilex\
 ```
 
-- Код: <https://github.com/MojiLex/mojilex-cli>
-- Данные: <https://github.com/MojiLex/mojilex>
+## Системные требования
 
-В PyCharm достаточно открыть папку `mojilex-cli`. Репозиторий `mojilex`
-используется утилитой как хранилище данных и не требует отдельного проекта.
-
-## Требования
-
-- Windows, Linux или macOS;
 - Python 3.11 или новее;
 - Git;
-- токен Telegram-бота для импорта;
-- API-ключ Gemini для генерации описаний;
-- FFmpeg/ffprobe для WebM;
-- lossless rlottie RGBA adapter MojiLex для TGS.
+- Windows, Linux или macOS;
+- Telegram Bot API token для импорта;
+- API key поддерживаемого AI-провайдера для генерации метаданных;
+- FFmpeg и ffprobe для обработки WebM;
+- lossless rlottie RGBA adapter MojiLex для обработки TGS.
 
-Обработка WebP уже входит в Python-зависимости. Доступность всех компонентов
-проверяется командой `mojilex doctor`. Подробнее о медиакомпонентах:
-[docs/media-prerequisites.md](docs/media-prerequisites.md).
+Обработка WebP включена в основные Python-зависимости. Состояние окружения и
+медиакомпонентов проверяет команда `mojilex doctor`. Подробные требования
+приведены в разделе [Media prerequisites](docs/media-prerequisites.md).
 
-## Установка из исходников в Windows
+## Установка
 
-Откройте PowerShell в корне клонированного репозитория `mojilex-cli`:
+Клонируйте оба репозитория:
+
+```console
+git clone https://github.com/MojiLex/mojilex-cli.git
+git clone https://github.com/MojiLex/mojilex.git
+cd mojilex-cli
+```
+
+Установка в Windows через PowerShell:
 
 ```powershell
-py -3.11 -m venv .venv
+python --version
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install .
 .\.venv\Scripts\mojilex.exe --version
 .\.venv\Scripts\mojilex.exe doctor
 ```
 
-После активации окружения команды можно вводить короче:
+Если команда `python` недоступна, установите поддерживаемую версию с
+[python.org](https://www.python.org/downloads/), включите добавление Python в
+PATH и откройте новое окно терминала. Требуется Python 3.11 или новее.
+
+Установка в Linux или macOS:
+
+```console
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install .
+.venv/bin/mojilex --version
+.venv/bin/mojilex doctor
+```
+
+В дальнейших примерах предполагается, что виртуальное окружение активировано.
+В Windows PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-mojilex --version
 ```
 
-Если PowerShell запрещает запуск `Activate.ps1`, активация не обязательна:
-используйте полный путь `.\.venv\Scripts\mojilex.exe`.
+В Linux или macOS:
 
-После официальной публикации пакета его также можно будет установить как
-изолированную утилиту:
-
-```powershell
-pipx install mojilex-cli
+```console
+source .venv/bin/activate
 ```
 
-## Первоначальная настройка
+Активация не обязательна: команду `mojilex` можно запускать по полному пути из
+каталога `.venv`.
 
-Находясь в папке `mojilex-cli`, создайте локальный конфигурационный файл:
+## Конфигурация
+
+Перед запуском `init` настройте учетные данные по инструкции ниже. Затем
+создайте несекретную проектную конфигурацию:
 
 ```powershell
 mojilex init `
   --repo ..\mojilex `
   --provider gemini `
-  --model gemini-3.8-flash `
+  --model "EXACT_MODEL_ID" `
   --publish local `
   --lang ru `
-  --lang en
+  --lang en `
+  --config .\.mojilex.toml `
+  --non-interactive
 ```
 
-Без параметров `init` запускает интерактивный мастер. Конфигурация не должна
-содержать токены или API-ключи. Точный ID модели указывается явно, чтобы он был
-виден в происхождении сгенерированных данных.
+Замените `EXACT_MODEL_ID` точным идентификатором поддерживаемой модели. Без
+`--non-interactive` команда открывает мастер несекретных настроек и повторно
+предлагает значения, переданные в аргументах.
 
-Для обычного интерактивного запуска секреты можно не записывать в файлы:
-утилита запросит недостающие значения скрытым вводом. Для автоматического или
-неинтерактивного запуска используйте переменные окружения:
+Приоритет параметров:
+
+1. аргументы командной строки;
+2. переменные окружения;
+3. проектный файл `.mojilex.toml`;
+4. пользовательская конфигурация;
+5. безопасные значения по умолчанию.
+
+Конфигурационные файлы предназначены только для несекретных параметров.
+
+## Учетные данные
+
+Команда `init` намеренно не запрашивает и не сохраняет токены или API keys. Она
+только проверяет наличие следующих переменных окружения:
 
 ```text
 TELEGRAM_BOT_TOKEN
 GEMINI_API_KEY
-GH_TOKEN или GITHUB_TOKEN — только для публикации через GitHub
+GH_TOKEN или GITHUB_TOKEN — только для операций GitHub
 ```
 
-Не передавайте секреты параметрами командной строки, не добавляйте их в
-`.mojilex.toml` и не коммитьте `.env`.
-
-## Быстрый сценарий работы
-
-### 1. Безопасно посмотреть план импорта
-
-`--dry-run` не вызывает AI и не изменяет постоянные данные:
+В Windows PowerShell секреты можно безопасно запросить для текущего сеанса без
+отображения и сохранения в истории команд:
 
 ```powershell
-mojilex add https://t.me/addemoji/PackName --repo ..\mojilex --dry-run
+function Set-SessionSecret([string]$Name) {
+    $secure = Read-Host "Введите $Name" -AsSecureString
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+        [Environment]::SetEnvironmentVariable($Name, $value, "Process")
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    }
+}
+
+Set-SessionSecret "TELEGRAM_BOT_TOKEN"
+Set-SessionSecret "GEMINI_API_KEY"
 ```
 
-Чтобы дополнительно скачать и проверить медиа, но всё равно ничего не
-публиковать:
+Переменные действуют только в текущем окне PowerShell и передаются запущенному
+из него `mojilex`. Для публикации PR аналогично задается `GH_TOKEN`.
+
+В Linux или macOS:
+
+```console
+read -rsp "TELEGRAM_BOT_TOKEN: " TELEGRAM_BOT_TOKEN; echo
+export TELEGRAM_BOT_TOKEN
+read -rsp "GEMINI_API_KEY: " GEMINI_API_KEY; echo
+export GEMINI_API_KEY
+```
+
+Токены и API keys запрещено передавать аргументами командной строки, сохранять
+в `.mojilex.toml`, добавлять в `.env` внутри репозитория или коммитить в Git.
+
+## Проверка импорта
+
+Параметр `--dry-run` строит план без AI-запросов и постоянных изменений:
 
 ```powershell
-mojilex add https://t.me/addemoji/PackName --repo ..\mojilex --dry-run --check-media
+mojilex add https://t.me/addemoji/PackName `
+  --repo ..\mojilex `
+  --dry-run
 ```
 
-### 2. Импортировать набор локально
+Параметр `--check-media` дополнительно загружает и проверяет медиа, не публикуя
+результат:
+
+```powershell
+mojilex add https://t.me/addemoji/PackName `
+  --repo ..\mojilex `
+  --dry-run `
+  --check-media
+```
+
+## Локальный импорт
 
 ```powershell
 mojilex add https://t.me/addemoji/PackName `
@@ -134,38 +204,41 @@ mojilex add https://t.me/addemoji/PackName `
   --max-cost-usd 0.25
 ```
 
-Перед платным запросом утилита показывает провайдера, модель, количество
-запросов и верхнюю оценку стоимости. Не используйте `--yes`, пока не проверили
-этот план. Если цена модели неизвестна, команда завершится безопасной ошибкой,
-если пользователь явно не разрешил неизвестную стоимость.
+Перед обращением к AI-провайдеру CLI сообщает модель, планируемое количество
+запросов и верхнюю оценку стоимости. Если стоимость модели неизвестна,
+неинтерактивный запуск завершается ошибкой без отправки запроса. Явное разрешение
+неизвестной стоимости задается параметром `--allow-unknown-cost`.
 
-### 3. Проверить данные
+Коллекция является атомарной единицей публикации: ошибка одного элемента не
+приводит к публикации неполного набора.
+
+## Проверка данных
 
 ```powershell
 mojilex validate ..\mojilex
 ```
 
-Для машинной обработки добавьте `--json`. В этом режиме stdout содержит один
-JSON-объект, а диагностические сообщения выводятся в stderr.
+Параметр `--json` включает машиночитаемый результат. В этом режиме stdout
+содержит один JSON-объект, а диагностические сообщения направляются в stderr.
 
-### 4. Найти дубликаты
+## Поиск дубликатов
 
-Перестроить локальный индекс для всего набора данных:
+Перестроение локального индекса для всего набора данных:
 
 ```powershell
 mojilex dedupe scan --all --repo ..\mojilex
 ```
 
-Проверить отдельный эмодзи или коллекцию:
+Проверка отдельного эмодзи или коллекции:
 
 ```powershell
 mojilex dedupe scan EMOJI_OR_COLLECTION_ID --repo ..\mojilex
 ```
 
-Найденные похожие элементы являются кандидатами на ручную проверку и не
-объединяются автоматически.
+Найденные совпадения являются кандидатами на ручную проверку. CLI не объединяет
+эмодзи автоматически.
 
-### 5. Подготовить pull request
+## Создание pull request
 
 ```powershell
 mojilex add https://t.me/addemoji/PackName `
@@ -173,116 +246,130 @@ mojilex add https://t.me/addemoji/PackName `
   --publish pr
 ```
 
-Для этого нужен `GH_TOKEN` или `GITHUB_TOKEN` с подходящими правами. Утилита не
-делает force push. Прямой push отделён от обычной публикации и требует
-дополнительного `--direct-push`, пройденных проверок и подтверждения точного
-commit SHA.
+Операция требует `GH_TOKEN` или `GITHUB_TOKEN` с необходимыми правами. Force
+push не используется. Прямой push требует отдельного параметра `--direct-push`,
+успешных проверок и подтверждения точного commit SHA.
 
 ## Продолжение прерванной операции
 
-При ошибке или остановке утилита выводит `RUN_ID`. Продолжить тот же запуск:
+При прерывании или восстанавливаемой ошибке CLI возвращает `RUN_ID`:
 
 ```powershell
 mojilex resume RUN_ID
 ```
 
-Посмотреть подготовленный результат:
+Просмотр результата запуска:
 
 ```powershell
 mojilex describe RUN_ID
 ```
 
-Повторный запуск использует только полностью совпадающие записи безопасного
-кеша. Изменение модели, prompt, схемы или параметров создаёт другой ключ.
+Запись AI-кеша используется только при полном совпадении модели, prompt, схемы
+и параметров запроса.
 
-## Офлайн-чтение готового snapshot
+## Офлайн-доступ к snapshot
 
-Команды чтения работают не с исходной папкой `mojilex`, а с уже собранным
-каталогом snapshot:
+Команды чтения принимают каталог собранного snapshot, а не исходный репозиторий
+данных:
 
 ```powershell
-mojilex search "радость" --snapshot C:\path\to\snapshot --allow-unverified
-mojilex get EMOJI_ID --snapshot C:\path\to\snapshot --allow-unverified
-mojilex get-collection COLLECTION_ID --snapshot C:\path\to\snapshot --allow-unverified
-mojilex similar EMOJI_ID --snapshot C:\path\to\snapshot --allow-unverified
+mojilex search "радость" --snapshot PATH_TO_SNAPSHOT --allow-unverified
+mojilex get EMOJI_ID --snapshot PATH_TO_SNAPSHOT --allow-unverified
+mojilex get-collection COLLECTION_ID --snapshot PATH_TO_SNAPSHOT --allow-unverified
+mojilex similar EMOJI_ID --snapshot PATH_TO_SNAPSHOT --allow-unverified
 ```
 
-Текущий MVP snapshot проверяется по хешам, но ещё не имеет подписанной цепочки
-доверия Stage C. Поэтому диагностическое чтение требует явного
-`--allow-unverified`; этот флаг не делает snapshot доверенным. Во время чтения
-сеть, Telegram, Gemini и медиадекодеры не используются.
+Snapshot версии 0.2.0 проверяется по хешам, но не имеет подписанной цепочки
+доверия Stage C. Диагностическое чтение требует явного
+`--allow-unverified`. Этот параметр не изменяет статус доверия snapshot.
 
-## Полезные команды
+Команды чтения работают офлайн и не обращаются к Telegram, AI-провайдеру,
+медиадекодерам, каталогам или зеркалам.
+
+## Основные команды
 
 ```text
 mojilex --help                         список команд
-mojilex COMMAND --help                 параметры конкретной команды
-mojilex doctor                         проверка окружения и декодеров
-mojilex config show                    несекретная конфигурация
+mojilex COMMAND --help                 параметры команды
+mojilex init                           создание конфигурации
+mojilex doctor                         проверка окружения
+mojilex add SOURCE                     импорт источника
+mojilex validate PATH                  проверка набора данных
+mojilex dedupe scan --all              построение индекса дубликатов
+mojilex resume RUN_ID                  продолжение операции
+mojilex config show                    просмотр несекретной конфигурации
 mojilex cache info                     состояние AI-кеша
-mojilex cache prune                    безопасная очистка кеша
-mojilex validate PATH                  проверка исходного набора данных
-mojilex dedupe scan --all              индекс дубликатов
-mojilex snapshot verify PATH           проверка готового snapshot
+mojilex cache prune                    очистка AI-кеша
+mojilex snapshot verify PATH           проверка snapshot
 ```
 
-## Частые проблемы
+Полный перечень команд приведен в [README.md](README.md). Точные параметры
+доступны через `mojilex COMMAND --help`.
+
+## Устранение неполадок
 
 ### Команда `mojilex` не найдена
 
-Активируйте `.venv` либо запускайте
-`.\.venv\Scripts\mojilex.exe` напрямую.
+Активируйте виртуальное окружение или используйте исполняемый файл напрямую:
+
+```powershell
+.\.venv\Scripts\mojilex.exe --help
+```
 
 ### Git сообщает `detected dubious ownership`
 
-Не отключайте проверку для всех репозиториев. Добавьте только точные пути:
-
-Если PowerShell открыт в корне `mojilex-cli`, добавьте только два точных
-разрешённых пути:
+Добавьте в `safe.directory` только точные пути доверенных репозиториев. Если
+PowerShell открыт в корне `mojilex-cli`, выполните:
 
 ```powershell
 git config --global --add safe.directory (Resolve-Path .).Path
 git config --global --add safe.directory (Resolve-Path ..\mojilex).Path
 ```
 
-### Не обрабатывается TGS или WebM
+Не используйте универсальное значение `safe.directory=*`.
 
-Запустите:
+### Не обрабатывается TGS или WebM
 
 ```powershell
 mojilex doctor
 ```
 
-Команда отдельно покажет состояние WebP, rlottie/TGS и FFmpeg/WebM.
+Результат содержит отдельное состояние WebP, rlottie/TGS и FFmpeg/WebM. Строка
+`MojiLex doctor: succeeded` означает, что диагностика выполнилась; готовность к
+работе определяется полем `ready`. Значение `ready False` требует устранить
+перечисленные предупреждения. Для импорта TGS необходим доступный
+`mojilex-rlottie-rgba`.
 
-### Команда остановилась на проверке AI
+### AI-запрос не выполняется
 
-Проверьте точный ID модели, наличие `GEMINI_API_KEY`, лимит
-`--max-ai-requests` и ограничение `--max-cost-usd`. Ответ модели всё равно
-проходит локальную строгую JSON Schema и дополнительные проверки; некорректный
-ответ не публикуется частично.
+Проверьте точный ID модели, наличие требуемой переменной окружения,
+`--max-ai-requests` и `--max-cost-usd`. Ответ AI-провайдера проходит строгую
+локальную JSON Schema и дополнительные проверки. Некорректный ответ не
+публикуется.
 
-## Разработка и тесты
+## Безопасность
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m ruff check src tests
-.\.venv\Scripts\python.exe -m ruff format --check src tests
-.\.venv\Scripts\python.exe -m mypy src
-.\.venv\Scripts\python.exe -m build
-```
+- Поддерживаются только разрешенные формы публичных Telegram custom-emoji URL.
+- Репозитории GitHub принимаются только через безопасные HTTPS/SSH remotes без
+  встроенных учетных данных.
+- Для загрузки, распаковки, пикселей, длительности, кадров, памяти, времени и
+  временного диска применяются жесткие ограничения.
+- Декодирование медиа выполняется в отдельном процессе без shell и API keys.
+- Данные с чувствительным содержимым, предупреждениями или недостаточной
+  уверенностью требуют человеческой проверки.
+- Грязное рабочее дерево не сохраняется автоматически через stash.
+- Force push не используется.
 
-Архитектура описана в [docs/architecture.md](docs/architecture.md), модель
-безопасности — в [docs/security-model.md](docs/security-model.md), публикация —
-в [docs/publishing.md](docs/publishing.md).
+Дополнительная информация: [Security model](docs/security-model.md) и
+[Publishing](docs/publishing.md).
 
-## Текущие ограничения MVP
+## Ограничения версии 0.2.0
 
-- Квалификация модели требует отдельного размеченного benchmark-набора и не
-  возникает автоматически после успешного API-вызова.
-- Похожие эмодзи требуют человеческого решения.
+- Успешный API-запрос не означает автоматическую квалификацию модели.
+- Визуально похожие эмодзи требуют ручного решения.
 - Подписанный каталог, аттестации и отзыв доверия относятся к Stage C.
-- Разделённые snapshot, delta-обновления и масштабирование относятся к Stage D/E.
+- Разделенные snapshot, delta-обновления и масштабирование относятся к Stage
+  D/E.
 
-Код CLI распространяется по лицензии MIT. Метаданные, передаваемые в репозиторий
-данных, публикуются по правилам этого репозитория.
+Код CLI распространяется по лицензии [MIT](LICENSE). Условия публикации
+метаданных определены в репозитории данных.
