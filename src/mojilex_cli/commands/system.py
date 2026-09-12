@@ -22,6 +22,7 @@ from mojilex_cli.config import (
 from mojilex_cli.config.secrets import assert_no_secret_keys
 from mojilex_cli.github import GitHubCLI, GitHubError, RepositoryRef
 from mojilex_cli.media import probe_media_backends
+from mojilex_cli.output import RunStatus
 
 from .runtime import CommandError, CommandResult
 
@@ -205,17 +206,47 @@ def doctor_command() -> CommandResult:
         "github": bool(credentials.github_token),
     }
     warnings = _check_warnings(checks)
+    install_commands = _media_install_commands(checks)
+    if install_commands:
+        warnings.append("Install missing media backends with: " + install_commands[0])
+    ready = bool(
+        checks["python"]["available"]
+        and checks["git"]["available"]
+        and all(item["available"] and item["fixture_decoded"] for item in checks["media"])
+    )
     return CommandResult(
         result={
             "checks": checks,
-            "ready": bool(
-                checks["python"]["available"]
-                and checks["git"]["available"]
-                and all(item["available"] and item["fixture_decoded"] for item in checks["media"])
-            ),
+            "ready": ready,
+            "install_commands": install_commands,
         },
         warnings=warnings,
+        status=RunStatus.SUCCEEDED if ready else RunStatus.PARTIAL,
     )
+
+
+def _media_install_commands(
+    checks: dict[str, Any],
+    *,
+    platform_name: str | None = None,
+    script_path: Path | None = None,
+) -> list[str]:
+    missing = {
+        item["name"]
+        for item in checks["media"]
+        if not item["available"] or not item["fixture_decoded"]
+    }
+    if (platform_name or os.name) != "nt" or not missing.intersection(
+        {"tgs/rlottie-rgba", "webm/ffmpeg"}
+    ):
+        return []
+    script = script_path or (
+        Path(__file__).resolve().parents[1] / "installers" / "install_media_windows.ps1"
+    )
+    if not script.is_file():
+        return []
+    escaped = str(script).replace('"', '""')
+    return [f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{escaped}"']
 
 
 def _system_checks(

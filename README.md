@@ -182,7 +182,9 @@ not supported. See
 environment is ready only when the reported `ready` value is `true`. A TGS
 import requires an available `mojilex-rlottie-rgba` adapter. After installing
 it, continue a saved failed run with `mojilex resume mlxrun_YOUR_ID` instead of
-starting over.
+starting over. On Windows, `install_commands` contains one copyable PowerShell
+command that installs missing media components. It may request administrator
+approval and install Visual Studio Build Tools with the C++ workload.
 
 ## Separate analysis and submission
 

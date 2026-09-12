@@ -63,6 +63,9 @@ mojilex = "mojilex_cli.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mojilex_cli"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"tools/rlottie_rgba_renderer.cpp" = "mojilex_cli/installers/rlottie_rgba_renderer.cpp"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",

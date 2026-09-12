@@ -9,6 +9,7 @@ import pytest
 from mojilex_cli.commands import system
 from mojilex_cli.commands.runtime import CommandError
 from mojilex_cli.config import Credentials, MojiLexConfig
+from mojilex_cli.output import RunStatus
 
 
 def _checks(*, can_write: bool = True, can_publish_pr: bool = True) -> dict[str, object]:
@@ -177,6 +178,56 @@ def test_doctor_includes_active_python_probe(monkeypatch: pytest.MonkeyPatch) ->
 
     assert result.result["checks"]["python"]["available"] is True
     assert result.result["ready"] is True
+    assert result.result["install_commands"] == []
+    assert result.status is RunStatus.SUCCEEDED
+
+
+def test_doctor_prints_windows_media_install_command_when_tgs_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = _checks()
+    checks.pop("github_access")
+    checks["media"][1] = {
+        "name": "tgs/rlottie-rgba",
+        "available": False,
+        "fixture_decoded": False,
+        "detail": "mojilex-rlottie-rgba was not found on PATH",
+    }
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(
+        system,
+        "_media_install_commands",
+        lambda _checks: [
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "install_media_windows.ps1"'
+        ],
+    )
+    monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(system, "load_config", MojiLexConfig)
+
+    result = system.doctor_command()
+
+    assert result.result["ready"] is False
+    assert result.status is RunStatus.PARTIAL
+    commands = result.result["install_commands"]
+    assert len(commands) == 1
+    assert "install_media_windows.ps1" in commands[0]
+    assert any("Install missing media backends with:" in str(item) for item in result.warnings)
+
+
+def test_windows_media_install_command_targets_bundled_script(tmp_path: Path) -> None:
+    script = tmp_path / "install_media_windows.ps1"
+    script.write_text("# test\n", encoding="utf-8")
+    checks = _checks()
+    checks["media"][1] = {
+        "name": "tgs/rlottie-rgba",
+        "available": False,
+        "fixture_decoded": False,
+        "detail": "missing",
+    }
+
+    commands = system._media_install_commands(checks, platform_name="nt", script_path=script)
+
+    assert commands == [f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{script}"']
 
 
 def test_doctor_recognizes_identity_saved_by_the_setup_wizard(
