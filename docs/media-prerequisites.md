@@ -5,6 +5,12 @@ and `ffprobe`. TGS requires the small MojiLex lossless RGBA adapter from
 `tools/rlottie_rgba_renderer.cpp`. `mojilex doctor` verifies an actual decode, not just the
 presence of an executable.
 
+On Windows, run `mojilex doctor` first. If FFmpeg or the TGS adapter is missing,
+the interactive command offers to install the required components directly.
+Answer `y`, or use `mojilex doctor --install`, instead of copying the commands
+below. The TGS path may request administrator approval and install Visual Studio
+Build Tools with the C++ workload before building the pinned adapter.
+
 Typical FFmpeg installation commands are:
 
 ```console

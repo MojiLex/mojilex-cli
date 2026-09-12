@@ -48,13 +48,17 @@ Authenticate with GitHub once and create the non-secret configuration:
 ```console
 gh auth login
 mojilex init --model gemini-3.8-flash --non-interactive
+mojilex config set-credentials
 ```
 
 `init` creates only non-secret settings and never requests or stores API keys.
-The `--non-interactive` flag also disables the settings wizard. If the
-configuration already exists, do not run `init` again: the next interactive
-`mojilex add ...` command requests missing Telegram and Gemini credentials with
-hidden input and uses them only for that run.
+The `--non-interactive` flag also disables the settings wizard.
+`config set-credentials` requests the Telegram and Gemini values through hidden
+input and stores them in the operating-system keyring. Environment variables
+override stored values. To keep credentials only for one run, skip this command:
+an interactive `mojilex add ...` requests missing values without persisting them.
+If the current desktop session has no usable keyring service, the save command
+fails safely and asks you to use environment variables instead.
 
 If an older configuration contains a missing relative repository path, replace
 it with a safe no-publication default:
@@ -95,8 +99,8 @@ mojilex submit mlxrun_YOUR_ID --direct-push
 ```
 
 Replace `PackName` and `mlxrun_YOUR_ID` with the actual pack name and the exact
-ID returned by `import`. Missing Telegram and Gemini credentials are requested
-through hidden prompts and remain in memory only for the current command.
+ID returned by `import`. Missing Telegram and Gemini credentials are loaded from
+the system keyring or requested through hidden one-time prompts.
 
 For a one-step check without AI requests or a persistent staged run:
 
@@ -105,9 +109,10 @@ mojilex add "https://t.me/addemoji/PackName" --dry-run --check-media --repo Moji
 ```
 
 Git, GitHub CLI (`gh`), and the applicable media backends are required. WebP
-works after the one-command install. Run `mojilex doctor` to check WebM and TGS;
-if `ready` is `false`, follow [Media prerequisites](docs/media-prerequisites.md)
-for the backend named in the report.
+works after the one-command install. Run `mojilex doctor` to check WebM and TGS.
+On Windows it offers an interactive `[y/N]` installation when a supported
+component is missing. Choose `y`, or run `mojilex doctor --install`, to install
+only the required FFmpeg and/or TGS build components and rerun the checks.
 
 `mojilex` imports public Telegram custom-emoji sets, prepares temporary media for
 deterministic analysis, creates Russian and English semantic metadata, finds duplicate
@@ -115,9 +120,10 @@ candidates, validates the
 [MojiLex dataset](https://github.com/MojiLex/mojilex), and publishes a local change or a
 GitHub pull request.
 
-The CLI never stores original emoji media, rendered frames, contact sheets, API keys, or
-Telegram download URLs in Git or its persistent cache. Telegram media remains owned by its
-respective rights holders.
+The CLI never stores original emoji media, rendered frames, contact sheets, API
+keys, or Telegram download URLs in Git, configuration files, or its persistent
+cache. Credential persistence is opt-in and uses the operating-system keyring.
+Telegram media remains owned by its respective rights holders.
 
 ## Status
 
@@ -182,9 +188,10 @@ not supported. See
 environment is ready only when the reported `ready` value is `true`. A TGS
 import requires an available `mojilex-rlottie-rgba` adapter. After installing
 it, continue a saved failed run with `mojilex resume mlxrun_YOUR_ID` instead of
-starting over. On Windows, `install_commands` contains one copyable PowerShell
-command that installs missing media components. It may request administrator
-approval and install Visual Studio Build Tools with the C++ workload.
+starting over. On Windows, answer `y` when `doctor` offers to install the
+missing components, or run `mojilex doctor --install`. The installer may request
+administrator approval and install Visual Studio Build Tools with the C++
+workload when the TGS adapter must be built.
 
 ## Separate analysis and submission
 
@@ -198,10 +205,12 @@ mojilex describe RUN_ID
 mojilex submit RUN_ID
 ```
 
-Use the `RUN_ID` printed by `import` in the next two commands. Interactive
-commands request missing Telegram and Gemini credentials through hidden prompts.
-For JSON, quiet, piped-input, or non-interactive operation, set
-`TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` in the process environment instead.
+Use the `RUN_ID` printed by `import` in the next two commands. Commands first
+use environment variables, then optional system-keyring values saved by
+`mojilex config set-credentials`, and finally request missing Telegram and
+Gemini credentials through hidden prompts. For JSON, quiet, piped-input, or
+non-interactive operation, use saved credentials or set `TELEGRAM_BOT_TOKEN`
+and `GEMINI_API_KEY` in the process environment.
 `init` does not request secrets because it exits after writing non-secret
 configuration. Existing `gh auth login` authorization is sufficient for normal
 pull-request publication; `GH_TOKEN` or `GITHUB_TOKEN` is intended primarily for
@@ -234,6 +243,8 @@ mojilex set-status ENTITY_ID --availability STATUS --reason CODE
 mojilex takedown ENTITY_ID --reason CODE
 mojilex doctor
 mojilex config show
+mojilex config set-credentials
+mojilex config clear-credentials
 mojilex cache info
 mojilex cache prune
 mojilex snapshot verify PATH
@@ -242,6 +253,7 @@ mojilex get EMOJI_ID --snapshot PATH
 mojilex get-collection COLLECTION_ID --snapshot PATH
 mojilex resolve --platform NAME --namespace NAME --scope ID --native-id ID --snapshot PATH
 mojilex similar EMOJI_ID --snapshot PATH
+mojilex uninstall
 ```
 
 Use `mojilex COMMAND --help` for exact options. With `--json`, stdout contains exactly one
@@ -318,6 +330,21 @@ render_timeout_seconds = 15
 When a provider has no current price record, each real uncached AI request is authorized at its
 budget-reservation point. Use `--allow-unknown-cost` for an explicit standing opt-in; JSON or
 non-interactive runs otherwise fail closed. Cache-only runs do not ask for cost authorization.
+
+## Uninstallation
+
+For installations created by the Quick start command, run:
+
+```console
+mojilex uninstall
+```
+
+After showing the exact deletion plan and receiving confirmation, the command
+removes the `uv` tool installation, default MojiLex configuration/cache/run
+data, credentials saved by MojiLex, and the MojiLex TGS adapter. Shared tools
+and components (`uv`, Git, FFmpeg, and Visual Studio) are preserved. Use
+`mojilex uninstall --keep-data` to keep configuration, run data, cache, and
+saved credentials.
 
 ## Development
 

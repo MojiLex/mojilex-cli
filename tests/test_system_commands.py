@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from mojilex_cli.commands import system
-from mojilex_cli.commands.runtime import CommandError
+from mojilex_cli.commands.runtime import CommandError, CommandResult
 from mojilex_cli.config import Credentials, MojiLexConfig
 from mojilex_cli.output import RunStatus
 
@@ -227,7 +227,62 @@ def test_windows_media_install_command_targets_bundled_script(tmp_path: Path) ->
 
     commands = system._media_install_commands(checks, platform_name="nt", script_path=script)
 
-    assert commands == [f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{script}"']
+    assert len(commands) == 1
+    assert commands[0].startswith("& '")
+    assert f"'-File' '{script}' '-InstallTgs'" in commands[0]
+
+
+def test_windows_media_install_invocation_selects_only_missing_backends(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "install media.ps1"
+    script.write_text("# test\n", encoding="utf-8")
+    checks = _checks()
+    checks["media"][2] = {
+        "name": "webm/ffmpeg",
+        "available": False,
+        "fixture_decoded": False,
+        "detail": "missing",
+    }
+
+    invocation = system._media_install_invocation(
+        checks,
+        platform_name="nt",
+        script_path=script,
+    )
+
+    assert invocation[-1] == "-InstallWebm"
+    assert "-InstallTgs" not in invocation
+
+
+def test_media_installer_reruns_doctor_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = _checks()
+    completed = SimpleNamespace(returncode=0)
+    expected = CommandResult(result={"ready": True})
+    monkeypatch.setattr(system, "_media_install_invocation", lambda _checks: ["installer"])
+    monkeypatch.setattr(system.subprocess, "run", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr(system, "doctor_command", lambda: expected)
+
+    assert system.install_media_dependencies_command(checks) is expected
+
+
+def test_uninstall_preview_preserves_shared_dependencies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(system, "default_user_config_path", lambda: tmp_path / "config.toml")
+    preview = system.uninstall_preview_command(keep_data=False)
+
+    assert preview["package"] == "mojilex-cli"
+    assert preview["data_root"] == str(tmp_path.resolve())
+    assert preview["stored_credentials"] == ["telegram", "gemini", "openai"]
+    assert preview["shared_dependencies_preserved"] == [
+        "uv",
+        "Git",
+        "FFmpeg",
+        "Visual Studio",
+    ]
 
 
 def test_doctor_recognizes_identity_saved_by_the_setup_wizard(
@@ -320,8 +375,9 @@ def test_init_existing_file_refuses_before_any_wizard_prompt(tmp_path: Path) -> 
         )
     assert "Initialization is already complete" in captured.value.error.hint
     assert "init never requests or stores API keys" in captured.value.error.hint
+    assert "mojilex config set-credentials" in captured.value.error.hint
     assert "mojilex add <PUBLIC_PACK_URL>" in captured.value.error.hint
-    assert "without --non-interactive" in captured.value.error.hint
+    assert "one-time hidden input" in captured.value.error.hint
     assert target.read_text(encoding="utf-8") == "preserved"
 
 

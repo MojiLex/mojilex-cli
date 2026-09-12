@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated, NoReturn, cast
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 
@@ -44,7 +44,7 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-config_app = typer.Typer(help="Inspect non-secret configuration.")
+config_app = typer.Typer(help="Inspect configuration and manage stored API credentials.")
 cache_app = typer.Typer(help="Inspect or prune the content-addressed AI cache.")
 dedupe_app = typer.Typer(help="Scan and review exact or visual duplicate candidates.")
 app.add_typer(config_app, name="config")
@@ -94,6 +94,42 @@ def config_show_command() -> CommandResult:
     from mojilex_cli.commands.system import config_show_command as implementation
 
     return implementation()
+
+
+def config_set_credentials_command(values: dict[str, str]) -> CommandResult:
+    """Load the system-keyring adapter only when credentials are being saved."""
+
+    from mojilex_cli.commands.system import config_set_credentials_command as implementation
+
+    return implementation(values)
+
+
+def config_clear_credentials_command() -> CommandResult:
+    """Load the system-keyring adapter only when credentials are being deleted."""
+
+    from mojilex_cli.commands.system import config_clear_credentials_command as implementation
+
+    return implementation()
+
+
+def install_media_dependencies_command(checks: dict[str, Any]) -> CommandResult:
+    """Run the bundled installer only after explicit interactive authorization."""
+
+    from mojilex_cli.commands.system import install_media_dependencies_command as implementation
+
+    return implementation(checks)
+
+
+def uninstall_preview_command(*, keep_data: bool) -> dict[str, object]:
+    from mojilex_cli.commands.system import uninstall_preview_command as implementation
+
+    return implementation(keep_data=keep_data)
+
+
+def uninstall_command(*, keep_data: bool) -> CommandResult:
+    from mojilex_cli.commands.system import uninstall_command as implementation
+
+    return implementation(keep_data=keep_data)
 
 
 def _version_callback(value: bool) -> None:
@@ -156,8 +192,20 @@ def _with_runtime_secrets(
     labels = {
         "TELEGRAM_BOT_TOKEN": "Telegram Bot API token",
         "GEMINI_API_KEY": "Gemini API key",
+        "OPENAI_API_KEY": "OpenAI API key",
     }
     try:
+        from mojilex_cli.config import load_credentials
+
+        credentials = load_credentials()
+        stored_or_environment = {
+            "TELEGRAM_BOT_TOKEN": credentials.telegram_bot_token,
+            "GEMINI_API_KEY": credentials.gemini_api_key,
+            "OPENAI_API_KEY": credentials.openai_api_key,
+        }
+        for name in names:
+            if not os.environ.get(name) and stored_or_environment.get(name):
+                os.environ[name] = cast(str, stored_or_environment[name])
         if prompt is not None:
             for name in names:
                 if os.environ.get(name):
@@ -859,11 +907,50 @@ def takedown_cli(
 
 @app.command("doctor")
 def doctor(
+    install: Annotated[
+        bool,
+        typer.Option(
+            "--install",
+            help="Install missing Windows media dependencies, then rerun all checks.",
+        ),
+    ] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
-    execute("doctor", doctor_command, json_output=json_output, quiet=quiet, debug=debug)
+    def action() -> CommandResult:
+        result = doctor_command()
+        install_commands = cast(list[object], result.result.get("install_commands", []))
+        if result.result.get("ready") or not install_commands:
+            return result
+        if install and (json_output or quiet):
+            raise CommandError(
+                "CONFIG_INVALID",
+                "Interactive installer output is unavailable with --json or --quiet.",
+                hint="Rerun `mojilex doctor --install` in a normal terminal.",
+            )
+        authorized = install
+        if (
+            not authorized
+            and not non_interactive
+            and not json_output
+            and not quiet
+            and sys.stdin.isatty()
+        ):
+            authorized = typer.confirm(
+                ui_text(
+                    "Install the missing Windows media components now? "
+                    "This may install FFmpeg or Visual Studio Build Tools."
+                ),
+                default=False,
+                err=True,
+            )
+        if not authorized:
+            return result
+        return install_media_dependencies_command(cast(dict[str, Any], result.result["checks"]))
+
+    execute("doctor", action, json_output=json_output, quiet=quiet, debug=debug)
 
 
 @config_app.command("show")
@@ -879,6 +966,116 @@ def config_show(
         quiet=quiet,
         debug=debug,
     )
+
+
+@config_app.command("set-credentials")
+def config_set_credentials(
+    telegram: Annotated[
+        bool, typer.Option("--telegram/--no-telegram", help="Save a Telegram Bot API token.")
+    ] = True,
+    gemini: Annotated[
+        bool, typer.Option("--gemini/--no-gemini", help="Save a Gemini API key.")
+    ] = True,
+    openai: Annotated[bool, typer.Option("--openai", help="Also save an OpenAI API key.")] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    selected = [
+        name
+        for name, enabled in (
+            ("TELEGRAM_BOT_TOKEN", telegram),
+            ("GEMINI_API_KEY", gemini),
+            ("OPENAI_API_KEY", openai),
+        )
+        if enabled
+    ]
+
+    def action() -> CommandResult:
+        prompt = _secret_prompt(
+            non_interactive=non_interactive,
+            json_output=json_output,
+            quiet=quiet,
+        )
+        if not selected:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "Select at least one credential to save.",
+                hint="Enable --telegram, --gemini, or --openai.",
+            )
+        if prompt is None:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "Saving credentials requires an interactive terminal with hidden input.",
+                hint="Rerun without --non-interactive, --json, or --quiet.",
+            )
+        labels = {
+            "TELEGRAM_BOT_TOKEN": "Telegram Bot API token",
+            "GEMINI_API_KEY": "Gemini API key",
+            "OPENAI_API_KEY": "OpenAI API key",
+        }
+        values = {name: prompt(ui_text(labels[name])) for name in selected}
+        return config_set_credentials_command(values)
+
+    execute(
+        "config set-credentials",
+        action,
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
+@config_app.command("clear-credentials")
+def config_clear_credentials(
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    def action() -> CommandResult:
+        require_confirmation(
+            ui_text("Delete every Telegram, Gemini, and OpenAI credential saved by MojiLex?"),
+            yes=yes,
+            non_interactive=non_interactive,
+            json_output=json_output,
+        )
+        return config_clear_credentials_command()
+
+    execute(
+        "config clear-credentials",
+        action,
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
+@app.command("uninstall")
+def uninstall(
+    keep_data: Annotated[
+        bool,
+        typer.Option("--keep-data", help="Keep configuration, run data, cache, and credentials."),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    def action() -> CommandResult:
+        preview = uninstall_preview_command(keep_data=keep_data)
+        require_confirmation(
+            ui_text("Completely uninstall MojiLex with this exact plan: ") + str(preview),
+            yes=yes,
+            non_interactive=non_interactive,
+            json_output=json_output,
+        )
+        return uninstall_command(keep_data=keep_data)
+
+    execute("uninstall", action, json_output=json_output, quiet=quiet, debug=debug)
 
 
 @cache_app.command("info")
@@ -977,6 +1174,7 @@ def _command_label(argv: Sequence[str]) -> str:
         "submit",
         "takedown",
         "update",
+        "uninstall",
         "validate",
     }
     for index, argument in enumerate(argv):

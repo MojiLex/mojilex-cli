@@ -1,12 +1,14 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$InstallTgs,
+    [switch]$InstallWebm
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $rlottieRevision = '683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b'
-$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 
 function Require-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -19,43 +21,8 @@ function Require-Command {
 }
 
 $winget = Get-Command 'winget.exe' -ErrorAction SilentlyContinue
-$installation = ''
-if (Test-Path -LiteralPath $vswhere) {
-    $installation = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-}
-if ([string]::IsNullOrWhiteSpace($installation)) {
-    if ($null -eq $winget) {
-        throw 'Visual C++ Build Tools are missing and winget is unavailable. Install Microsoft Visual Studio 2022 Build Tools with the Desktop development with C++ workload, then rerun this command.'
-    }
-    Write-Host 'Installing Microsoft Visual Studio 2022 Build Tools (C++ workload)...'
-    & $winget.Source install --id Microsoft.VisualStudio.2022.BuildTools --exact `
-        --accept-package-agreements --accept-source-agreements --force `
-        --override '--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
-    if ($LASTEXITCODE -ne 0) {
-        throw "Visual Studio Build Tools installation failed with exit code $LASTEXITCODE."
-    }
-}
 
-if (-not (Test-Path -LiteralPath $vswhere)) {
-    throw 'Visual Studio Installer did not provide vswhere.exe after installation.'
-}
-
-$installation = & $vswhere -latest -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installation)) {
-    throw 'Visual C++ x64 build tools are unavailable.'
-}
-
-$devShellModule = Join-Path $installation 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
-Import-Module $devShellModule
-Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation `
-    -DevCmdArguments '-arch=x64 -host_arch=x64'
-
-$git = Require-Command 'git.exe'
-$uv = Require-Command 'uv.exe'
-
-if ($null -eq (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
+if ($InstallWebm -and $null -eq (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
     if ($null -eq $winget) {
         throw 'FFmpeg is missing and winget is unavailable. Install FFmpeg and rerun this command.'
     }
@@ -67,26 +34,64 @@ if ($null -eq (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
     }
 }
 
-$adapterSource = Join-Path $PSScriptRoot 'rlottie_rgba_renderer.cpp'
-if (-not (Test-Path -LiteralPath $adapterSource)) {
-    $sourceCheckoutAdapter = Join-Path $PSScriptRoot '..\..\..\tools\rlottie_rgba_renderer.cpp'
-    if (Test-Path -LiteralPath $sourceCheckoutAdapter) {
-        $adapterSource = (Resolve-Path -LiteralPath $sourceCheckoutAdapter).Path
-    } else {
-        throw 'The bundled MojiLex rlottie adapter source is missing.'
+if ($InstallTgs) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $installation = ''
+    if (Test-Path -LiteralPath $vswhere) {
+        $installation = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     }
-}
+    if ([string]::IsNullOrWhiteSpace($installation)) {
+        if ($null -eq $winget) {
+            throw 'Visual C++ Build Tools are missing and winget is unavailable. Install Microsoft Visual Studio 2022 Build Tools with the Desktop development with C++ workload, then rerun this command.'
+        }
+        Write-Host 'Installing Microsoft Visual Studio 2022 Build Tools (C++ workload)...'
+        & $winget.Source install --id Microsoft.VisualStudio.2022.BuildTools --exact `
+            --accept-package-agreements --accept-source-agreements --force `
+            --override '--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
+        if ($LASTEXITCODE -ne 0) {
+            throw "Visual Studio Build Tools installation failed with exit code $LASTEXITCODE."
+        }
+    }
 
-$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) `
-    ('mojilex-rlottie-install-' + [guid]::NewGuid().ToString('N'))
-$source = Join-Path $temporaryRoot 'rlottie'
-$build = Join-Path $temporaryRoot 'rlottie-build'
-$buildEnvironment = Join-Path $temporaryRoot 'build-environment'
-$destinationDirectory = Join-Path $env:USERPROFILE '.local\bin'
-$destination = Join-Path $destinationDirectory 'mojilex-rlottie-rgba.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) {
+        throw 'Visual Studio Installer did not provide vswhere.exe after installation.'
+    }
 
-New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
-try {
+    $installation = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installation)) {
+        throw 'Visual C++ x64 build tools are unavailable.'
+    }
+
+    $devShellModule = Join-Path $installation 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
+    Import-Module $devShellModule
+    Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation `
+        -DevCmdArguments '-arch=x64 -host_arch=x64'
+
+    $git = Require-Command 'git.exe'
+    $uv = Require-Command 'uv.exe'
+
+    $adapterSource = Join-Path $PSScriptRoot 'rlottie_rgba_renderer.cpp'
+    if (-not (Test-Path -LiteralPath $adapterSource)) {
+        $sourceCheckoutAdapter = Join-Path $PSScriptRoot '..\..\..\tools\rlottie_rgba_renderer.cpp'
+        if (Test-Path -LiteralPath $sourceCheckoutAdapter) {
+            $adapterSource = (Resolve-Path -LiteralPath $sourceCheckoutAdapter).Path
+        } else {
+            throw 'The bundled MojiLex rlottie adapter source is missing.'
+        }
+    }
+
+    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) `
+        ('mojilex-rlottie-install-' + [guid]::NewGuid().ToString('N'))
+    $source = Join-Path $temporaryRoot 'rlottie'
+    $build = Join-Path $temporaryRoot 'rlottie-build'
+    $buildEnvironment = Join-Path $temporaryRoot 'build-environment'
+    $destinationDirectory = Join-Path $env:USERPROFILE '.local\bin'
+    $destination = Join-Path $destinationDirectory 'mojilex-rlottie-rgba.exe'
+
+    New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+    try {
     Write-Host "Building pinned rlottie revision $rlottieRevision..."
     & $git clone --no-checkout --filter=blob:none https://github.com/Samsung/rlottie.git $source
     if ($LASTEXITCODE -ne 0) {
@@ -125,7 +130,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination)) {
         throw "MojiLex TGS adapter build failed with exit code $LASTEXITCODE."
     }
-} finally {
+    } finally {
     $resolvedTemporaryRoot = [IO.Path]::GetFullPath($temporaryRoot)
     $systemTemporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if (
@@ -134,10 +139,7 @@ try {
     ) {
         Remove-Item -LiteralPath $resolvedTemporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-}
+    }
 
-Write-Host "Installed: $destination"
-$mojilex = Get-Command 'mojilex.exe' -ErrorAction SilentlyContinue
-if ($null -ne $mojilex) {
-    & $mojilex.Source doctor
+    Write-Host "Installed: $destination"
 }

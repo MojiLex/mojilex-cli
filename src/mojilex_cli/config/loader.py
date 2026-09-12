@@ -157,12 +157,21 @@ def _drop_none(value: Any) -> Any:
 
 
 def load_credentials(environment: Mapping[str, str] | None = None) -> Credentials:
+    use_stored = environment is None
     environment = os.environ if environment is None else environment
+    stored: dict[str, str] = {}
+    if use_stored and environment.get("MOJILEX_DISABLE_STORED_CREDENTIALS") != "1":
+        from .credential_store import STORED_CREDENTIAL_NAMES, read_stored_credentials
+
+        missing = tuple(name for name in STORED_CREDENTIAL_NAMES if not environment.get(name))
+        if missing:
+            stored = read_stored_credentials(missing)
     github_token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
     return Credentials(
-        telegram_bot_token=environment.get("TELEGRAM_BOT_TOKEN"),
-        gemini_api_key=environment.get("GEMINI_API_KEY"),
-        openai_api_key=environment.get("OPENAI_API_KEY"),
+        telegram_bot_token=environment.get("TELEGRAM_BOT_TOKEN")
+        or stored.get("TELEGRAM_BOT_TOKEN"),
+        gemini_api_key=environment.get("GEMINI_API_KEY") or stored.get("GEMINI_API_KEY"),
+        openai_api_key=environment.get("OPENAI_API_KEY") or stored.get("OPENAI_API_KEY"),
         github_token=github_token,
     )
 

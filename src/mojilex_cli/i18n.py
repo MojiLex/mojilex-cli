@@ -12,9 +12,7 @@ UiLanguage = Literal["en", "ru"]
 SUPPORTED_UI_LANGUAGES: tuple[UiLanguage, ...] = ("en", "ru")
 UI_LANGUAGE_ENV = "MOJILEX_UI_LANGUAGE"
 
-_CURRENT_UI_LANGUAGE: ContextVar[UiLanguage] = ContextVar(
-    "mojilex_ui_language", default="en"
-)
+_CURRENT_UI_LANGUAGE: ContextVar[UiLanguage] = ContextVar("mojilex_ui_language", default="en")
 
 _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pack_workflow", ("add", "import", "describe", "submit", "resume", "update")),
@@ -24,7 +22,7 @@ _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("quality", ("validate", "dedupe", "review", "set-status", "takedown")),
     ("releases", ("snapshot", "build-index", "benchmark-dedupe", "benchmark-model")),
-    ("setup", ("init", "doctor", "config", "cache")),
+    ("setup", ("init", "doctor", "config", "cache", "uninstall")),
 )
 
 _PANEL_TITLES: dict[str, tuple[str, str]] = {
@@ -127,12 +125,20 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
         "Проверить конфигурацию, ключи, доступ к GitHub и медиаинструменты.",
     ),
     "config": (
-        "Inspect non-secret configuration.",
-        "Просмотреть несекретную конфигурацию.",
+        "Inspect configuration and manage stored API credentials.",
+        "Просмотреть конфигурацию и управлять сохранёнными API-ключами.",
     ),
     "config show": (
         "Show the resolved non-secret configuration.",
         "Показать итоговую несекретную конфигурацию.",
+    ),
+    "config set-credentials": (
+        "Save API credentials in the operating-system keyring using hidden input.",
+        "Сохранить API-ключи в системном хранилище через скрытый ввод.",
+    ),
+    "config clear-credentials": (
+        "Delete every API credential saved by MojiLex.",
+        "Удалить все API-ключи, сохранённые MojiLex.",
     ),
     "cache": (
         "Inspect or prune the content-addressed AI cache.",
@@ -177,6 +183,10 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
     "snapshot verify": (
         "Verify a local snapshot, hashes, schemas, and trust metadata.",
         "Проверить локальный снимок, хеши, схемы и данные доверия.",
+    ),
+    "uninstall": (
+        "Completely remove MojiLex, its stored credentials, and owned local data.",
+        "Полностью удалить MojiLex, сохранённые ключи и собственные локальные данные.",
     ),
 }
 
@@ -244,6 +254,20 @@ _PARAMETER_HELP: dict[str, tuple[str, str]] = {
         "Show sanitized debugging details on failures.",
         "Показать очищенные от секретов отладочные сведения при ошибке.",
     ),
+    "install": (
+        "Install missing Windows media dependencies, then rerun all checks.",
+        "Установить недостающие медиакомпоненты Windows и повторить все проверки.",
+    ),
+    "keep_data": (
+        "Keep configuration, run data, cache, and credentials.",
+        "Сохранить конфигурацию, данные запусков, кеш и ключи.",
+    ),
+    "telegram": (
+        "Save a Telegram Bot API token.",
+        "Сохранить токен Telegram Bot API.",
+    ),
+    "gemini": ("Save a Gemini API key.", "Сохранить API-ключ Gemini."),
+    "openai": ("Also save an OpenAI API key.", "Также сохранить API-ключ OpenAI."),
 }
 
 
@@ -258,6 +282,24 @@ _TEXT: dict[str, tuple[str, str]] = {
     "interrupted": ("interrupted", "прервано"),
     "Telegram Bot API token": ("Telegram Bot API token", "Токен Telegram Bot API"),
     "Gemini API key": ("Gemini API key", "API-ключ Gemini"),
+    "OpenAI API key": ("OpenAI API key", "API-ключ OpenAI"),
+    "Delete every Telegram, Gemini, and OpenAI credential saved by MojiLex?": (
+        "Delete every Telegram, Gemini, and OpenAI credential saved by MojiLex?",
+        "Удалить все ключи Telegram, Gemini и OpenAI, сохранённые MojiLex?",
+    ),
+    "Completely uninstall MojiLex with this exact plan: ": (
+        "Completely uninstall MojiLex with this exact plan: ",
+        "Полностью удалить MojiLex по этому точному плану: ",
+    ),
+    (
+        "Install the missing Windows media components now? "
+        "This may install FFmpeg or Visual Studio Build Tools."
+    ): (
+        "Install the missing Windows media components now? "
+        "This may install FFmpeg or Visual Studio Build Tools.",
+        "Установить недостающие медиакомпоненты Windows сейчас? "
+        "Могут быть установлены FFmpeg или Visual Studio Build Tools.",
+    ),
     "RuntimeError: the MojiLex rlottie RGBA renderer is required for TGS": (
         "The MojiLex rlottie RGBA renderer is required for TGS.",
         "Для обработки TGS требуется RGBA-рендерер MojiLex на базе rlottie.",

@@ -58,6 +58,7 @@ def test_yes_explicitly_authorizes_unknown_ai_cost() -> None:
 
 
 def test_runtime_secret_prompt_is_ephemeral(monkeypatch) -> None:
+    monkeypatch.setenv("MOJILEX_DISABLE_STORED_CREDENTIALS", "1")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     prompted: list[str] = []
@@ -81,6 +82,7 @@ def test_runtime_secret_prompt_is_ephemeral(monkeypatch) -> None:
 
 
 def test_runtime_secret_prompt_preserves_existing_environment(monkeypatch) -> None:
+    monkeypatch.setenv("MOJILEX_DISABLE_STORED_CREDENTIALS", "1")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "existing-test-value")
 
     result = _with_runtime_secrets(
@@ -95,6 +97,130 @@ def test_runtime_secret_prompt_preserves_existing_environment(monkeypatch) -> No
 
     assert result.result == {"token": "existing-test-value"}
     assert os.environ["TELEGRAM_BOT_TOKEN"] == "existing-test-value"
+
+
+def test_runtime_secret_uses_stored_value_without_prompt(monkeypatch) -> None:
+    from mojilex_cli.config import credential_store
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        credential_store,
+        "read_stored_credentials",
+        lambda _names: {"GEMINI_API_KEY": "stored-gemini-value"},
+    )
+
+    result = _with_runtime_secrets(
+        lambda: CommandResult(
+            result={"available": os.environ["GEMINI_API_KEY"] == "stored-gemini-value"}
+        ),
+        names=("GEMINI_API_KEY",),
+        prompt=lambda _label: pytest.fail("stored credential must not be prompted"),
+    )
+
+    assert result.result == {"available": True}
+    assert "GEMINI_API_KEY" not in os.environ
+
+
+def test_set_credentials_uses_hidden_prompts_and_never_renders_values(monkeypatch) -> None:
+    from mojilex_cli import cli
+
+    captured: dict[str, str] = {}
+    supplied = iter(("telegram-hidden-value", "gemini-hidden-value"))
+
+    def save(values: dict[str, str]) -> CommandResult:
+        captured.update(values)
+        return CommandResult(result={"saved": ["telegram", "gemini"]})
+
+    monkeypatch.setattr(cli, "config_set_credentials_command", save)
+    monkeypatch.setattr(
+        cli,
+        "_secret_prompt",
+        lambda **_kwargs: lambda _label: next(supplied),
+    )
+    result = CliRunner().invoke(app, ["config", "set-credentials"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "TELEGRAM_BOT_TOKEN": "telegram-hidden-value",
+        "GEMINI_API_KEY": "gemini-hidden-value",
+    }
+    assert "hidden-value" not in result.output
+
+
+def test_doctor_offers_and_runs_windows_installer(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from mojilex_cli import cli
+    from mojilex_cli.output import RunStatus
+
+    checks = {"media": []}
+    initial = CommandResult(
+        result={"ready": False, "checks": checks, "install_commands": ["installer"]},
+        status=RunStatus.PARTIAL,
+    )
+    installed = CommandResult(result={"ready": True})
+    monkeypatch.setattr(cli, "doctor_command", lambda: initial)
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)))
+    monkeypatch.setattr(cli.typer, "confirm", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "install_media_dependencies_command",
+        lambda received: installed if received is checks else pytest.fail("wrong checks"),
+    )
+
+    result = CliRunner().invoke(app, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "ready" in result.output
+    assert "True" in result.output
+
+
+def test_uninstall_yes_executes_exact_preview_without_second_prompt(monkeypatch) -> None:
+    from mojilex_cli import cli
+
+    preview = {
+        "package": "mojilex-cli",
+        "data_root": "synthetic-data-root",
+    }
+    calls: list[bool] = []
+    monkeypatch.setattr(cli, "uninstall_preview_command", lambda **_kwargs: preview)
+    monkeypatch.setattr(
+        cli,
+        "uninstall_command",
+        lambda *, keep_data: (
+            calls.append(keep_data) or CommandResult(result={**preview, "scheduled": True})
+        ),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["uninstall", "--yes", "--non-interactive", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "uninstall"
+    assert payload["result"]["scheduled"] is True
+    assert calls == [False]
+
+
+def test_clear_credentials_requires_confirmation_and_never_returns_values(monkeypatch) -> None:
+    from mojilex_cli import cli
+
+    monkeypatch.setattr(
+        cli,
+        "config_clear_credentials_command",
+        lambda: CommandResult(result={"deleted": ["telegram", "gemini"]}),
+    )
+    result = CliRunner().invoke(
+        app,
+        ["config", "clear-credentials", "--yes", "--non-interactive", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "config clear-credentials"
+    assert payload["result"]["deleted"] == ["telegram", "gemini"]
 
 
 def test_sensitive_add_prompt_is_deferred_until_exact_plan_exists(monkeypatch) -> None:

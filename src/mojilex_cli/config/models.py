@@ -119,7 +119,7 @@ class MojiLexConfig(BaseModel):
 
 
 class Credentials(BaseModel):
-    """Ephemeral credentials loaded only from the process environment/input."""
+    """Credentials resolved from the process environment or opt-in OS keyring."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

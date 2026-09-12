@@ -31,6 +31,7 @@ dependencies = [
   "google-genai>=2.23,<3",
   "httpx>=0.28,<1",
   "jsonschema[format]>=4.23,<5",
+  "keyring>=25.7,<26",
   "pillow>=11,<13",
   "platformdirs>=4.3,<5",
   "pydantic>=2.10,<3",

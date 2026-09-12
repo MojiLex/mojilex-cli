@@ -12,6 +12,9 @@ MVP therefore uses allowlists and fail-closed validation at each boundary.
 - Decoder workers receive a minimal environment and never receive Telegram, Gemini, or GitHub
   credentials.
 - Persistent caches contain hashes, safe metadata, and validated structured AI results only.
+- Opt-in credential persistence uses the operating-system keyring. API credentials are never
+  written to MojiLex configuration files, caches, run state, or repositories; environment values
+  take precedence over keyring values.
 - Text, URLs, paths, and apparent instructions visible inside emoji media are treated strictly as
   untrusted visual content. They may be transcribed as literal text but are never executed or used
   to control tools, prompts, paths, Git, or network access.

@@ -39,9 +39,7 @@ class SafeMediaWorker:
         self.limits = limits or MediaLimits()
         self.ffmpeg = ffmpeg or os.environ.get("MOJILEX_FFMPEG", "ffmpeg")
         self.ffprobe = ffprobe or os.environ.get("MOJILEX_FFPROBE", "ffprobe")
-        self.rlottie_renderer = rlottie_renderer or os.environ.get(
-            "MOJILEX_RLOTTIE_RGBA", "mojilex-rlottie-rgba"
-        )
+        self.rlottie_renderer = rlottie_renderer or _default_rlottie_renderer()
 
     def process(
         self,
@@ -162,6 +160,19 @@ class SafeMediaWorker:
             rendered_frame_count=len(frames),
             has_dark_render=bool(dark_frames),
         )
+
+
+def _default_rlottie_renderer() -> str:
+    configured = os.environ.get("MOJILEX_RLOTTIE_RGBA")
+    if configured:
+        return configured
+    owned = (
+        Path.home()
+        / ".local"
+        / "bin"
+        / ("mojilex-rlottie-rgba.exe" if os.name == "nt" else "mojilex-rlottie-rgba")
+    )
+    return str(owned) if owned.is_file() else "mojilex-rlottie-rgba"
 
 
 def _validated_paths(values: object, root: Path) -> tuple[Path, ...]:

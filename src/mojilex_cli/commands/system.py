@@ -19,6 +19,11 @@ from mojilex_cli.config import (
     load_credentials,
     safe_config_dict,
 )
+from mojilex_cli.config.credential_store import (
+    STORED_CREDENTIAL_NAMES,
+    delete_stored_credentials,
+    store_credentials,
+)
 from mojilex_cli.config.secrets import assert_no_secret_keys
 from mojilex_cli.github import GitHubCLI, GitHubError, RepositoryRef
 from mojilex_cli.media import probe_media_backends
@@ -43,6 +48,26 @@ def config_show_command() -> CommandResult:
     )
 
 
+def config_set_credentials_command(values: dict[str, str]) -> CommandResult:
+    saved = store_credentials(values)
+    return CommandResult(
+        result={
+            "saved": [_credential_public_name(name) for name in saved],
+            "storage": "operating-system keyring",
+        }
+    )
+
+
+def config_clear_credentials_command() -> CommandResult:
+    deleted = delete_stored_credentials()
+    return CommandResult(
+        result={
+            "deleted": [_credential_public_name(name) for name in deleted],
+            "storage": "operating-system keyring",
+        }
+    )
+
+
 def init_command(
     *,
     repo: str,
@@ -61,9 +86,9 @@ def init_command(
             f"Configuration already exists: {target}",
             hint=(
                 "Initialization is already complete. init never requests or stores API keys. "
-                "Run `mojilex add <PUBLIC_PACK_URL>` without --non-interactive; it will request "
-                "missing Telegram and Gemini credentials with hidden input. Use --force only "
-                "to replace the reviewed non-secret configuration."
+                "Run `mojilex config set-credentials` to save them in the system keyring, or "
+                "run `mojilex add <PUBLIC_PACK_URL>` interactively for one-time hidden input. "
+                "Use --force only to replace the reviewed non-secret configuration."
             ),
         )
     if prompt is not None:
@@ -152,15 +177,15 @@ def init_command(
     warnings = _check_warnings(checks, required_publication=publish)
     if not credentials.telegram_bot_token:
         warnings.append(
-            "TELEGRAM_BOT_TOKEN is not set; an interactive `mojilex add ...` run will request "
-            "it with hidden input and use it only for that run. Set it in the environment for "
-            "--non-interactive, --json, or --quiet."
+            "TELEGRAM_BOT_TOKEN is not available; run `mojilex config set-credentials` to save "
+            "it in the system keyring, use an interactive `mojilex add ...` hidden input once, "
+            "or set it in the environment for --non-interactive, --json, or --quiet."
         )
     if not selected_credential:
         warnings.append(
-            "GEMINI_API_KEY is not set; an interactive `mojilex add ...` run will request it "
-            "with hidden input and use it only for that run. Set it in the environment for "
-            "--non-interactive, --json, or --quiet."
+            "GEMINI_API_KEY is not available; run `mojilex config set-credentials` to save it "
+            "in the system keyring, use an interactive `mojilex add ...` hidden input once, or "
+            "set it in the environment for --non-interactive, --json, or --quiet."
         )
     github_ready = bool(checks["github_access"].get("can_publish_pr"))
     ready = bool(
@@ -225,7 +250,50 @@ def doctor_command() -> CommandResult:
     )
 
 
+def install_media_dependencies_command(checks: dict[str, Any]) -> CommandResult:
+    invocation = _media_install_invocation(checks)
+    if not invocation:
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "No automatic installer is available for the missing media backend.",
+            hint="Install the backend reported by mojilex doctor and rerun the command.",
+        )
+    try:
+        completed = subprocess.run(invocation, check=False, shell=False)
+    except OSError as exc:
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "The Windows media dependency installer could not be started.",
+            hint="Rerun mojilex doctor from PowerShell or install the reported backend manually.",
+        ) from exc
+    if completed.returncode != 0:
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            f"The Windows media dependency installer exited with code {completed.returncode}.",
+            hint=(
+                "Review the installer output, correct the reported issue, and rerun mojilex doctor."
+            ),
+        )
+    return doctor_command()
+
+
 def _media_install_commands(
+    checks: dict[str, Any],
+    *,
+    platform_name: str | None = None,
+    script_path: Path | None = None,
+) -> list[str]:
+    invocation = _media_install_invocation(
+        checks,
+        platform_name=platform_name,
+        script_path=script_path,
+    )
+    if not invocation:
+        return []
+    return [_powershell_command(invocation)]
+
+
+def _media_install_invocation(
     checks: dict[str, Any],
     *,
     platform_name: str | None = None,
@@ -236,17 +304,164 @@ def _media_install_commands(
         for item in checks["media"]
         if not item["available"] or not item["fixture_decoded"]
     }
-    if (platform_name or os.name) != "nt" or not missing.intersection(
-        {"tgs/rlottie-rgba", "webm/ffmpeg"}
-    ):
+    supported = missing.intersection({"tgs/rlottie-rgba", "webm/ffmpeg"})
+    if (platform_name or os.name) != "nt" or not supported:
         return []
     script = script_path or (
         Path(__file__).resolve().parents[1] / "installers" / "install_media_windows.ps1"
     )
     if not script.is_file():
         return []
-    escaped = str(script).replace('"', '""')
-    return [f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{escaped}"']
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    if powershell is None and platform_name == "nt":
+        powershell = "powershell.exe"
+    if powershell is None:
+        return []
+    invocation = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    if "tgs/rlottie-rgba" in supported:
+        invocation.append("-InstallTgs")
+    if "webm/ffmpeg" in supported:
+        invocation.append("-InstallWebm")
+    return invocation
+
+
+def _powershell_command(invocation: Sequence[str]) -> str:
+    return "& " + " ".join("'" + item.replace("'", "''") + "'" for item in invocation)
+
+
+def uninstall_preview_command(*, keep_data: bool) -> dict[str, Any]:
+    data_root = default_user_config_path().parent.resolve()
+    adapter = _owned_adapter_path()
+    return {
+        "package": "mojilex-cli",
+        "data_root": None if keep_data else str(data_root),
+        "stored_credentials": []
+        if keep_data
+        else [_credential_public_name(name) for name in STORED_CREDENTIAL_NAMES],
+        "tgs_adapter": str(adapter),
+        "shared_dependencies_preserved": ["uv", "Git", "FFmpeg", "Visual Studio"],
+    }
+
+
+def uninstall_command(*, keep_data: bool) -> CommandResult:
+    preview = uninstall_preview_command(keep_data=keep_data)
+    uv = _find_uv()
+    if uv is None:
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "uv was not found, so the installed MojiLex package cannot be removed automatically.",
+            hint=(
+                "Run `uv tool uninstall mojilex-cli`, then remove the paths shown by this command."
+            ),
+        )
+    if os.name == "nt":
+        _schedule_windows_uninstall(uv=uv, keep_data=keep_data)
+        return CommandResult(
+            result={**preview, "scheduled": True},
+            warnings=["Removal will finish in the background after this process exits."],
+            status=RunStatus.PARTIAL,
+        )
+
+    completed = subprocess.run(
+        [uv, "tool", "uninstall", "mojilex-cli"],
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=False,
+    )
+    if completed.returncode != 0:
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "uv could not uninstall mojilex-cli.",
+            hint="Verify that MojiLex was installed with `uv tool install`, then retry.",
+        )
+    _remove_owned_data(keep_data=keep_data)
+    return CommandResult(result={**preview, "scheduled": False})
+
+
+def _schedule_windows_uninstall(*, uv: str, keep_data: bool) -> None:
+    source_script = Path(__file__).resolve().parents[1] / "installers" / "uninstall_windows.ps1"
+    if not source_script.is_file():
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "The bundled Windows uninstaller is missing.",
+            hint="Reinstall MojiLex, then rerun mojilex uninstall.",
+        )
+    handle, temporary_name = tempfile.mkstemp(prefix="mojilex-uninstall-", suffix=".ps1")
+    os.close(handle)
+    temporary_script = Path(temporary_name)
+    shutil.copyfile(source_script, temporary_script)
+    data_root = default_user_config_path().parent.resolve()
+    adapter = _owned_adapter_path()
+    powershell = shutil.which("powershell.exe") or "powershell.exe"
+    invocation = [
+        powershell,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(temporary_script),
+        "-ParentProcessId",
+        str(os.getpid()),
+        "-UvPath",
+        uv,
+        "-DataRoot",
+        str(data_root),
+        "-AdapterPath",
+        str(adapter),
+    ]
+    if keep_data:
+        invocation.append("-KeepData")
+    if not keep_data:
+        delete_stored_credentials()
+    try:
+        subprocess.Popen(
+            invocation,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0),
+            close_fds=True,
+        )
+    except OSError as exc:
+        temporary_script.unlink(missing_ok=True)
+        raise CommandError(
+            "SYSTEM_DEPENDENCY_MISSING",
+            "The Windows uninstaller could not be scheduled.",
+            hint="Run `uv tool uninstall mojilex-cli` manually.",
+        ) from exc
+
+
+def _remove_owned_data(*, keep_data: bool) -> None:
+    if not keep_data:
+        delete_stored_credentials()
+        data_root = default_user_config_path().parent.resolve()
+        if data_root.is_dir():
+            shutil.rmtree(data_root)
+    adapter = _owned_adapter_path()
+    adapter.unlink(missing_ok=True)
+
+
+def _owned_adapter_path() -> Path:
+    name = "mojilex-rlottie-rgba.exe" if os.name == "nt" else "mojilex-rlottie-rgba"
+    return (Path.home() / ".local" / "bin" / name).resolve()
+
+
+def _find_uv() -> str | None:
+    available = shutil.which("uv") or shutil.which("uv.exe")
+    if available:
+        return available
+    candidate = Path.home() / ".local" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    return str(candidate.resolve()) if candidate.is_file() else None
+
+
+def _credential_public_name(name: str) -> str:
+    return {
+        "TELEGRAM_BOT_TOKEN": "telegram",
+        "GEMINI_API_KEY": "gemini",
+        "OPENAI_API_KEY": "openai",
+    }[name]
 
 
 def _system_checks(
@@ -431,7 +646,7 @@ def _quoted(value: str) -> str:
 
 def _config_toml(config: MojiLexConfig) -> str:
     lines = [
-        "# Non-secret MojiLex configuration. Keep API tokens in environment variables.",
+        "# Non-secret MojiLex configuration. Keep API tokens in the system keyring or environment.",
         "[repository]",
         f"target = {_quoted(config.repository.target)}",
         f"base_branch = {_quoted(config.repository.base_branch)}",
