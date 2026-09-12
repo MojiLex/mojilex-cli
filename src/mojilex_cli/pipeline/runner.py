@@ -386,6 +386,7 @@ def run_submit(
     target: str | None,
     *,
     repository: str | None,
+    publish: str | None = None,
     direct_push: bool,
     base: str | None,
     confirmation: Callable[[str], bool] | None = None,
@@ -398,6 +399,7 @@ def run_submit(
                 _run_submit(
                     target,
                     repository=repository,
+                    publish=publish,
                     direct_push=direct_push,
                     base=base,
                     confirmation=confirmation,
@@ -407,6 +409,7 @@ def run_submit(
         _run_submit(
             target,
             repository=repository,
+            publish=publish,
             direct_push=direct_push,
             base=base,
             confirmation=confirmation,
@@ -1449,6 +1452,7 @@ async def _run_submit(
     target: str | None,
     *,
     repository: str | None,
+    publish: str | None,
     direct_push: bool,
     base: str | None,
     confirmation: Callable[[str], bool] | None,
@@ -1489,7 +1493,7 @@ async def _run_submit(
             "repository": {
                 "target": repository,
                 "base_branch": base,
-                "publish": "pr" if direct_push else None,
+                "publish": "pr" if direct_push else publish,
             }
         }
     )
@@ -5134,6 +5138,19 @@ def repository_workspace(
         reference = _reference_from_remote(git.remote_url())
         yield RepositoryWorkspace(root=root, target=reference, temporary=False)
         return
+    if not path.is_dir() and _looks_like_local_repository_path(target):
+        raise CommandError(
+            "CONFIG_INVALID",
+            "Configured repository target looks like a local path, but it does not exist.",
+            hint=(
+                "Pass --repo OWNER/REPO or an existing absolute local path. "
+                "Relative paths are resolved from the current working directory."
+            ),
+            details={
+                "repository_target": target,
+                "working_directory": str(Path.cwd().resolve()),
+            },
+        )
     reference = (
         _reference_from_remote(GitRunner(path.resolve()).remote_url())
         if path.is_dir()
@@ -5173,6 +5190,11 @@ def _reference_from_remote(value: str) -> RepositoryRef:
     if value.startswith("git@github.com:"):
         value = "https://github.com/" + value.removeprefix("git@github.com:")
     return RepositoryRef.parse(value)
+
+
+def _looks_like_local_repository_path(value: str) -> bool:
+    path = Path(value).expanduser()
+    return path.is_absolute() or value.startswith((".", "~")) or "\\" in value
 
 
 def _safe_parameters(sources: Sequence[str], options: PipelineOptions) -> dict[str, object]:

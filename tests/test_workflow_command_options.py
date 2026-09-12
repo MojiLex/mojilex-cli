@@ -51,12 +51,14 @@ def test_submit_forwards_late_confirmation_callback(monkeypatch) -> None:
     workflow.submit_command(
         "mlxrun_0123456789abcdef",
         repo="MojiLex/mojilex",
+        publish="pr",
         direct_push=True,
         base="main",
         confirmation=confirm,
     )
 
     assert captured["confirmation"] is confirm
+    assert captured["publish"] == "pr"
     assert "message" not in captured
 
 

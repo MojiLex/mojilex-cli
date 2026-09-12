@@ -19,6 +19,7 @@ from rich.text import Text
 
 from mojilex_cli.config import ConfigError, redact_text
 from mojilex_cli.dataset import DatasetLoadError, DatasetValidationError
+from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import (
     ERROR_EXIT_CODES,
     OutputEnvelope,
@@ -296,7 +297,8 @@ def execute(
 def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
     console = Console(stderr=not envelope.ok, no_color=no_color)
     if envelope.ok:
-        label = str(envelope.status).replace("RunStatus.", "").lower()
+        raw_label = str(envelope.status).replace("RunStatus.", "").lower()
+        label = ui_text(raw_label)
         console.print(f"[green]MojiLex {envelope.command}: {label}[/green]")
         safe_result = redact(envelope.result)
         if isinstance(safe_result, Mapping) and safe_result:
@@ -308,13 +310,17 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
                 )
             console.print(table)
         for warning in envelope.warnings:
-            console.print(f"Warning: {redact(warning)}", style="yellow", markup=False)
+            console.print(
+                f"{ui_text('Warning')}: {redact(warning)}", style="yellow", markup=False
+            )
         return
     for error in envelope.errors:
         safe_error = error.as_dict()
-        console.print(f"{error.code}: {safe_error['message']}", style="red", markup=False)
-        console.print(f"Hint: {safe_error['hint']}", markup=False)
-    console.print(f"Run ID: {envelope.run_id}", markup=False)
+        message = ui_text(str(safe_error["message"]))
+        hint = ui_text(str(safe_error["hint"]))
+        console.print(f"{error.code}: {message}", style="red", markup=False)
+        console.print(f"{ui_text('Hint')}: {hint}", markup=False)
+    console.print(f"{ui_text('Run ID')}: {envelope.run_id}", markup=False)
 
 
 def is_usage_error(exc: BaseException) -> bool:

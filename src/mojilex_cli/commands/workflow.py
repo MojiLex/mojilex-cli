@@ -286,6 +286,7 @@ def submit_command(
     target: str | None,
     *,
     repo: str | None,
+    publish: str | None = None,
     direct_push: bool,
     base: str | None,
     confirmation: Callable[[str], bool] | None = None,
@@ -293,6 +294,7 @@ def submit_command(
     return run_submit(
         target,
         repository=repo,
+        publish=publish,
         direct_push=direct_push,
         base=base,
         confirmation=confirmation,

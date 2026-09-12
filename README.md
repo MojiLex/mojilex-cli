@@ -29,6 +29,17 @@ new terminal and verify the installation:
 mojilex --version
 ```
 
+Select Russian for one command, or persist it for future PowerShell and Command
+Prompt windows:
+
+```powershell
+mojilex --ui-language ru --help
+setx MOJILEX_UI_LANGUAGE ru
+```
+
+Open a new terminal after `setx`. Command names, option names, and JSON fields
+remain stable in English.
+
 Authenticate with GitHub once and create the non-secret configuration:
 
 ```console
@@ -42,23 +53,53 @@ configuration already exists, do not run `init` again: the next interactive
 `mojilex add ...` command requests missing Telegram and Gemini credentials with
 hidden input and uses them only for that run.
 
-Check a pack without AI requests or publication:
+If an older configuration contains a missing relative repository path, replace
+it with a safe no-publication default:
 
 ```console
-mojilex add https://t.me/addemoji/PackName --dry-run --check-media
+mojilex init --force --repo MojiLex/mojilex --publish local --model gemini-3.8-flash --non-interactive
 ```
 
-Analyze the pack and upload the result as a GitHub pull request:
+### Staged analysis and publication
+
+First download and verify the media. Nothing is uploaded to GitHub, and the
+command returns a persistent `mlxrun_...` ID:
 
 ```console
-mojilex add https://t.me/addemoji/PackName
+mojilex import "https://t.me/addemoji/PackName" --repo MojiLex/mojilex
 ```
 
-Replace `PackName` with the target set name. `add` temporarily clones the data
-repository, downloads and validates the emoji, creates Russian and English
-metadata, validates the complete result, creates a commit, and opens a pull
-request. Missing Telegram and Gemini credentials are requested through hidden
-interactive prompts and remain in memory only for that command.
+Generate AI metadata in the same staged run, still without publishing:
+
+```console
+mojilex describe mlxrun_YOUR_ID
+```
+
+Validate and preview the result without uploading it:
+
+```console
+mojilex submit mlxrun_YOUR_ID --publish local
+```
+
+When the result is ready, select one publication mode:
+
+```console
+# Create a branch and pull request
+mojilex submit mlxrun_YOUR_ID --publish pr
+
+# Push directly to main after validation and explicit confirmation
+mojilex submit mlxrun_YOUR_ID --direct-push
+```
+
+Replace `PackName` and `mlxrun_YOUR_ID` with the actual pack name and the exact
+ID returned by `import`. Missing Telegram and Gemini credentials are requested
+through hidden prompts and remain in memory only for the current command.
+
+For a one-step check without AI requests or a persistent staged run:
+
+```console
+mojilex add "https://t.me/addemoji/PackName" --dry-run --check-media --repo MojiLex/mojilex
+```
 
 Git, GitHub CLI (`gh`), and the applicable media backends are required. WebP
 works after the one-command install. Run `mojilex doctor` to check WebM and TGS;

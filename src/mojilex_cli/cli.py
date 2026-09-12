@@ -30,6 +30,12 @@ from mojilex_cli.commands.runtime import (
     machine_output_mode,
     require_confirmation,
 )
+from mojilex_cli.i18n import (
+    extract_ui_language,
+    localize_command_tree,
+    use_ui_language,
+)
+from mojilex_cli.i18n import text as ui_text
 
 app = typer.Typer(
     name="mojilex",
@@ -156,7 +162,7 @@ def _with_runtime_secrets(
             for name in names:
                 if os.environ.get(name):
                     continue
-                prompted_value = prompt(labels.get(name, name)).strip()
+                prompted_value = prompt(ui_text(labels.get(name, name))).strip()
                 if not prompted_value:
                     raise CommandError(
                         "CREDENTIAL_MISSING",
@@ -187,6 +193,13 @@ def root(
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version."),
     ] = False,
+    ui_language: Annotated[
+        str | None,
+        typer.Option(
+            "--ui-language",
+            help="Human interface language: en or ru. Commands and JSON fields stay unchanged.",
+        ),
+    ] = None,
 ) -> None:
     """MojiLex dataset authoring utility."""
 
@@ -485,6 +498,10 @@ def update(
 def submit(
     target: Annotated[str | None, typer.Argument(help="Path or run ID.")] = None,
     repo: Annotated[str | None, typer.Option("--repo")] = None,
+    publish: Annotated[
+        str | None,
+        typer.Option("--publish", help="Publication mode: local (no upload) or pr."),
+    ] = None,
     direct_push: Annotated[bool, typer.Option("--direct-push")] = False,
     base: Annotated[str | None, typer.Option("--base")] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
@@ -501,6 +518,7 @@ def submit(
         return submit_command(
             target,
             repo=repo,
+            publish=publish,
             direct_push=direct_push,
             base=base,
             confirmation=_confirmation_callback(
@@ -1004,12 +1022,33 @@ def _emit_boundary_error(command: str, exc: BaseException) -> NoReturn:
 
 def main() -> None:
     json_requested, argv = _extract_json_flag(sys.argv[1:])
-    if not json_requested:
-        app()
-        return
-
+    try:
+        ui_language, argv = extract_ui_language(argv)
+    except ValueError as exc:
+        if json_requested:
+            _emit_boundary_error(
+                _command_label(argv),
+                CommandError(
+                    "CONFIG_INVALID",
+                    str(exc),
+                    hint="Pass --ui-language en or --ui-language ru.",
+                ),
+            )
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(2) from exc
     label = _command_label(argv)
-    with machine_output_mode():
+    with use_ui_language(ui_language):
+        command = typer.main.get_command(app)
+        localize_command_tree(command, ui_language)
+        if not json_requested:
+            command.main(
+                args=argv,
+                prog_name="mojilex",
+                windows_expand_args=False,
+            )
+            return
+
+    with use_ui_language(ui_language), machine_output_mode():
         if any(argument in {"-h", "--help", "--version"} for argument in argv):
             _emit_boundary_error(
                 label,
@@ -1020,6 +1059,7 @@ def main() -> None:
                 ),
             )
         command = typer.main.get_command(app)
+        localize_command_tree(command, ui_language)
         try:
             result = command.main(
                 args=argv,

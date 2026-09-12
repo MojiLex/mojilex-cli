@@ -21,6 +21,7 @@ from mojilex_cli.commands.runtime import (
     new_run_id,
     structured_exception,
 )
+from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import RunStatus, StructuredError, redact
 from mojilex_cli.read.service import SnapshotReader
 from mojilex_cli.read.snapshot import (
@@ -369,12 +370,24 @@ def register_read_commands(app: typer.Typer) -> None:
     """Register read-only commands without coupling them to authoring modules."""
 
     app.add_typer(snapshot_app, name="snapshot")
-    app.command("snapshots")(snapshots_cli)
-    app.command("search")(search_cli)
-    app.command("get")(get_cli)
-    app.command("get-collection")(get_collection_cli)
-    app.command("resolve")(resolve_cli)
-    app.command("similar")(similar_cli)
+    app.command("snapshots", help="List release snapshots from the configured catalog.")(
+        snapshots_cli
+    )
+    app.command("search", help="Search a pinned local snapshot by text and filters.")(
+        search_cli
+    )
+    app.command("get", help="Read one emoji record from a pinned local snapshot.")(get_cli)
+    app.command(
+        "get-collection",
+        help="Read a collection and its members from a pinned snapshot.",
+    )(get_collection_cli)
+    app.command(
+        "resolve",
+        help="Resolve a platform-native reference to a canonical MojiLex identity.",
+    )(resolve_cli)
+    app.command("similar", help="Find related or duplicate candidates for an emoji.")(
+        similar_cli
+    )
 
 
 @dataclass(slots=True)
@@ -527,12 +540,12 @@ def execute_read(
         elif not quiet or not ok:
             if ok:
                 assert result is not None
-                typer.echo(f"MojiLex {command}: {status.value}")
+                typer.echo(f"MojiLex {command}: {ui_text(status.value)}")
                 typer.echo(json.dumps(result.result, ensure_ascii=True, indent=2))
             else:
                 assert error is not None
-                typer.echo(f"{error.code}: {error.message}", err=True)
-                typer.echo(f"Hint: {error.hint}", err=True)
+                typer.echo(f"{error.code}: {ui_text(error.message)}", err=True)
+                typer.echo(f"{ui_text('Hint')}: {ui_text(error.hint)}", err=True)
     mark_machine_envelope_emitted()
     if error is not None:
         raise typer.Exit(code=int(error.exit_code))
@@ -908,7 +921,9 @@ def snapshots_cli(
     )
 
 
-@snapshot_app.command("pull")
+@snapshot_app.command(
+    "pull", help="Fetch a named immutable snapshot from the configured mirror."
+)
 def snapshot_pull_cli(
     snapshot_id: Annotated[str, typer.Argument()] = "latest",
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -923,7 +938,7 @@ def snapshot_pull_cli(
     execute_read("snapshot-pull", action, json_output=json_output)
 
 
-@snapshot_app.command("update")
+@snapshot_app.command("update", help="Update to a named or latest immutable snapshot.")
 def snapshot_update_cli(
     to: Annotated[str, typer.Option("--to")] = "latest",
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -938,7 +953,9 @@ def snapshot_update_cli(
     execute_read("snapshot-update", action, json_output=json_output)
 
 
-@snapshot_app.command("verify")
+@snapshot_app.command(
+    "verify", help="Verify a local snapshot, hashes, schemas, and trust metadata."
+)
 def snapshot_verify_cli(
     path: Annotated[Path, typer.Argument()],
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,

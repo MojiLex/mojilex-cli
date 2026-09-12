@@ -29,6 +29,17 @@ uv tool update-shell
 mojilex --version
 ```
 
+Включить русский интерфейс можно для одной команды или для новых окон PowerShell
+и `cmd` постоянно:
+
+```powershell
+mojilex --ui-language ru --help
+setx MOJILEX_UI_LANGUAGE ru
+```
+
+После `setx` закройте терминал и откройте новый. Имена команд, флагов и поля
+JSON при переключении языка не меняются.
+
 Один раз войдите в GitHub и создайте несекретную конфигурацию:
 
 ```console
@@ -42,23 +53,55 @@ mojilex init --model gemini-3.8-flash --non-interactive
 следующая интерактивная команда `mojilex add ...` скрыто запросит недостающие
 Telegram token и Gemini API key только на время своего запуска.
 
-Проверить пак без AI-запросов и без загрузки результата:
+Если в старой конфигурации указан несуществующий относительный путь к
+репозиторию, его можно заменить безопасным режимом без автоматической
+публикации:
 
 ```console
-mojilex add https://t.me/addemoji/PackName --dry-run --check-media
+mojilex init --force --repo MojiLex/mojilex --publish local --model gemini-3.8-flash --non-interactive
 ```
 
-Проанализировать пак и загрузить результат в GitHub как pull request:
+### Поэтапный анализ и публикация
+
+Сначала скачайте и проверьте медиа. Команда ничего не отправляет в GitHub и
+возвращает сохранённый `mlxrun_...`:
 
 ```console
-mojilex add https://t.me/addemoji/PackName
+mojilex import "https://t.me/addemoji/PackName" --repo MojiLex/mojilex
 ```
 
-Замените `PackName` именем нужного набора. Команда `add` сама временно клонирует
-репозиторий данных, скачивает и проверяет эмодзи, создаёт описания на русском и
-английском, валидирует результат, создаёт commit и открывает pull request.
-Отсутствующие Telegram token и Gemini API key она запрашивает скрыто и использует
-только до завершения текущего запуска.
+Затем создайте AI-описания в том же черновике — по-прежнему без публикации:
+
+```console
+mojilex describe mlxrun_ВАШ_ID
+```
+
+Проверить готовые изменения локально, не загружая их:
+
+```console
+mojilex submit mlxrun_ВАШ_ID --publish local
+```
+
+Если результат устраивает, выберите один вариант публикации:
+
+```console
+# Создать отдельную ветку и pull request
+mojilex submit mlxrun_ВАШ_ID --publish pr
+
+# Отправить прямо в main после проверки и явного подтверждения
+mojilex submit mlxrun_ВАШ_ID --direct-push
+```
+
+Замените `PackName` именем нужного набора, а `mlxrun_ВАШ_ID` — точным ID из
+вывода `import`. Отсутствующие Telegram token и Gemini API key запрашиваются
+скрыто и используются только до завершения текущей команды.
+
+Для быстрой проверки без AI-запросов и без сохранения черновика остаётся одна
+команда:
+
+```console
+mojilex add "https://t.me/addemoji/PackName" --dry-run --check-media --repo MojiLex/mojilex
+```
 
 Для работы нужны Git, GitHub CLI (`gh`) и поддерживаемые медиакомпоненты. WebP
 работает сразу после установки; готовность WebM и TGS проверяет `mojilex doctor`.
