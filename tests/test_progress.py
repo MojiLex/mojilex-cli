@@ -38,6 +38,26 @@ async def test_cancelled_progress_stops_heartbeat(monkeypatch):
     assert len(reports) == count
 
 
+async def test_ai_progress_distinguishes_batches_items_and_unstarted_queue(monkeypatch):
+    reports = []
+    monkeypatch.setattr(progress, "report_progress", reports.append)
+    async with progress.BatchProgress("AI", 100, batch_total=13, interval=0.01) as counter:
+        counter.phase("batch-1", "request", count=8)
+        counter._report()
+        assert "0/100 emojis" in reports[-1]
+        assert "batches: 0/13" in reports[-1]
+        assert "queued: 92 emojis" in reports[-1]
+        assert "active batches: 1" in reports[-1]
+        assert "waiting for AI response: 1" in reports[-1]
+        counter.phase("batch-1", "retry")
+        assert counter.active_counts["batch-1"] == 8
+        counter.stop_queue()
+        counter.finish("batch-1", count=8, failed=True)
+    assert "errors: 8" in reports[-1]
+    assert "not started: 92 emojis" in reports[-1]
+    assert counter.failed == 8
+
+
 @pytest.mark.parametrize("quiet", (False, True))
 def test_progress_preserves_json_stdout_and_quiet(capsys, quiet):
     async def operation():

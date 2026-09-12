@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import math
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -52,6 +54,8 @@ class GeminiVisionProvider:
     ) -> None:
         if not model:
             raise ValueError("Gemini model must be selected explicitly")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Gemini timeout must be finite and positive")
         if client is None:
             if not api_key:
                 raise AIError("Gemini credential is missing")
@@ -73,6 +77,7 @@ class GeminiVisionProvider:
                 raise AIError(f"cannot initialize Gemini SDK: {type(exc).__name__}") from None
         self.model = model
         self._client = client
+        self._timeout_seconds = timeout_seconds
         self._pricing = pricing if pricing is not None and pricing.model == model else None
 
     def capabilities(self) -> ProviderCapabilities:
@@ -85,7 +90,13 @@ class GeminiVisionProvider:
 
     async def validate_credentials(self) -> None:
         try:
-            await self._client.aio.models.get(model=self.model)
+            await asyncio.wait_for(
+                self._client.aio.models.get(model=self.model), timeout=self._timeout_seconds
+            )
+        except TimeoutError:
+            raise AIError(
+                f"Gemini model check timed out after {self._timeout_seconds:g} seconds."
+            ) from None
         except Exception as exc:
             raise AIError(
                 f"Gemini credential/model validation failed: "
@@ -139,16 +150,23 @@ class GeminiVisionProvider:
             )
             interactions = self._client.aio.interactions
             _disable_interaction_retries(interactions)
-            response = await interactions.create(
-                model=self.model,
-                api_version=parameters["api_version"],
-                input=[{"type": "user_input", "content": content}],
-                store=parameters["store"],
-                background=parameters["background"],
-                stream=parameters["stream"],
-                response_format=parameters["response_format"],
-                generation_config=parameters["generation_config"],
+            response = await asyncio.wait_for(
+                interactions.create(
+                    model=self.model,
+                    api_version=parameters["api_version"],
+                    input=[{"type": "user_input", "content": content}],
+                    store=parameters["store"],
+                    background=parameters["background"],
+                    stream=parameters["stream"],
+                    response_format=parameters["response_format"],
+                    generation_config=parameters["generation_config"],
+                ),
+                timeout=self._timeout_seconds,
             )
+        except TimeoutError:
+            raise AIError(
+                f"Gemini request timed out after {self._timeout_seconds:g} seconds."
+            ) from None
         except AIError:
             raise
         except Exception as exc:

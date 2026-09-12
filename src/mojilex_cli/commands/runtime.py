@@ -20,6 +20,7 @@ from rich.text import Text
 
 from mojilex_cli.config import ConfigError, redact_text
 from mojilex_cli.dataset import DatasetLoadError, DatasetValidationError
+from mojilex_cli.i18n import confirm as ui_confirm
 from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import (
     ERROR_EXIT_CODES,
@@ -64,7 +65,7 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
     if context is None or context.quiet or (verbose and not context.verbose):
         return
     console = Console(stderr=True, no_color=context.no_color)
-    console.print(f"[{context.run_id}] {redact(message)}", markup=False)
+    console.print(f"[{context.run_id}] {ui_text(str(redact(message)))}", markup=False)
 
 
 class CommandError(RuntimeError):
@@ -127,7 +128,7 @@ def require_confirmation(
             "This sensitive operation requires explicit confirmation.",
             hint="Rerun with --yes after reviewing the exact target.",
         )
-    if not typer.confirm(message, default=False):
+    if not ui_confirm(message, default=False):
         raise CommandError(
             "CONFIG_INVALID",
             "Operation was not confirmed.",
@@ -310,12 +311,23 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
             table = Table(show_header=False, box=None, pad_edge=False)
             for key, value in safe_result.items():
                 table.add_row(
-                    Text(str(key).replace("_", " ")),
-                    Text(str(value)),
+                    Text(ui_text(str(key).replace("_", " "))),
+                    Text(ui_text(str(value))),
                 )
             console.print(table)
         for warning in envelope.warnings:
-            console.print(f"{ui_text('Warning')}: {redact(warning)}", style="yellow", markup=False)
+            safe_warning = redact(warning)
+            if isinstance(safe_warning, Mapping) and isinstance(safe_warning.get("message"), str):
+                warning_text = ui_text(str(safe_warning["message"]))
+                if safe_warning.get("code"):
+                    warning_text = f"{safe_warning['code']}: {warning_text}"
+            else:
+                warning_text = ui_text(str(safe_warning))
+            console.print(
+                f"{ui_text('Warning')}: {warning_text}",
+                style="yellow",
+                markup=False,
+            )
         return
     for error in envelope.errors:
         safe_error = error.as_dict()

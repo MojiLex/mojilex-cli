@@ -16,6 +16,7 @@ import typer
 
 from mojilex_cli.commands.runtime import (
     CommandError,
+    machine_output_mode,
     machine_output_requested,
     mark_machine_envelope_emitted,
     new_run_id,
@@ -23,6 +24,8 @@ from mojilex_cli.commands.runtime import (
 )
 from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import RunStatus, StructuredError, redact
+from mojilex_cli.read.cursor import decode_cursor, encode_cursor, pagination_domain
+from mojilex_cli.read.local import discover_local_snapshots, local_text, select_local_snapshot
 from mojilex_cli.read.service import SnapshotReader
 from mojilex_cli.read.snapshot import (
     LoadedSnapshot,
@@ -85,7 +88,7 @@ snapshot_app = typer.Typer(
 
 def get_cli(
     emoji_id: Annotated[str, typer.Argument()],
-    snapshot_path: Annotated[Path, typer.Option("--snapshot")],
+    snapshot_path: Annotated[Path | None, typer.Option("--snapshot")] = None,
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,
     view: Annotated[str, typer.Option("--view")] = "canonical",
     language: Annotated[str | None, typer.Option("--language")] = None,
@@ -144,7 +147,7 @@ def get_cli(
 
 def get_collection_cli(
     collection_id: Annotated[str, typer.Argument()],
-    snapshot_path: Annotated[Path, typer.Option("--snapshot")],
+    snapshot_path: Annotated[Path | None, typer.Option("--snapshot")] = None,
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,
     include_history: Annotated[bool, typer.Option("--include-history")] = False,
     limit: Annotated[int | None, typer.Option("--limit")] = None,
@@ -210,7 +213,7 @@ def resolve_cli(
     namespace: Annotated[str, typer.Option("--namespace")],
     scope: Annotated[str, typer.Option("--scope")],
     native_id: Annotated[str, typer.Option("--native-id")],
-    snapshot_path: Annotated[Path, typer.Option("--snapshot")],
+    snapshot_path: Annotated[Path | None, typer.Option("--snapshot")] = None,
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,
     identity_epoch: Annotated[int | None, typer.Option("--identity-epoch")] = None,
     as_of: Annotated[str | None, typer.Option("--as-of")] = None,
@@ -304,7 +307,7 @@ def resolve_cli(
 
 def similar_cli(
     emoji_id: Annotated[str, typer.Argument()],
-    snapshot_path: Annotated[Path, typer.Option("--snapshot")],
+    snapshot_path: Annotated[Path | None, typer.Option("--snapshot")] = None,
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,
     view: Annotated[str, typer.Option("--view")] = "agent",
     language: Annotated[str | None, typer.Option("--language")] = None,
@@ -370,9 +373,7 @@ def register_read_commands(app: typer.Typer) -> None:
     """Register read-only commands without coupling them to authoring modules."""
 
     app.add_typer(snapshot_app, name="snapshot")
-    app.command("snapshots", help="List release snapshots from the configured catalog.")(
-        snapshots_cli
-    )
+    app.command("snapshots", help="List local release snapshots and their paths.")(snapshots_cli)
     app.command("search", help="Search a pinned local snapshot by text and filters.")(search_cli)
     app.command("get", help="Read one emoji record from a pinned local snapshot.")(get_cli)
     app.command(
@@ -435,7 +436,8 @@ def execute_read(
         ).error
     else:
         try:
-            candidate = action()
+            with machine_output_mode(effective_json or jsonl_output):
+                candidate = action()
             _require_unmodified_result(candidate)
             result = candidate
         except BaseException as exc:
@@ -537,7 +539,15 @@ def execute_read(
             if ok:
                 assert result is not None
                 typer.echo(f"MojiLex {command}: {ui_text(status.value)}")
-                typer.echo(json.dumps(result.result, ensure_ascii=True, indent=2))
+                if command == "snapshots":
+                    for warning in result.warnings:
+                        typer.echo(warning["message"])
+                    if result.result.get("next_cursor", {}).get("present"):
+                        typer.echo(f"--cursor {result.result['next_cursor']['value']}")
+                else:
+                    _render_read_result(command, result)
+                    for warning in result.warnings:
+                        typer.echo(f"{ui_text('Warning')}: {ui_text(warning['message'])}")
             else:
                 assert error is not None
                 typer.echo(f"{error.code}: {ui_text(error.message)}", err=True)
@@ -545,6 +555,57 @@ def execute_read(
     mark_machine_envelope_emitted()
     if error is not None:
         raise typer.Exit(code=int(error.exit_code))
+
+
+def _render_read_result(command: str, result: ReadCommandResult) -> None:
+    if command not in {"get", "search"}:
+        typer.echo(json.dumps(result.result, ensure_ascii=False, indent=2))
+        return
+    items = [result.result["item"]] if command == "get" else result.result.get("items", [])
+    if command == "search":
+        typer.echo(f"{local_text('Results', 'Найдено')}: {len(items)}")
+    for item in items:
+        record = item.get("record", {})
+        identifier = record.get("id", record.get("emoji_id", ""))
+        typer.echo(f"MojiLex ID: {identifier}")
+        native = record.get("native_id")
+        if native is not None:
+            typer.echo(f"{local_text('Platform ID', 'ID платформы')}: {native}")
+        else:
+            for reference in record.get("native_references", []):
+                typer.echo(f"{reference.get('platform', '')} ID: {reference.get('native_id', '')}")
+        descriptions = record.get("descriptions", {})
+        if descriptions:
+            preferred = local_text("en", "ru")
+            description = descriptions.get(preferred, descriptions.get("en", {})).get("text", "")
+        else:
+            description = record.get("description", "")
+            if isinstance(description, dict):
+                description = description.get("text", "")
+        if description:
+            typer.echo(str(description))
+        if record.get("concept_mapping_status") == "pending":
+            typer.echo(local_text("Concept mapping: pending", "Привязка понятий: ожидает проверки"))
+    if (
+        command == "search"
+        and not items
+        and result.view == "agent"
+        and result.dataset is not None
+        and result.dataset.get("release_verification_status") != "verified"
+    ):
+        typer.echo(
+            local_text(
+                "The safe agent view can hide unverified records. For explicit diagnostics use "
+                "--view canonical --allow-unverified; this does not establish release trust.",
+                "Безопасное представление может скрывать неподтверждённые записи. "
+                "Для явной диагностики используйте --view canonical --allow-unverified; "
+                "это не подтверждает доверие к релизу.",
+            )
+        )
+    if result.result.get("next_cursor", {}).get("present"):
+        typer.echo(f"--cursor {result.result['next_cursor']['value']}")
+    if items:
+        typer.echo(local_text("Full records: add --json.", "Полная запись: добавьте --json."))
 
 
 def _require_unmodified_result(result: ReadCommandResult) -> None:
@@ -859,7 +920,7 @@ def _structured_search(
 
 def _open(
     state: dict[str, LoadedSnapshot],
-    selected: Path,
+    selected: Path | None,
     manifest_sha256: str | None,
     allow_unverified: bool,
     offline: bool,
@@ -867,12 +928,17 @@ def _open(
     if not offline:
         raise CommandError(
             "OPTION_CONFLICT",
-            (
-                "This MVP reader accepts only explicit local snapshots and cannot enable "
-                "network access."
+            local_text(
+                "Remote snapshot access is not configured.",
+                "Удалённый каталог снимков не настроен.",
             ),
-            hint="Use --offline with --snapshot PATH.",
+            hint=local_text(
+                "Use mojilex snapshots and --snapshot PATH.",
+                "Посмотрите локальные снимки: mojilex snapshots. "
+                "Укажите --snapshot ПУТЬ без --no-offline.",
+            ),
         )
+    selected = select_local_snapshot(selected)
     snapshot = load_snapshot(selected, expected_manifest_sha256=manifest_sha256)
     state["snapshot"] = snapshot
     warnings = snapshot.require_diagnostic_opt_in(allow_unverified)
@@ -884,7 +950,7 @@ def _dataset_provider(state: dict[str, LoadedSnapshot]) -> Callable[[], dict[str
 
 
 def snapshots_cli(
-    channel: Annotated[str, typer.Option("--channel")] = "stable",
+    channel: Annotated[str, typer.Option("--channel")] = "local",
     limit: Annotated[int | None, typer.Option("--limit")] = None,
     cursor: Annotated[str | None, typer.Option("--cursor")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -897,15 +963,90 @@ def snapshots_cli(
     }
 
     def action() -> ReadCommandResult:
-        _limit(limit)
-        raise CommandError(
-            "MIRROR_UNAVAILABLE",
-            (
-                f"Snapshot discovery for channel {channel!r} is not configured in the "
-                "strictly offline MVP."
-            ),
-            hint="Pass an explicit local --snapshot path to a read command.",
-            details={"cursor_present": cursor is not None},
+        selected_limit = min(_limit(limit), 100)
+        if channel != "local":
+            raise CommandError(
+                "MIRROR_UNAVAILABLE",
+                local_text(
+                    "A remote release catalog is not configured.",
+                    "Удалённый каталог релизов не настроен.",
+                ),
+                hint=local_text(
+                    "Run mojilex snapshots --channel local.",
+                    "Выполните mojilex snapshots --channel local.",
+                ),
+            )
+        found = discover_local_snapshots()
+        domain = pagination_domain(
+            command="snapshots",
+            pinned_state={"local": [[str(item.path), item.manifest_sha256] for item in found]},
+            semantic_arguments={"channel": channel, "limit": selected_limit},
+        )
+        offset = 0
+        if cursor is not None:
+            values = decode_cursor(cursor, domain)
+            if len(values) != 1 or type(values[0]) is not int or not 0 <= values[0] < len(found):
+                raise CommandError(
+                    "CURSOR_INVALID",
+                    "Invalid local snapshot cursor.",
+                    hint="Rerun mojilex snapshots without --cursor.",
+                )
+            offset = values[0] + 1
+        page = found[offset : offset + selected_limit]
+        items = [
+            {
+                "snapshot_id": item.snapshot_id,
+                "manifest_sha256": item.manifest_sha256,
+                "channel": "local",
+                "catalog_status": "unknown",
+            }
+            for item in page
+        ]
+        next_cursor = (
+            {"present": True, "value": encode_cursor(domain, [offset + len(page) - 1])}
+            if offset + len(page) < len(found)
+            else {"present": False}
+        )
+        warnings = [
+            {
+                "code": "LOCAL_DISCOVERY",
+                "message": local_text(
+                    "Local files only; listing does not verify release trust. Use --snapshot PATH; "
+                    "import and AI drafts are not release snapshots.",
+                    "Только локальные файлы; список не подтверждает доверие к релизу. "
+                    "Используйте --snapshot ПУТЬ. "
+                    "Импорт и AI-черновики ещё не являются снимками релиза.",
+                ),
+            }
+        ]
+        warnings.extend(
+            {
+                "code": "LOCAL_SNAPSHOT_PATH",
+                "message": f'{item.snapshot_id}: --snapshot "{item.path}"',
+            }
+            for item in page
+        )
+        if not found:
+            warnings.append(
+                {
+                    "code": "NO_LOCAL_SNAPSHOTS",
+                    "message": local_text(
+                        "No snapshots found in the current/configured repository directories "
+                        "(dist, snapshots, releases). Set MOJILEX_SNAPSHOT to an existing release "
+                        "directory. No remote catalog is configured.",
+                        "Снимков нет ни в текущей папке, ни в настроенном локальном репозитории "
+                        "(dist, snapshots, releases). Задайте путь готового релиза через "
+                        "MOJILEX_SNAPSHOT. Удалённый каталог не настроен.",
+                    ),
+                }
+            )
+        return ReadCommandResult(
+            result={"items": items, "next_cursor": next_cursor},
+            dataset=None,
+            arguments=request_context,
+            view="snapshot",
+            warnings=warnings,
+            stream_items=items,
         )
 
     execute_read(
@@ -990,7 +1131,7 @@ def snapshot_verify_cli(
 
 
 def search_cli(
-    snapshot_path: Annotated[Path, typer.Option("--snapshot")],
+    snapshot_path: Annotated[Path | None, typer.Option("--snapshot")] = None,
     query: Annotated[str | None, typer.Argument()] = None,
     manifest_sha256: Annotated[str | None, typer.Option("--manifest-sha256")] = None,
     request_json: Annotated[Path | None, typer.Option("--request-json")] = None,

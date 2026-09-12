@@ -243,6 +243,9 @@ class _GenerationInputs:
 _GENERATION_INPUTS: ContextVar[_GenerationInputs | None] = ContextVar(
     "mojilex_generation_inputs", default=None
 )
+_AI_PROGRESS_CALLBACK: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "mojilex_ai_progress_callback", default=None
+)
 
 
 def _generation_binding_fields() -> dict[str, str]:
@@ -2795,64 +2798,111 @@ async def _descriptions_for_collection(
     progress = BatchProgress(
         "AI-описания" if current_ui_language() == "ru" else "AI descriptions",
         len(candidates),
+        batch_total=len(chunks),
     )
+    first_failure: Exception | None = None
 
-    async def generate_chunk(chunk: Sequence[SourceEmoji]) -> dict[str, _SemanticOutcome]:
+    async def describe_chunk(
+        batch_index: int, chunk: Sequence[SourceEmoji]
+    ) -> dict[str, _SemanticOutcome]:
+        nonlocal first_failure
         async with semaphore:
-            progress.phase(chunk[0].native_id, "ai")
-            effective_traces = _recover_ai_request_traces(
-                cache,
-                chunk,
-                processed,
-                config=config,
-                taxonomy_version=taxonomy_version,
-                cache_alias_scope=cache_alias_scope,
-                checkpoint_traces=resume_request_traces,
+            # Set/check the stop condition while holding the semaphore. Otherwise
+            # releasing it on an exception can start another queued paid batch.
+            if first_failure is not None:
+                return {}
+            key = chunk[0].native_id
+            progress.phase(key, "ai", count=len(chunk))
+            ru = current_ui_language() == "ru"
+            batch_label = (
+                f"AI-пачка {batch_index}/{len(chunks)}: {len(chunk)} эмодзи"
+                if ru
+                else f"AI batch {batch_index}/{len(chunks)}: {len(chunk)} emojis"
             )
-            generated = await _describe_batch(
-                chunk,
-                processed,
-                config=config,
-                cache=cache,
-                budget=budget,
-                ai_state=ai_state,
-                api_key=api_key,
-                temporary=temporary,
-                taxonomy_version=taxonomy_version,
-                qualifications=qualifications,
-                routing_registry=routing_registry,
-                resume_ai_cache_keys=resume_ai_cache_keys,
-                cache_alias_scope=cache_alias_scope,
-                resume_request_traces=effective_traces or None,
-            )
-            expected_native_ids = {item.native_id for item in chunk}
-            if set(generated) != expected_native_ids or (
-                on_chunk_completed is not None
-                and any(not outcome.request_trace for outcome in generated.values())
-            ):
-                raise AIOutputError(
-                    "AI chunk did not produce one exact traced outcome per source item"
-                )
-            if on_chunk_completed is not None:
-                progress.phase(chunk[0].native_id, "save")
-                await on_chunk_completed(chunk, generated)
-            return generated
+            report_progress(batch_label)
 
-    async def describe_chunk(chunk: Sequence[SourceEmoji]) -> dict[str, _SemanticOutcome]:
-        try:
-            generated = await generate_chunk(chunk)
-        except Exception as exc:
-            progress.finish(chunk[0].native_id, count=len(chunk), failed=True)
-            error = structured_exception(exc)
-            report_progress(f"{error.code}: {error.message}")
-            raise
-        progress.finish(chunk[0].native_id, count=len(chunk))
-        return generated
+            def request_progress(event: str) -> None:
+                progress.phase(key, event)
+                request_count = f"{budget.requests_used}/{budget.max_requests}"
+                messages = {
+                    "request": f"AI-запрос {request_count}; ожидаем ответ"
+                    if ru
+                    else f"AI request {request_count}; waiting for response",
+                    "retry": "ответ не прошёл проверку; повторный запрос"
+                    if ru
+                    else "response validation failed; retrying",
+                    "recovery": "восстановление по одному эмодзи"
+                    if ru
+                    else "recovering individual emojis",
+                }
+                if event in messages:
+                    report_progress(f"{batch_label} — {messages[event]}")
+
+            callback_token = _AI_PROGRESS_CALLBACK.set(request_progress)
+            try:
+                effective_traces = _recover_ai_request_traces(
+                    cache,
+                    chunk,
+                    processed,
+                    config=config,
+                    taxonomy_version=taxonomy_version,
+                    cache_alias_scope=cache_alias_scope,
+                    checkpoint_traces=resume_request_traces,
+                )
+                generated = await _describe_batch(
+                    chunk,
+                    processed,
+                    config=config,
+                    cache=cache,
+                    budget=budget,
+                    ai_state=ai_state,
+                    api_key=api_key,
+                    temporary=temporary,
+                    taxonomy_version=taxonomy_version,
+                    qualifications=qualifications,
+                    routing_registry=routing_registry,
+                    resume_ai_cache_keys=resume_ai_cache_keys,
+                    cache_alias_scope=cache_alias_scope,
+                    resume_request_traces=effective_traces or None,
+                )
+                expected_native_ids = {item.native_id for item in chunk}
+                if set(generated) != expected_native_ids or (
+                    on_chunk_completed is not None
+                    and any(not outcome.request_trace for outcome in generated.values())
+                ):
+                    raise AIOutputError(
+                        "AI chunk did not produce one exact traced outcome per source item"
+                    )
+                if on_chunk_completed is not None:
+                    progress.phase(key, "save")
+                    await on_chunk_completed(chunk, generated)
+            except Exception as exc:
+                if first_failure is None:
+                    first_failure = exc
+                    progress.stop_queue()
+                    report_progress(
+                        "Очередь AI остановлена. Уже запущенные пачки завершаются; "
+                        "остальные не запускались."
+                        if ru
+                        else "AI queue stopped. In-flight batches will finish; "
+                        "the remaining batches have not started."
+                    )
+                progress.finish(key, count=len(chunk), failed=True)
+                error = structured_exception(exc)
+                report_progress(f"{error.code}: {error.message}")
+                raise
+            finally:
+                _AI_PROGRESS_CALLBACK.reset(callback_token)
+            progress.finish(key, count=len(chunk))
+            return generated
 
     async with progress:
         outcomes = await asyncio.gather(
-            *(describe_chunk(chunk) for chunk in chunks), return_exceptions=True
+            *(describe_chunk(index, chunk) for index, chunk in enumerate(chunks, start=1)),
+            return_exceptions=True,
         )
+        if first_failure is not None:
+            raise first_failure
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -3264,7 +3314,9 @@ async def _load_or_describe_primary_batch(
         api_key=api_key,
         model=config.ai.model,
     )
-    response = await describe_with_recovery(provider, prepared.request, budget)
+    response = await describe_with_recovery(
+        provider, prepared.request, budget, progress_callback=_AI_PROGRESS_CALLBACK.get()
+    )
     _validate_actual_result(
         response,
         config.ai.provider,
@@ -3803,7 +3855,9 @@ async def _describe_single(
             model=model,
             temporary=temporary,
         )
-    return await describe_with_recovery(provider, prepared.request, budget)
+    return await describe_with_recovery(
+        provider, prepared.request, budget, progress_callback=_AI_PROGRESS_CALLBACK.get()
+    )
 
 
 async def _describe_routed_single(

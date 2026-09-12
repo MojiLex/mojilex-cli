@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from mojilex_cli.ai import (
+    AIError,
     BudgetExceededError,
     CostEstimate,
     DescriptionRequest,
@@ -19,6 +20,7 @@ from mojilex_cli.ai import (
     UnknownCostError,
     VisionContext,
     VisionImage,
+    describe_with_recovery,
 )
 from mojilex_cli.runs import RunStore, new_checkpoint
 
@@ -99,6 +101,70 @@ async def test_gemini_uses_official_async_structured_schema() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["describe", "validate_credentials"])
+async def test_gemini_enforces_timeout_even_when_sdk_does_not(operation: str) -> None:
+    cancelled = asyncio.Event()
+
+    async def hanging(**kwargs: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    resource = SimpleNamespace(create=hanging, get=hanging)
+    provider = GeminiVisionProvider(
+        model="gemini-test",
+        client=SimpleNamespace(aio=SimpleNamespace(models=resource, interactions=resource)),
+        timeout_seconds=0.01,
+    )
+    with pytest.raises(AIError, match=r"timed out after 0\.01 seconds"):
+        if operation == "describe":
+            await provider.describe(_request())
+        else:
+            await provider.validate_credentials()
+    assert cancelled.is_set()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_gemini_rejects_unbounded_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        GeminiVisionProvider(model="test", client=object(), timeout_seconds=timeout)
+
+
+@pytest.mark.asyncio
+async def test_recovery_reports_retry_without_repeating_budget_prompt(monkeypatch) -> None:
+    models = _FakeModels()
+    valid_create = models.create
+    calls = 0
+
+    async def create(**kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(status="completed", model="gemini-test", output_text="{}")
+        return await valid_create(**kwargs)
+
+    monkeypatch.setattr(models, "create", create)
+    provider = GeminiVisionProvider(
+        model="gemini-test",
+        client=SimpleNamespace(aio=SimpleNamespace(models=models, interactions=models)),
+    )
+    prompts: list[int] = []
+    events: list[str] = []
+    budget = RequestBudget(
+        max_requests=2,
+        unknown_cost_authorizer=lambda count: prompts.append(count) is None,
+    )
+    result = await describe_with_recovery(
+        provider, _request(), budget, progress_callback=events.append
+    )
+    assert result.batch.items[0].label == "E001"
+    assert prompts == [2]
+    assert events == ["approval", "request", "retry", "approval", "request"]
+    assert budget.requests_used == 2
+
+
+@pytest.mark.asyncio
 async def test_request_budget_is_hard_and_unknown_cost_requires_opt_in() -> None:
     budget = RequestBudget(max_requests=1)
     with pytest.raises(UnknownCostError):
@@ -124,7 +190,7 @@ def test_request_budget_resume_cannot_reset_or_exceed_previous_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_cost_authorization_happens_at_each_actual_reservation() -> None:
+async def test_unknown_cost_authorization_once_for_bounded_run_budget() -> None:
     planned: list[int] = []
     budget = RequestBudget(
         max_requests=2,
@@ -134,8 +200,56 @@ async def test_unknown_cost_authorization_happens_at_each_actual_reservation() -
     await budget.reserve(CostEstimate(upper_bound_usd=None, note="unknown"))
     await budget.reserve(CostEstimate(upper_bound_usd=None, note="unknown"))
 
-    assert planned == [1, 1]
+    assert planned == [2]
     assert budget.requests_used == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_cost_concurrent_consent_is_once_and_cannot_exceed_limit() -> None:
+    planned: list[int] = []
+    budget = RequestBudget(
+        max_requests=5,
+        requests_used=2,
+        unknown_cost_authorizer=lambda requests: planned.append(requests) is None,
+    )
+    estimate = CostEstimate(upper_bound_usd=None, note="unknown")
+    await asyncio.gather(*(budget.reserve(estimate) for _ in range(3)))
+    assert planned == [3]
+    assert budget.requests_used == 5
+    with pytest.raises(BudgetExceededError):
+        await budget.reserve(estimate)
+
+
+@pytest.mark.asyncio
+async def test_unknown_cost_refusal_is_not_asked_again() -> None:
+    planned: list[int] = []
+    budget = RequestBudget(
+        max_requests=5,
+        unknown_cost_authorizer=lambda requests: bool(planned.append(requests)),
+    )
+    for _ in range(3):
+        with pytest.raises(UnknownCostError):
+            await budget.reserve(CostEstimate(upper_bound_usd=None, note="unknown"))
+    assert planned == [5]
+    assert budget.requests_used == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_cost_authorizer_exception_does_not_reprompt() -> None:
+    planned: list[int] = []
+
+    def refuse(requests: int) -> bool:
+        planned.append(requests)
+        raise RuntimeError("refused")
+
+    budget = RequestBudget(max_requests=5, unknown_cost_authorizer=refuse)
+    estimate = CostEstimate(upper_bound_usd=None, note="unknown")
+    with pytest.raises(RuntimeError, match="refused"):
+        await budget.reserve(estimate)
+    with pytest.raises(UnknownCostError):
+        await budget.reserve(estimate)
+    assert planned == [5]
+    assert budget.requests_used == 0
 
 
 @pytest.mark.asyncio

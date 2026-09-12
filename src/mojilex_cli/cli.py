@@ -31,6 +31,9 @@ from mojilex_cli.commands.runtime import (
     require_confirmation,
 )
 from mojilex_cli.i18n import (
+    confirm as ui_confirm,
+)
+from mojilex_cli.i18n import (
     current_ui_language,
     extract_ui_language,
     localize_command_tree,
@@ -160,7 +163,10 @@ def _unknown_cost_callback(
     *, yes: bool, non_interactive: bool, json_output: bool
 ) -> Callable[[int], bool]:
     def confirm(requests: int) -> bool:
-        message = f"Authorize {requests} new AI request(s)? The provider's USD cost is unknown."
+        message = (
+            f"Authorize up to {requests} additional AI requests for this run, including retries? "
+            "The USD cost is unknown. This is a one-time approval for this invocation."
+        )
         try:
             require_confirmation(
                 message,
@@ -768,9 +774,11 @@ def dedupe_review(
 
     def choose(preview: Path, explanation: object) -> str:
         del explanation
-        typer.echo(f"Temporary comparison preview: {preview}")
+        typer.echo(ui_text(f"Temporary comparison preview: {preview}"))
         return str(
-            typer.prompt("Decision [same-artwork/variant-of/related-series/not-duplicate/skip]")
+            typer.prompt(
+                ui_text("Decision [same-artwork/variant-of/related-series/not-duplicate/skip]")
+            )
         )
 
     execute(
@@ -946,7 +954,7 @@ def doctor(
             and not quiet
             and sys.stdin.isatty()
         ):
-            authorized = typer.confirm(
+            authorized = ui_confirm(
                 ui_text(
                     "Install the missing Windows media components now? "
                     "This may install FFmpeg or Visual Studio Build Tools."

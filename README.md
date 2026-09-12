@@ -78,6 +78,18 @@ mojilex init --force --repo MojiLex/mojilex --publish local --model gemini-3.8-f
 
 ### Staged analysis and publication
 
+AI progress distinguishes validated emojis, batches, requests, retries, and queued
+work. A failed batch or declined cost approval stops queued batches; successful
+in-flight batches still checkpoint their results. Each Gemini request has a
+30-second timeout. An unchanged emoji count can mean a batch is still awaiting
+or validating its response, not that those emojis are complete.
+
+When current model pricing is unknown, one confirmation covers the remaining
+request limit for this invocation, including retries. It never increases
+`--max-ai-requests`; a new `resume` invocation asks again. The default is no to
+prevent accidental spending. Explicit `--allow-unknown-cost` skips this cost
+question but does not authorize publication or other sensitive actions.
+
 First download and verify the media. Nothing is uploaded to GitHub, and the
 command returns a persistent `mlxrun_...` ID:
 
@@ -268,11 +280,25 @@ mojilex uninstall
 Use `mojilex COMMAND --help` for exact options. With `--json`, stdout contains exactly one
 machine-readable envelope; progress and diagnostics go to stderr.
 
-Every data-reading command requires an explicit local `--snapshot PATH`. The pre-enforcement
-MVP snapshot is integrity-checked but unsigned, so reads fail closed unless diagnostic use is
+Run `mojilex snapshots` to list existing local release snapshots and their paths. Discovery checks
+the current directory and the configured local dataset repository, including their `dist`,
+`snapshots`, and `releases` directories and one child-directory level. It does not scan your disk
+recursively or download a remote catalog. If exactly one snapshot exists, read commands select it
+automatically. Otherwise pass `--snapshot PATH` or set `MOJILEX_SNAPSHOT` to pin an existing snapshot.
+An explicit `MOJILEX_SNAPSHOT` also limits listing to that path. Import checkpoints and AI drafts
+are not release snapshots; an empty local list does not mean Telegram itself has no such emoji.
+
+`mojilex get TELEGRAM_CUSTOM_EMOJI_ID` accepts the exact decimal Telegram ID as well as a canonical
+`mxe_...` ID. It resolves only an unambiguous current identity in the selected snapshot. `search`
+also recognizes exact native IDs. Human output shows readable descriptions; `--json` retains the
+complete structured records.
+
+The pre-enforcement MVP snapshot is integrity-checked but unsigned, so reads fail closed unless diagnostic use is
 explicitly acknowledged with `--allow-unverified`; this never makes the release trusted and
 `runtime_trust.safe_eligible` remains false. `search` defaults to the safe `agent` view, while
-`--view search --allow-unverified` is the explicit diagnostic projection. The read path is
+`--view search --allow-unverified` or `--view canonical --allow-unverified` selects an explicit
+diagnostic projection. The default agent view can remain empty for unsigned records even with
+`--allow-unverified`. The read path is
 offline-only and does not call AI providers, Telegram, media decoders, catalogs, mirrors, or any
 other network service.
 

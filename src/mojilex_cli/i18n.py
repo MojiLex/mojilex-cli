@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,8 +44,8 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
         "Собирайте, проверяйте и публикуйте набор данных эмодзи MojiLex без исходных медиа.",
     ),
     "snapshots": (
-        "List release snapshots from the configured catalog.",
-        "Показать снимки релизов из настроенного каталога.",
+        "List local release snapshots and their paths.",
+        "Показать локальные снимки релизов и пути к ним.",
     ),
     "search": (
         "Search a pinned local snapshot by text and filters.",
@@ -334,6 +336,225 @@ _TEXT: dict[str, tuple[str, str]] = {
     ),
 }
 
+_RUSSIAN_MESSAGES = {
+    "Could not inspect the configured dataset repository.": (
+        "Не удалось проверить настроенный репозиторий данных."
+    ),
+    "Check Git and access to the configured local repository.": (
+        "Проверьте Git и доступ к настроенному локальному репозиторию."
+    ),
+    "Could not create an isolated dataset checkout.": (
+        "Не удалось создать изолированную рабочую копию репозитория данных."
+    ),
+    "Check Git, repository access, and the configured base branch.": (
+        "Проверьте Git, доступ к репозиторию и настроенную базовую ветку."
+    ),
+    "Error": "Ошибка",
+    "Operation interrupted by the user.": "Операция прервана пользователем.",
+    "Use mojilex resume with the reported run ID when a checkpoint exists.": (
+        "Продолжите операцию командой mojilex resume с указанным ID запуска, "
+        "если есть контрольная точка."
+    ),
+    "provider cost is unknown; explicit approval is required": (
+        "Стоимость запросов к провайдеру неизвестна; требуется явное подтверждение."
+    ),
+    "The provider's USD cost is unknown and was not authorized.": (
+        "Стоимость запросов к провайдеру в USD неизвестна; разрешение не получено."
+    ),
+    (
+        "Rerun with --allow-unknown-cost after reviewing the planned AI requests, "
+        "or use --yes in an interactive workflow."
+    ): (
+        "Проверьте запланированные AI-запросы и повторите с --allow-unknown-cost "
+        "либо используйте --yes в интерактивном режиме."
+    ),
+    "Correct the reported condition and retry.": "Устраните указанную причину и повторите команду.",
+    "Check the command options and non-secret configuration.": (
+        "Проверьте параметры команды и несекретные настройки."
+    ),
+    "Run mojilex validate --strict and fix every reported issue.": (
+        "Запустите mojilex validate --strict и исправьте все найденные ошибки."
+    ),
+    "Rerun with --debug and report the sanitized traceback.": (
+        "Повторите команду с --debug и сообщите очищенную от секретов трассировку ошибки."
+    ),
+    "This sensitive operation requires explicit confirmation.": (
+        "Для этой операции требуется явное подтверждение."
+    ),
+    "Rerun with --yes after reviewing the exact target.": (
+        "Проверьте точную цель операции и повторите команду с --yes."
+    ),
+    "Operation was not confirmed.": "Операция не подтверждена.",
+    "Review the target and rerun when ready.": (
+        "Проверьте цель операции и повторите команду, когда будете готовы."
+    ),
+    "Pass an explicit local --snapshot path to a read command.": (
+        "Передайте команде чтения локальный путь к снимку через --snapshot."
+    ),
+    "Download an immutable snapshot separately and verify its local path.": (
+        "Скачайте неизменяемый снимок отдельно и проверьте его локальный путь."
+    ),
+    "Continue using the explicitly pinned local snapshot.": (
+        "Продолжайте использовать явно выбранный локальный снимок."
+    ),
+    "estimated AI cost limit would be exceeded": "Будет превышен лимит расчётной стоимости AI.",
+    "AI request limit would be exceeded": "Будет превышен лимит AI-запросов.",
+    "The existing AI cache could not be inspected; plan assumes misses.": (
+        "Не удалось проверить существующий AI-кеш; план рассчитан без его использования."
+    ),
+    "GEMINI_API_KEY is required for uncached descriptions.": (
+        "Для описаний, которых нет в кеше, нужен GEMINI_API_KEY."
+    ),
+    "Set it in the process environment or use an already populated cache.": (
+        "Задайте ключ в окружении процесса или используйте уже заполненный кеш."
+    ),
+    "This command requires a local dataset checkout.": (
+        "Для этой команды нужна локальная копия репозитория данных."
+    ),
+    "Clone MojiLex/mojilex and pass its path with --repo.": (
+        "Склонируйте MojiLex/mojilex и передайте путь через --repo."
+    ),
+    "Pass an existing MojiLex dataset checkout.": (
+        "Укажите существующую локальную копию репозитория данных MojiLex."
+    ),
+    "Decision [same-artwork/variant-of/related-series/not-duplicate/skip]": (
+        "Решение [same-artwork/variant-of/related-series/not-duplicate/skip]"
+    ),
+    "True": "Да",
+    "False": "Нет",
+    "None": "нет данных",
+    (
+        "Diagnostic read from an integrity-checked unsigned snapshot; "
+        "safe_eligible is always false."
+    ): (
+        "Диагностическое чтение снимка: целостность проверена, подписи нет; "
+        "safe_eligible всегда false."
+    ),
+    "The local snapshot has integrity checks but no enforceable release signature.": (
+        "Целостность локального снимка проверена, но подтверждённой подписи релиза нет."
+    ),
+    ("Rerun with --allow-unverified only for diagnostic use of this exact local snapshot."): (
+        "Повторите с --allow-unverified только для диагностического чтения "
+        "этого конкретного локального снимка."
+    ),
+    "Config file to create.": "Создаваемый файл настроек.",
+    "Replace an existing config.": "Заменить существующий файл настроек.",
+    "Rebuild the complete index.": "Перестроить полный индекс.",
+    "Repeat for each language.": "Повторите параметр для каждого языка.",
+    "Human interface language: en or ru.": "Язык интерфейса: en или ru.",
+    "Versioned model benchmark manifest with human adjudication.": (
+        "Версионированный манифест теста модели с результатами ручной оценки."
+    ),
+    "Versioned dedupe benchmark manifest.": "Версионированный манифест теста дубликатов.",
+    "Exact manifest model ID.": "Точный ID модели из манифеста.",
+    "Explicit provider model ID.": "Явно указанный ID модели провайдера.",
+    "Local dataset root.": "Корневая папка локального набора данных.",
+    "Exact manifest provider ID.": "Точный ID провайдера из манифеста.",
+    "Emoji or collection selector.": "Селектор эмодзи или коллекции.",
+    "Source URL or collection ID.": "URL источника или ID коллекции.",
+    "Run ID or entity selectors.": "ID запуска или селекторы записей.",
+    "Immutable snapshot ID: data-YYYY.MM.DD.N.": "ID неизменяемого снимка: data-YYYY.MM.DD.N.",
+    "Immutable release source time as a Unix epoch.": (
+        "Фиксированное время исходных данных релиза в формате Unix epoch."
+    ),
+    "Public source URLs.": "Публичные URL источников.",
+    "Read one source per stdin line.": "Читать по одному источнику в строке stdin.",
+}
+
+_RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
+    (
+        r"eligible emoji (?P<emoji_id>\S+) has incomplete concept mapping; "
+        r"complete concept mapping before building a release snapshot",
+        "У эмодзи {emoji_id} не завершена привязка понятий. "
+        "Завершите её перед сборкой снимка релиза.",
+    ),
+    (
+        r"Authorize up to (?P<count>\d+) additional AI requests for this run, including retries\? "
+        r"The USD cost is unknown\. This is a one-time approval for this invocation\.",
+        "Разрешить до {count} дополнительных AI-запросов для этого запуска, включая повторы? "
+        "Стоимость в USD неизвестна. Разрешение действует только для текущего вызова команды.",
+    ),
+    (
+        r"Snapshot discovery for channel (?P<channel>.+) is not configured "
+        r"in the strictly offline MVP\.",
+        "В текущей версии доступна только локальная работа со снимками; "
+        "получение списка снимков канала {channel} не настроено.",
+    ),
+    (
+        r"No signed release catalog or mirror is configured for (?P<snapshot>.+)\.",
+        "Для снимка {snapshot} не настроены подписанный каталог релизов или зеркало.",
+    ),
+    (
+        r"Snapshot update to (?P<snapshot>.+) is not configured "
+        r"without a signed catalog and mirror\.",
+        "Обновление до снимка {snapshot} недоступно без подписанного каталога и зеркала.",
+    ),
+    (r"Checking source (?P<index>\d+/\d+): (?P<source>.+)", "Проверка источника {index}: {source}"),
+    (
+        r"Source (?P<source>.+): (?P<count>\d+) media item\(s\); "
+        r"download/verification concurrency=(?P<concurrency>\d+)\.",
+        "Источник {source}: медиафайлов — {count}; "
+        "параллельных скачиваний и проверок — {concurrency}.",
+    ),
+    (r"Media verified: (?P<item>.+)", "Медиафайл проверен: {item}"),
+    (
+        r"Semantic results cached: (?P<count>\d+) item\(s\)",
+        "Результаты анализа сохранены в кеше: {count}",
+    ),
+    (
+        r"AI plan: (?P<count>\d+) item\(s\), (?P<batches>\d+) candidate batch\(es\), "
+        r"provider=(?P<provider>[^,]+), model=(?P<model>.+)\. Exact cache hits can reduce "
+        r"requests; retries and escalation share the (?P<limit>\d+)-request limit\.",
+        "План AI: эмодзи — {count}, возможных пачек — {batches}; провайдер — {provider}, "
+        "модель — {model}. Совпадения в кеше могут уменьшить число запросов; "
+        "повторы и переход на более сильную модель входят в общий лимит {limit} запросов.",
+    ),
+    (
+        r"Derived contact-sheet PNG images will be sent to provider=(?P<provider>[^,]+), "
+        r"model=(?P<model>.+)\. Provider processing terms: (?P<url>\S+) \. "
+        r"MojiLex does not guarantee zero retention by the provider\.",
+        "Подготовленные PNG-листы с кадрами будут отправлены провайдеру {provider}, "
+        "модель — {model}. Условия обработки: {url} . "
+        "MojiLex не гарантирует, что провайдер не сохраняет данные.",
+    ),
+    (r"Dataset directory does not exist: (?P<path>.+)", "Каталог данных не существует: {path}"),
+    (r"Temporary comparison preview: (?P<path>.+)", "Временное изображение для сравнения: {path}"),
+    (
+        r"Gemini request timed out after (?P<seconds>[\d.]+) seconds\.",
+        "Запрос Gemini не завершился за {seconds} с.",
+    ),
+    (
+        r"Gemini model check timed out after (?P<seconds>[\d.]+) seconds\.",
+        "Проверка модели Gemini не завершилась за {seconds} с.",
+    ),
+    (r"Missing argument(?P<detail>.*)", "Не указан обязательный аргумент{detail}"),
+    (r"Missing option(?P<detail>.*)", "Не указан обязательный параметр{detail}"),
+    (r"Missing parameter(?P<detail>.*)", "Не указан обязательный параметр{detail}"),
+    (r"No such option: (?P<option>.+)", "Неизвестный параметр: {option}"),
+    (r"No such command (?P<command>.+)\.", "Неизвестная команда {command}."),
+    (r"Option (?P<option>.+) requires an argument\.", "Для параметра {option} нужно значение."),
+    (
+        r"Got unexpected extra arguments? (?P<arguments>.+)",
+        "Неожиданные лишние аргументы {arguments}",
+    ),
+    (r"(?P<value>.+) is not a valid integer\.", "{value} — не целое число."),
+    (r"(?P<value>.+) is not a valid int range\.", "{value} — не целое число."),
+    (r"(?P<value>.+) is not a valid float(?: range)?\.", "{value} — не число."),
+    (r"(?P<value>.+) is not a valid UUID\.", "{value} — некорректный UUID."),
+    (
+        r"(?P<value>.+) is not in the range (?P<range>.+)\.",
+        "{value} вне допустимого диапазона {range}.",
+    ),
+    (
+        r"(?P<value>.+) is not one of (?P<choices>.+)\.",
+        "{value} не входит в допустимые значения: {choices}.",
+    ),
+    (
+        r"(?P<value>.+) does not match the formats (?P<formats>.+)\.",
+        "{value} не соответствует форматам {formats}.",
+    ),
+)
+
 
 def normalize_ui_language(value: str) -> UiLanguage:
     normalized = value.strip().lower()
@@ -411,7 +632,61 @@ def current_ui_language() -> UiLanguage:
 def text(value: str, *, language: UiLanguage | None = None) -> str:
     selected = language or current_ui_language()
     translated = _TEXT.get(value)
-    return value if translated is None else translated[1 if selected == "ru" else 0]
+    if translated is not None:
+        return translated[1 if selected == "ru" else 0]
+    if selected != "ru":
+        return value
+    if value in _RUSSIAN_MESSAGES:
+        return _RUSSIAN_MESSAGES[value]
+    invalid = re.fullmatch(r"Invalid value for (.+?): (.+)", value, flags=re.DOTALL)
+    if invalid:
+        return f"Некорректное значение {invalid[1]}: {text(invalid[2], language=selected)}"
+    if value.startswith("Invalid value: "):
+        return "Некорректное значение: " + text(
+            value.removeprefix("Invalid value: "), language=selected
+        )
+    suggestion = re.fullmatch(r"(.+) \(Possible options: (.+)\)", value, flags=re.DOTALL)
+    if suggestion:
+        return f"{text(suggestion[1], language=selected)} (Возможные параметры: {suggestion[2]})"
+    coded = re.fullmatch(r"([A-Z][A-Z0-9_]+): (.+)", value, flags=re.DOTALL)
+    if coded:
+        return f"{coded[1]}: {text(coded[2], language=selected)}"
+    for pattern, template in _RUSSIAN_PATTERNS:
+        match = re.fullmatch(pattern, value, flags=re.DOTALL)
+        if match:
+            return template.format(**match.groupdict())
+    return value
+
+
+def confirm(message: str, *, default: bool = False, err: bool = False) -> bool:
+    """Accept Russian and English answers while keeping an empty reply negative by default."""
+
+    import typer
+
+    if current_ui_language() != "ru":
+        return bool(typer.confirm(message, default=default, err=err))
+    suffix = " [Да/нет]: " if default else " [да/Нет]: "
+    while True:
+        answer = (
+            str(
+                typer.prompt(
+                    text(message),
+                    default="",
+                    show_default=False,
+                    prompt_suffix=suffix,
+                    err=err,
+                )
+            )
+            .strip()
+            .casefold()
+        )
+        if not answer:
+            return default
+        if answer in {"да", "д", "yes", "y"}:
+            return True
+        if answer in {"нет", "н", "no", "n"}:
+            return False
+        typer.echo("Введите да/нет или y/n. Пустой ответ выбирает вариант по умолчанию.", err=err)
 
 
 def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, ...] = ()) -> None:
@@ -420,6 +695,7 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
     if not path:
         _localize_rich_framework(language)
         _group_root_commands(command, language)
+    _localize_usage(command)
     key = " ".join(path) if path else "mojilex"
     if key in _COMMAND_HELP:
         command.help = _COMMAND_HELP[key][1 if language == "ru" else 0]
@@ -428,6 +704,8 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
         help_text = _PARAMETER_HELP.get(getattr(parameter, "name", ""))
         if help_text is not None:
             parameter.help = help_text[1 if language == "ru" else 0]
+        elif getattr(parameter, "help", None):
+            parameter.help = text(str(parameter.help), language=language)
     for name, child in getattr(command, "commands", {}).items():
         localize_command_tree(child, language, (*path, name))
 
@@ -456,6 +734,8 @@ def _localize_rich_framework(language: UiLanguage) -> None:
 
     import typer.rich_utils as rich_utils
 
+    _localize_rich_errors(rich_utils)
+
     if language == "ru":
         rich_utils.ARGUMENTS_PANEL_TITLE = "Аргументы"
         rich_utils.OPTIONS_PANEL_TITLE = "Параметры"
@@ -474,3 +754,51 @@ def _localize_rich_framework(language: UiLanguage) -> None:
     rich_utils.RICH_HELP = "Try [blue]'{command_path} {help_option}'[/] for help."
     rich_utils.DEFAULT_STRING = "[default: {}]"
     rich_utils.REQUIRED_LONG_STRING = "[required]"
+
+
+def _localize_usage(command: Any) -> None:
+    original = command.get_usage
+    if getattr(original, "_mojilex_localized", False):
+        return
+
+    @wraps(original)
+    def usage(*args: Any, **kwargs: Any) -> str:
+        rendered = str(original(*args, **kwargs))
+        if current_ui_language() == "ru" and rendered.startswith("Usage: "):
+            rendered = "Использование: " + rendered.removeprefix("Usage: ")
+            return re.sub(
+                r"\b(OPTIONS|COMMAND|ARGS)\b",
+                lambda match: {"OPTIONS": "ПАРАМЕТРЫ", "COMMAND": "КОМАНДА", "ARGS": "АРГУМЕНТЫ"}[
+                    match[0]
+                ],
+                rendered,
+            )
+        return rendered
+
+    usage._mojilex_localized = True  # type: ignore[attr-defined]
+    command.get_usage = usage
+
+
+def _localize_rich_errors(rich_utils: Any) -> None:
+    """Translate only the Rich display adapter, never stored exceptions or JSON messages."""
+
+    original = rich_utils.rich_format_error
+    if getattr(original, "_mojilex_localized", False):
+        return
+
+    @wraps(original)
+    def render(error: Any) -> None:
+        if current_ui_language() != "ru" or type(error).__name__ == "NoArgsIsHelpError":
+            original(error)
+            return
+
+        class LocalizedError:
+            ctx = getattr(error, "ctx", None)
+
+            def format_message(self) -> str:
+                return text(str(error.format_message()))
+
+        original(LocalizedError())
+
+    render._mojilex_localized = True  # type: ignore[attr-defined]
+    rich_utils.rich_format_error = render

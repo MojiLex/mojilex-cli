@@ -512,6 +512,10 @@ class RequestBudget:
         self.reservation_recorder = reservation_recorder
         self.requests_used = requests_used
         self.cost_reserved = cost_reserved
+        # Consent is bounded by this budget and lasts only for this invocation.
+        # A resumed invocation must obtain fresh consent for its remaining limit.
+        self._unknown_cost_approved = allow_unknown_cost
+        self._unknown_cost_asked = False
         self._lock = asyncio.Lock()
 
     async def reserve(self, estimate: CostEstimate) -> None:
@@ -520,11 +524,16 @@ class RequestBudget:
                 raise BudgetExceededError("AI request limit would be exceeded")
             estimated_cost = estimate.upper_bound_usd
             if estimated_cost is None:
-                authorized = self.allow_unknown_cost or (
-                    self.unknown_cost_authorizer is not None
-                    and self.unknown_cost_authorizer(estimate.requests) is True
-                )
-                if not authorized:
+                if not self._unknown_cost_approved and not self._unknown_cost_asked:
+                    # Mark before calling: a refusal/exception must not prompt
+                    # every other concurrent or queued request again.
+                    self._unknown_cost_asked = True
+                    if self.unknown_cost_authorizer is not None:
+                        self._unknown_cost_approved = (
+                            self.unknown_cost_authorizer(self.max_requests - self.requests_used)
+                            is True
+                        )
+                if not self._unknown_cost_approved:
                     raise UnknownCostError(
                         "provider cost is unknown; explicit approval is required"
                     )
@@ -560,11 +569,20 @@ async def describe_with_recovery(
     budget: RequestBudget,
     *,
     single_requests: Mapping[str, DescriptionRequest] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> DescriptionResult:
     """One batch retry, then at most two tries per problematic single item."""
 
-    for _ in range(2):
+    def progress(event: str) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
+
+    for attempt in range(2):
+        if attempt:
+            progress("retry")
+        progress("approval")
         await budget.reserve(provider.estimate(request))
+        progress("request")
         try:
             result = await provider.describe(request)
             _validate_result_identity(result, provider.name, request.model)
@@ -577,6 +595,7 @@ async def describe_with_recovery(
             "batch response invalid and no exact per-item recovery requests supplied"
         )
     recovered: list[DescriptionItem] = []
+    progress("recovery")
     usages: list[AIUsage] = []
     revisions: list[str | None] = []
     for label in request.expected_labels:
@@ -584,7 +603,11 @@ async def describe_with_recovery(
         if single.expected_labels != (label,):
             raise ValueError("single recovery request must contain exactly its mapped label")
         for attempt in range(2):
+            if attempt:
+                progress("retry")
+            progress("approval")
             await budget.reserve(provider.estimate(single))
+            progress("request")
             try:
                 result = await provider.describe(single)
                 _validate_result_identity(result, provider.name, single.model)

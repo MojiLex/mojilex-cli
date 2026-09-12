@@ -16,6 +16,7 @@ import rfc8785
 
 from mojilex_cli.commands.runtime import CommandError
 from mojilex_cli.read.cursor import decode_cursor, encode_cursor, pagination_domain
+from mojilex_cli.read.local import local_text
 from mojilex_cli.read.snapshot import LoadedSnapshot
 
 _BCP47_RE = re.compile(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*")
@@ -1203,6 +1204,34 @@ class SnapshotReader:
         language: str | None,
         include_sensitive: bool,
     ) -> dict[str, Any]:
+        if re.fullmatch(r"[0-9]{1,20}", emoji_id):
+            resolved = self.resolve(
+                platform="telegram",
+                namespace="custom_emoji.id",
+                scope="global",
+                native_id=emoji_id,
+                identity_epoch=None,
+                as_of=None,
+                include_history=False,
+                limit=2,
+                cursor=None,
+            )
+            candidates = resolved["candidates"]
+            if len(candidates) != 1 or candidates[0]["target_entity_type"] != "emoji":
+                raise _failure(
+                    "ENTITY_NOT_FOUND",
+                    local_text(
+                        "Telegram emoji ID was not found in this snapshot.",
+                        "Telegram ID эмодзи не найден в этом снимке.",
+                    ),
+                    local_text(
+                        "Check the ID and local snapshot. Import/AI drafts are not automatically "
+                        "included in release snapshots.",
+                        "Проверьте ID и выбранный снимок. "
+                        "Импорт и AI-черновик не добавляются в релиз автоматически.",
+                    ),
+                )
+            emoji_id = candidates[0]["target_id"]
         canonical = self._canonical_emoji(emoji_id)
         language_component: dict[str, Any] = {"present": False}
         if view == "canonical":
