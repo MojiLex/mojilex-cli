@@ -166,6 +166,7 @@ def import_command(
     repo: str | None,
     platform: str,
     max_items: int | None,
+    download_concurrency: int | None,
     check_media: bool,
     fail_fast: bool,
 ) -> CommandResult:
@@ -176,6 +177,7 @@ def import_command(
             repository=repo,
             platform=platform,
             max_items=max_items,
+            download_concurrency=download_concurrency,
             check_media=True,
             fail_fast=fail_fast,
             publish="local",

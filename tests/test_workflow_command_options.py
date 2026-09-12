@@ -5,6 +5,32 @@ from mojilex_cli.commands.runtime import CommandResult
 from mojilex_cli.output import RunStatus
 
 
+def test_import_forwards_download_concurrency(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_import(sources, options):  # type: ignore[no-untyped-def]
+        captured["sources"] = sources
+        captured["options"] = options
+        return CommandResult(status=RunStatus.SUCCEEDED)
+
+    monkeypatch.setattr(workflow, "run_import", fake_run_import)
+
+    result = workflow.import_command(
+        ["https://t.me/addemoji/NewsEmoji"],
+        repo="MojiLex/mojilex",
+        platform="telegram",
+        max_items=100,
+        download_concurrency=8,
+        check_media=True,
+        fail_fast=False,
+    )
+
+    options = captured["options"]
+    assert result.status is RunStatus.SUCCEEDED
+    assert captured["sources"] == ["https://t.me/addemoji/NewsEmoji"]
+    assert options.download_concurrency == 8  # type: ignore[union-attr]
+
+
 def test_describe_run_accepts_and_forwards_ai_stage_overrides(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

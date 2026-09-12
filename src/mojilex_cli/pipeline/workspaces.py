@@ -49,6 +49,8 @@ def prepare_staging_workspace(
     temporary = destination.parent / f".{run_id}-{uuid.uuid4().hex}.tmp"
     try:
         _git(
+            "-c",
+            f"safe.directory={_local_git_directory(source_repository).as_posix()}",
             "clone",
             "--no-hardlinks",
             "--no-tags",
@@ -81,9 +83,49 @@ def snapshot_at_revision(repository: Path, revision: str) -> Iterator[Path]:
 
     with tempfile.TemporaryDirectory(prefix="mojilex-base-") as raw:
         root = Path(raw) / "repository"
-        _git("clone", "--no-hardlinks", "--no-checkout", str(repository), str(root))
+        _git(
+            "-c",
+            f"safe.directory={_local_git_directory(repository).as_posix()}",
+            "clone",
+            "--no-hardlinks",
+            "--no-checkout",
+            str(repository),
+            str(root),
+        )
         _git("-C", str(root), "checkout", "--detach", revision)
         yield root
+
+
+def _local_git_directory(repository: Path) -> Path:
+    """Return the exact local Git directory trusted for one clone invocation."""
+
+    root = repository.expanduser().resolve(strict=True)
+    marker = root / ".git"
+    if marker.is_dir() and not marker.is_symlink():
+        return marker.resolve(strict=True)
+    if marker.is_file() and not marker.is_symlink():
+        try:
+            payload = marker.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise CommandError(
+                "GIT_CONFLICT",
+                "Could not inspect the configured dataset repository.",
+                hint="Check Git and access to the configured local repository.",
+            ) from exc
+        prefix = "gitdir:"
+        if payload.lower().startswith(prefix):
+            value = payload[len(prefix) :].strip()
+            candidate = Path(value)
+            if not candidate.is_absolute():
+                candidate = marker.parent / candidate
+            resolved = candidate.resolve(strict=True)
+            if resolved.is_dir():
+                return resolved
+    raise CommandError(
+        "GIT_CONFLICT",
+        "The configured dataset repository has no safe Git directory.",
+        hint="Pass an existing non-bare Git worktree with --repo.",
+    )
 
 
 def _verify_workspace(path: Path, target: RepositoryRef, base_revision: str) -> None:

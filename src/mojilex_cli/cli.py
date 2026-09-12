@@ -425,6 +425,9 @@ def import_sources(
     repo: Annotated[str | None, typer.Option("--repo")] = None,
     platform: Annotated[str, typer.Option("--platform")] = "auto",
     max_items: Annotated[int | None, typer.Option("--max-items", min=1)] = None,
+    download_concurrency: Annotated[
+        int | None, typer.Option("--download-concurrency", min=1, max=32)
+    ] = None,
     check_media: Annotated[bool, typer.Option("--check-media")] = True,
     fail_fast: Annotated[bool, typer.Option("--fail-fast")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -443,6 +446,7 @@ def import_sources(
                 repo=repo,
                 platform=platform,
                 max_items=max_items,
+                download_concurrency=download_concurrency,
                 check_media=check_media,
                 fail_fast=fail_fast,
             ),

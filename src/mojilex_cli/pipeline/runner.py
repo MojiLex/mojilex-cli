@@ -733,6 +733,11 @@ async def _run_add(
                             totals["items_updated"] += max(0, availability_updates - 1)
                             successful_source_indexes.add(source_index)
                             continue
+                        report_progress(
+                            f"Source {source.native_id}: {source.item_count} media item(s); "
+                            f"download/verification concurrency="
+                            f"{config.telegram.download_concurrency}."
+                        )
                         imported_members = (
                             expected_memberships.get(source.native_id)
                             if expected_memberships is not None
@@ -1267,6 +1272,11 @@ async def _run_import(
                 for source_text in sources:
                     try:
                         source = await adapter.fetch_collection(adapter.canonicalize(source_text))
+                        report_progress(
+                            f"Source {source.native_id}: {source.item_count} media item(s); "
+                            f"download/verification concurrency="
+                            f"{config.telegram.download_concurrency}."
+                        )
                         current_members = tuple(item.native_id for item in source.items)
                         imported_members = (
                             expected_memberships.get(source.native_id)

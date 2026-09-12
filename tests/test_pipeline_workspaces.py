@@ -7,6 +7,7 @@ import pytest
 
 from mojilex_cli.commands.runtime import CommandError
 from mojilex_cli.github import RepositoryRef
+from mojilex_cli.pipeline import workspaces
 from mojilex_cli.pipeline.workspaces import prepare_staging_workspace, snapshot_at_revision
 
 
@@ -91,3 +92,34 @@ def test_staging_workspace_is_persistent_and_bound_to_base(tmp_path: Path) -> No
             base_branch="main",
             base_revision=revision,
         )
+
+
+def test_local_clones_scope_safe_directory_to_the_exact_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, revision = _source_repository(tmp_path)
+    real_git = workspaces._git
+    clone_commands: list[tuple[str, ...]] = []
+
+    def checked_git(*command: str) -> None:
+        values = tuple(command)
+        if "clone" in values:
+            clone_commands.append(values)
+        real_git(*command)
+
+    monkeypatch.setattr(workspaces, "_git", checked_git)
+    staging = prepare_staging_workspace(
+        source,
+        target=RepositoryRef.parse("MojiLex/mojilex"),
+        runs_dir=tmp_path / "r",
+        run_id="mlxrun_" + "b" * 32,
+        base_branch="main",
+        base_revision=revision,
+    )
+    with snapshot_at_revision(staging, revision):
+        pass
+
+    expected_source = f"safe.directory={(source / '.git').resolve().as_posix()}"
+    expected_staging = f"safe.directory={(staging / '.git').resolve().as_posix()}"
+    assert clone_commands[0][:2] == ("-c", expected_source)
+    assert clone_commands[1][:2] == ("-c", expected_staging)
