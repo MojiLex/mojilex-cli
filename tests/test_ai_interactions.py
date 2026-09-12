@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from google import genai
+from pydantic import ValidationError
 
 from mojilex_cli.ai import AIError, AIOutputError, DescriptionBatch, GeminiVisionProvider
 from mojilex_cli.ai.prompts import gemini_request_parameters, gemini_request_parameters_sha256
@@ -30,6 +31,8 @@ def test_transport_schema_is_closed_nonmutating_and_local_contract_remains_bound
         assert set(node) <= SUPPORTED_SCHEMA_KEYS
         assert "enum" not in node
         assert "title" not in node
+        assert "minItems" not in node
+        assert "maxItems" not in node
         if isinstance(node.get("description"), str):
             descriptions.append(node["description"])
         for key, value in node.items():
@@ -52,6 +55,20 @@ def test_transport_schema_is_closed_nonmutating_and_local_contract_remains_bound
     assert gemini_request_parameters_sha256() != jcs_sha256(legacy)
     assert parameters["api_surface"] == "interactions"
     assert parameters["api_version"] == "v1beta"
+
+
+def test_array_bounds_remain_strict_locally_without_provider_complexity() -> None:
+    original = DescriptionBatch.model_json_schema()
+    assert original["properties"]["items"]["minItems"] == 1
+    assert original["properties"]["items"]["maxItems"] == 16
+    for items in ([], _payload()["items"] * 17):
+        with pytest.raises(ValidationError):
+            DescriptionBatch.model_validate({"items": items})
+    # A property with a keyword-like name is data, not a schema constraint.
+    projected = gemini_transport_schema(
+        {"type": "object", "properties": {"maxItems": {"type": "array", "maxItems": 2}}}
+    )
+    assert projected["properties"]["maxItems"] == {"type": "array"}
 
 
 def test_schema_unknown_keywords_fail_closed_without_erasing_property_names() -> None:

@@ -4123,7 +4123,9 @@ def _validate_actual_result(
     if inputs is not None:
         for item in result.batch.items:
             try:
-                inputs.concepts.validate_selection(item.concept_ids)
+                # No matching concept is a valid pending draft, not malformed AI output.
+                # Release validation still requires a complete mapping.
+                inputs.concepts.validate_selection(item.concept_ids, require_complete=False)
             except ValueError as exc:
                 raise AIOutputError("AI concepts do not match the exact candidate set") from exc
 

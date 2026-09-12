@@ -33,7 +33,9 @@ SUPPORTED_SCHEMA_KEYS = frozenset(
         "anyOf",
     }
 )
-_LOCAL_ONLY_KEYS = frozenset({"default", "minLength", "maxLength", "pattern", "title"})
+_LOCAL_ONLY_KEYS = frozenset(
+    {"default", "minLength", "maxLength", "minItems", "maxItems", "pattern", "title"}
+)
 
 
 def gemini_transport_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -42,7 +44,9 @@ def gemini_transport_schema(schema: dict[str, Any]) -> dict[str, Any]:
     Gemini rejects schemas whose state space is too complex.  The complete
     Pydantic schema remains hash-bound and is always enforced after generation;
     the transport projection keeps the object shape while rendering enum values
-    as local descriptions instead of a combinatorial provider constraint.
+    as local descriptions instead of a combinatorial provider constraint. Array
+    bounds also stay local: nested bounded arrays can exceed the provider's
+    grammar complexity even after enum projection.
     """
 
     def project(node: dict[str, Any]) -> dict[str, Any]:
