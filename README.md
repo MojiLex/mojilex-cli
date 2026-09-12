@@ -5,7 +5,10 @@ items, percentage, errors, elapsed time, and active download/processing/AI phase
 A heartbeat repeats every 5 seconds while waiting; elapsed time never counts as
 completed work. Media failures stop queued jobs while already active jobs finish
 safely. Imports checkpoint each completed file, so `mojilex resume RUN_ID` checks
-its bytes again without recomputing valid cached analysis. Progress goes to stderr
+retained frame hashes and source identity, skips completed downloads/renders, and
+starts progress at the completed count. Missing or corrupt frames fall back to source
+verification. Older runs whose frames were already removed need one recreation pass.
+Progress goes to stderr
 (including with `--json`) and is hidden by `--quiet`.
 
 English | [Русский](README_RU.md)
@@ -86,6 +89,22 @@ or validating its response, not that those emojis are complete.
 During per-item recovery, each validated result is checkpointed and counted
 immediately, even if a later item fails.
 
+Telegram allows up to 6 attempts for transient connection failures by default (explicit
+`telegram.max_attempts` values remain unchanged; allowed range 1–8). A broken file
+download restarts with a fresh bounded buffer. Gemini allows up to 3 attempts for
+transient failures, waiting 1 and 2 seconds, with every attempt charged to the existing
+request budget. Authentication and ordinary invalid requests are not retried.
+
+Prompt 1.2.0 explicitly specifies cross-field text, number, style and uncertainty
+rules. Local semantic validation remains strict and reports specific rule codes.
+Validated 1.1.0 results keep their exact original provenance during resume; new
+descriptions use 1.2.0.
+
+Generated PNG frames are retained in `resume-media` under the configured cache
+directory, outside the dataset, and share the run disk budget with transient files.
+They remain available after import for describe/resume. Metadata `cache prune` does
+not delete frame directories; raw downloaded files are still transient.
+
 To process several AI batches at once, set `--ai-concurrency` (1–16):
 
 ```console
@@ -93,7 +112,17 @@ mojilex describe RUN_ID --ai-concurrency 4
 mojilex resume RUN_ID --ai-concurrency 4
 ```
 
-`add` also accepts this option. Without it, saved runs keep their previous
+To download and process more remaining media concurrently, `resume` also accepts
+`--download-concurrency` from 1 to 32:
+
+```console
+mojilex resume RUN_ID --download-concurrency 8 --ai-concurrency 4
+```
+
+Omitting this flag preserves the saved media concurrency. Higher values use more
+CPU and memory; disk and per-file limits still apply.
+
+`add` also accepts `--ai-concurrency`. Without it, saved runs keep their previous
 concurrency; new runs use configuration (default: 1). This changes parallelism
 without resetting request/cost budgets or increasing their limits. Completed
 results are reused on resume. Actual speed depends on model latency and provider

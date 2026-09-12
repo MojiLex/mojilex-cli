@@ -803,6 +803,9 @@ def dedupe_review(
 def resume(
     run_id: Annotated[str, typer.Argument()],
     ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
+    download_concurrency: Annotated[
+        int | None, typer.Option("--download-concurrency", min=1, max=32)
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -817,6 +820,7 @@ def resume(
             lambda: resume_command(
                 run_id,
                 ai_concurrency=ai_concurrency,
+                download_concurrency=download_concurrency,
                 confirmation=_confirmation_callback(
                     yes=yes,
                     non_interactive=non_interactive,

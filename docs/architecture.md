@@ -19,8 +19,16 @@ source reference
 
 Core models, identity generation, canonicalization, review hashing, and dataset operations have no
 dependency on Telegram, Gemini, or GitHub. Integrations implement narrow adapters. A run store
-persists only safe metadata and validated AI results so interrupted work can resume without
-retaining media or paying for a completed description twice.
+persists safe metadata and validated AI results. A separate run-scoped directory outside the
+dataset retains verified generated PNG frames so interrupted work resumes without downloading
+or rendering completed items again. Raw downloaded media remains transient. Retained frames
+are checked against source descriptors, checkpoint hashes, decoder/analysis identity and their
+own byte hashes, and share the run's disk budget with temporary processing. A missing or
+invalid retained entry falls back to downloading and verification.
+
+Completed AI results keep their exact prompt version and routing provenance when a later
+prompt version is introduced. Missing descriptions use the new prompt; cache-only compatibility
+reads cannot spend the request budget or relabel an old result as a new generation.
 
 Rendering/color/alpha facts and fingerprints come only from the local deterministic analyzer.
 Descriptions, literal text, semantic tags, content types, styles, suggested uses, and uncertainties

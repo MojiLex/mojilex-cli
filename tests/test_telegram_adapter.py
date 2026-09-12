@@ -212,7 +212,11 @@ async def test_missing_set_requires_valid_auth_and_bounded_confirmation(http_sta
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = TelegramBotAPI(
-            "12345:abcdefghijklmnopqrstuvwxyz", client=client, sleep=sleep, jitter=lambda _: 0
+            "12345:abcdefghijklmnopqrstuvwxyz",
+            client=client,
+            max_attempts=4,
+            sleep=sleep,
+            jitter=lambda _: 0,
         )
         with pytest.raises(SourceNotFoundError):
             await adapter.fetch_collection(adapter.canonicalize("Pack"))

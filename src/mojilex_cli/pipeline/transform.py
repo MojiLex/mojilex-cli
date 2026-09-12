@@ -52,6 +52,7 @@ class SemanticGenerationMetadata:
     model: str
     prompt_sha256: str
     request_parameters_sha256: str
+    prompt_version: str = PROMPT_VERSION
     qualification_id: str | None = None
     model_revision: str | None = None
     description_profile: str = "standard-v1"
@@ -419,7 +420,7 @@ def _emoji(
             provider=generation.provider,
             model=generation.model,
             model_revision=generation.model_revision,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=generation.prompt_version,
             pipeline_version=PIPELINE_VERSION,
             description_profile=generation.description_profile,
             prompt_sha256=generation.prompt_sha256,

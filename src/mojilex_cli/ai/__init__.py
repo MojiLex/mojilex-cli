@@ -3,6 +3,7 @@
 from .base import (
     AIError,
     AIOutputError,
+    AITransientError,
     AIUsage,
     BilingualDescriptions,
     BudgetExceededError,
@@ -32,6 +33,7 @@ from .registry import ProviderRegistry, default_registry
 __all__ = [
     "AIError",
     "AIOutputError",
+    "AITransientError",
     "AIUsage",
     "BilingualDescriptions",
     "BudgetExceededError",

@@ -90,6 +90,7 @@ class BatchProgress:
             "approval": "проверка бюджета / подтверждение" if ru else "budget check / approval",
             "request": "ожидание ответа AI" if ru else "waiting for AI response",
             "retry": "повтор AI-запроса" if ru else "retrying AI request",
+            "transport_retry": "повторное подключение" if ru else "reconnecting",
             "recovery": "повтор по одному эмодзи" if ru else "retrying individual emojis",
             "verify": "проверка" if ru else "verifying",
         }

@@ -8,6 +8,7 @@ import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import PurePosixPath
+from tempfile import SpooledTemporaryFile
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -38,6 +39,11 @@ _SHORT_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
 _BOT_TOKEN = re.compile(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,}\Z")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _RETRIABLE_STATUS = frozenset({408, 425, 500, 502, 503, 504})
+_RETRIABLE_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
 _MAX_CUSTOM_EMOJI_LOOKUP = 200
 
 
@@ -145,7 +151,7 @@ class TelegramBotAPI(SourceAdapter):
         *,
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 30.0,
-        max_attempts: int = 4,
+        max_attempts: int = 6,
         max_download_bytes: int = MAX_DOWNLOAD_BYTES,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         jitter: Callable[[float], float] | None = None,
@@ -292,7 +298,7 @@ class TelegramBotAPI(SourceAdapter):
         for attempt in range(self._max_attempts):
             try:
                 response = await self._client.post(url, json=dict(params or {}))
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            except _RETRIABLE_TRANSPORT_ERRORS as exc:
                 last_error = exc
                 if attempt + 1 == self._max_attempts:
                     break
@@ -437,72 +443,78 @@ class TelegramBotAPI(SourceAdapter):
     async def _download(self, file_path: str) -> AsyncIterator[bytes]:
         url = f"{self._file_base_url}/{file_path}"
         for attempt in range(self._max_attempts):
-            yielded = False
             try:
-                async with self._client.stream("GET", url) as response:
-                    if (
-                        response.history
-                        or response.url.scheme != "https"
-                        or response.url.host != "api.telegram.org"
-                    ):
-                        raise SourceNetworkError("Telegram media redirect was rejected")
-                    if response.status_code in {401, 403}:
-                        raise SourceAuthError("Telegram rejected the configured credential")
-                    if response.status_code == 404:
-                        raise SourceNotFoundError("Telegram media is no longer available")
-                    if response.status_code == 429:
-                        retry_after = self._retry_after(response, None)
-                        if retry_after is not None and retry_after > MAX_RETRY_AFTER_SECONDS:
-                            raise SourceRateLimitError(
-                                "Telegram media retry requires checkpointing",
-                                retry_after=retry_after,
+                # Nothing from an incomplete response can reach the caller:
+                # retrying a yielded stream would concatenate two file bodies.
+                # Large files spill to disk while each attempt remains bounded.
+                with SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b") as complete:
+                    async with self._client.stream("GET", url) as response:
+                        if (
+                            response.history
+                            or response.url.scheme != "https"
+                            or response.url.host != "api.telegram.org"
+                        ):
+                            raise SourceNetworkError("Telegram media redirect was rejected")
+                        if response.status_code in {401, 403}:
+                            raise SourceAuthError("Telegram rejected the configured credential")
+                        if response.status_code == 404:
+                            raise SourceNotFoundError("Telegram media is no longer available")
+                        if response.status_code == 429:
+                            retry_after = self._retry_after(response, None)
+                            if retry_after is not None and retry_after > MAX_RETRY_AFTER_SECONDS:
+                                raise SourceRateLimitError(
+                                    "Telegram media retry requires checkpointing",
+                                    retry_after=retry_after,
+                                )
+                            if attempt + 1 == self._max_attempts:
+                                raise SourceRateLimitError(
+                                    "Telegram media rate limit persisted after bounded retries",
+                                    retry_after=retry_after,
+                                )
+                            await self._sleep(
+                                retry_after if retry_after is not None else self._delay(attempt)
                             )
-                        if attempt + 1 == self._max_attempts:
-                            raise SourceRateLimitError(
-                                "Telegram media rate limit persisted after bounded retries",
-                                retry_after=retry_after,
-                            )
-                        await self._sleep(
-                            retry_after if retry_after is not None else self._delay(attempt)
-                        )
-                        continue
-                    if response.status_code in _RETRIABLE_STATUS:
-                        if attempt + 1 == self._max_attempts:
+                            continue
+                        if response.status_code in _RETRIABLE_STATUS:
+                            if attempt + 1 == self._max_attempts:
+                                raise SourceNetworkError(
+                                    "Telegram media service remained temporarily unavailable"
+                                )
+                            await self._backoff(attempt)
+                            continue
+                        if not 200 <= response.status_code < 300:
                             raise SourceNetworkError(
-                                "Telegram media service remained temporarily unavailable"
+                                f"Telegram media download returned HTTP {response.status_code}"
                             )
-                        await self._backoff(attempt)
-                        continue
-                    if not 200 <= response.status_code < 300:
-                        raise SourceNetworkError(
-                            f"Telegram media download returned HTTP {response.status_code}"
-                        )
-                    declared = response.headers.get("Content-Length")
-                    if declared is not None:
-                        try:
-                            declared_size = int(declared)
-                        except ValueError as exc:
-                            raise TelegramProtocolError("invalid media Content-Length") from exc
-                        if declared_size < 0:
-                            raise TelegramProtocolError("invalid media Content-Length")
-                        if declared_size > self._max_download_bytes:
-                            raise TelegramMediaLimitError("Telegram media exceeds 20 MiB")
-                    total = 0
-                    async for chunk in response.aiter_bytes(64 * 1024):
-                        total += len(chunk)
-                        if total > self._max_download_bytes:
-                            raise TelegramMediaLimitError("Telegram media exceeds 20 MiB")
-                        if chunk:
-                            yielded = True
-                            yield chunk
+                        declared = response.headers.get("Content-Length")
+                        if declared is not None:
+                            try:
+                                declared_size = int(declared)
+                            except ValueError as exc:
+                                raise TelegramProtocolError("invalid media Content-Length") from exc
+                            if declared_size < 0:
+                                raise TelegramProtocolError("invalid media Content-Length")
+                            if declared_size > self._max_download_bytes:
+                                raise TelegramMediaLimitError("Telegram media exceeds 20 MiB")
+                        total = 0
+                        async for chunk in response.aiter_bytes(64 * 1024):
+                            total += len(chunk)
+                            if total > self._max_download_bytes:
+                                raise TelegramMediaLimitError("Telegram media exceeds 20 MiB")
+                            if chunk:
+                                complete.write(chunk)
+                    complete.seek(0)
+                    while chunk := complete.read(64 * 1024):
+                        yield chunk
                     return
             except (SourceError, TelegramMediaLimitError):
                 raise
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                if yielded or attempt + 1 == self._max_attempts:
+            except _RETRIABLE_TRANSPORT_ERRORS as exc:
+                if attempt + 1 == self._max_attempts:
                     raise SourceNetworkError(
                         redact_text(
-                            f"Telegram media download failed: {type(exc).__name__}",
+                            f"Telegram media download failed after {self._max_attempts} attempts: "
+                            f"{type(exc).__name__}",
                             self._secrets,
                         )
                     ) from None

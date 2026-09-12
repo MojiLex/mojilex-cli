@@ -10,11 +10,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .base import (
+    SEMANTIC_VALIDATION_CODES,
     AIError,
     AIOutputError,
+    AITransientError,
     AIUsage,
     CostEstimate,
     DescriptionBatch,
@@ -164,14 +167,15 @@ class GeminiVisionProvider:
                 timeout=self._timeout_seconds,
             )
         except TimeoutError:
-            raise AIError(
+            raise AITransientError(
                 f"Gemini request timed out after {self._timeout_seconds:g} seconds."
             ) from None
         except AIError:
             raise
         except Exception as exc:
             # Deliberately omit exception text: SDK errors can include request details.
-            raise AIError(
+            error_class = AITransientError if _transient_provider_error(exc) else AIError
+            raise error_class(
                 f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
             ) from None
         if getattr(response, "status", None) != "completed":
@@ -208,9 +212,17 @@ def _safe_validation_summary(exc: ValidationError) -> str:
     """Expose only schema-owned paths and closed error codes, never generated values."""
 
     errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    if any(error["loc"][:1] == ("items",) and len(error["loc"]) > 1 for error in errors):
+        # Pydantic can report too_short after discarding invalid child items.
+        # It does not establish that the provider returned an empty array.
+        errors = [
+            error
+            for error in errors
+            if not (error["loc"] == ("items",) and error["type"] == "too_short")
+        ]
     if any(error["type"] == "json_invalid" for error in errors):
         return "Gemini structured response: invalid_json"
-    known_codes = {
+    known_codes = SEMANTIC_VALIDATION_CODES | {
         "missing",
         "extra_forbidden",
         "model_type",
@@ -340,6 +352,22 @@ def _safe_provider_status(exc: Exception) -> str:
     }:
         parts.append(f"provider_code={provider_code}")
     return " (" + ", ".join(parts) + ")" if parts else ""
+
+
+def _transient_provider_error(exc: Exception) -> bool:
+    """Retry only known network failures and documented transient provider statuses."""
+    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError)):
+        return True
+    code = getattr(exc, "code", getattr(exc, "status_code", None))
+    if type(code) is int and code in {408, 429, 500, 502, 503, 504}:
+        return True
+    status = getattr(exc, "status", None)
+    return isinstance(status, str) and status in {
+        "RESOURCE_EXHAUSTED",
+        "UNAVAILABLE",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL",
+    }
 
 
 def _animated(request: DescriptionRequest) -> bool:

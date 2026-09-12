@@ -41,8 +41,10 @@ from mojilex_cli.ai import (
 )
 from mojilex_cli.ai.concepts import ConceptContext, load_concept_context
 from mojilex_cli.ai.prompts import (
+    current_prompt_version,
     gemini_request_parameters_sha256,
     prompt_sha256,
+    use_prompt_version,
 )
 from mojilex_cli.analysis import (
     AnalysisError,
@@ -101,6 +103,7 @@ from mojilex_cli.media import (
     PIPELINE_VERSION,
     ContactSheet,
     ContactSheetInput,
+    MediaLimitError,
     MediaLimits,
     MediaMetadata,
     MediaProcessor,
@@ -110,6 +113,7 @@ from mojilex_cli.media import (
     build_contact_sheets,
     expected_labels,
 )
+from mojilex_cli.media.resume import RetainedMediaStore
 from mojilex_cli.output.models import RunStatus, StructuredError
 from mojilex_cli.policy import (
     ROUTING_POLICY_VERSION,
@@ -273,7 +277,7 @@ def _load_generation_inputs(
         "schema_version": SCHEMA_VERSION,
         "taxonomy_version": str(snapshot.manifest["taxonomy_version"]),
         "pipeline_version": PIPELINE_VERSION,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": current_prompt_version(),
         "prompt_sha256": prompt_sha256(),
         "request_parameters_sha256": gemini_request_parameters_sha256(),
         "languages": sorted(config.ai.languages),
@@ -373,6 +377,7 @@ def run_resume_sync(
     run_id: str,
     *,
     ai_concurrency: int | None = None,
+    download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -383,6 +388,7 @@ def run_resume_sync(
             run_resume(
                 run_id,
                 ai_concurrency=ai_concurrency,
+                download_concurrency=download_concurrency,
                 confirmation=confirmation,
                 unknown_cost_confirmation=unknown_cost_confirmation,
             )
@@ -1337,6 +1343,8 @@ async def _run_import(
                                 expected_hashes=expected_hashes,
                                 cache=cache,
                                 resume_elements=checkpoint.elements,
+                                config=config,
+                                cache_alias_scope=checkpoint.run_id,
                                 import_only=True,
                                 on_item_completed=record_import_item,
                             )
@@ -1442,6 +1450,7 @@ async def run_resume(
     run_id: str,
     *,
     ai_concurrency: int | None = None,
+    download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -1458,6 +1467,11 @@ async def run_resume(
         options,
         repository=staging_value if use_staging else checkpoint.target_repository,
         ai_concurrency=ai_concurrency if ai_concurrency is not None else options.ai_concurrency,
+        download_concurrency=(
+            download_concurrency
+            if download_concurrency is not None
+            else options.download_concurrency
+        ),
         dry_run=False,
         confirmation=confirmation,
         unknown_cost_confirmation=unknown_cost_confirmation,
@@ -1839,6 +1853,22 @@ async def _prepare_collection_media(
     """Download media and reconcile global IDs already seen in another collection."""
 
     guarded = _cross_collection_existing_emojis(snapshot, collection)
+    retained: RetainedMediaStore | None = None
+    media_run = getattr(processor, "run", None)
+    if cache is not None and cache_alias_scope and isinstance(media_run, TemporaryMediaRun):
+        retained_root = (
+            cache.path.parent
+            / "resume-media"
+            / hashlib.sha256(cache_alias_scope.encode()).hexdigest()
+        )
+        if not retained_root.resolve().is_relative_to(snapshot.root.resolve()):
+            retained = RetainedMediaStore(
+                retained_root,
+                max_bytes=media_run.limits.max_run_temp_bytes,
+                reserve=media_run.reserve_retained_bytes,
+                release=media_run.release_retained_bytes,
+            )
+            media_run.reserve_retained_bytes(retained.size_bytes)
     force_direct_ids = {
         native_id
         for native_id, existing in guarded.items()
@@ -1881,6 +1911,43 @@ async def _prepare_collection_media(
         overwrite_reviewed=overwrite_reviewed,
         backend_candidates=backend_candidates,
     )
+    if (
+        current_prompt_version() != "1.1.0"
+        and config is not None
+        and resume_elements
+        and any(element.ai_cache_key for element in resume_elements.values())
+    ):
+        # Validated old results keep their exact old prompt and routing identity.
+        # Only cache reads run in this scope (their hard request budget is zero).
+        with use_prompt_version("1.1.0"):
+            legacy_inputs = (
+                _load_generation_inputs(snapshot, config)
+                if _GENERATION_INPUTS.get() is not None
+                else None
+            )
+            legacy_token = _GENERATION_INPUTS.set(legacy_inputs)
+            try:
+                legacy_media, legacy_outcomes, _ = await _resume_cached_processed_media(
+                    snapshot,
+                    collection,
+                    processor,
+                    cache=cache,
+                    resume_elements=resume_elements,
+                    config=config,
+                    taxonomy_version=taxonomy_version,
+                    cache_alias_scope=cache_alias_scope,
+                    forbidden_native_ids=set(guarded),
+                    redescribe=redescribe,
+                    overwrite_reviewed=overwrite_reviewed,
+                    backend_candidates=backend_candidates,
+                )
+            finally:
+                _GENERATION_INPUTS.reset(legacy_token)
+        for native_id, outcome in legacy_outcomes.items():
+            if native_id not in cached_outcomes:
+                cached_outcomes[native_id] = outcome
+                cached[native_id] = legacy_media[native_id]
+                cached_analysis.pop(native_id, None)
     if import_only and cache is not None and resume_elements is not None:
         for item in collection.items:
             element = resume_elements.get(item.native_id)
@@ -1905,11 +1972,60 @@ async def _prepare_collection_media(
         verified_semantic_outcomes.clear()
         verified_semantic_outcomes.update(cached_outcomes)
 
+    ready: dict[str, ProcessedMedia] = {}
+    if retained is not None and cache is not None and resume_elements is not None:
+        for item in collection.items:
+            if item.native_id in guarded:
+                continue
+            element = resume_elements.get(item.native_id)
+            if element is None:
+                continue
+            expected_media = _restore_deterministic_cache_entry(
+                cache, item, processor, element, backend_candidates=backend_candidates
+            )
+            if expected_media is None:
+                continue
+            saved = await asyncio.to_thread(
+                retained.get, _source_descriptor_sha256(item), expected_media
+            )
+            if saved is not None:
+                ready[item.native_id] = saved
+        if ready:
+            label = (
+                "Готовые медиа из сохранённого запуска"
+                if current_ui_language() == "ru"
+                else "Completed media restored"
+            )
+            report_progress(f"{label}: {len(ready)}/{len(collection.items)}.")
+
     async def record_unguarded(item: SourceEmoji, value: ProcessedMedia) -> None:
         if item.native_id in guarded or on_item_completed is None:
             return
         _verify_expected_media_hash(item.native_id, value, expected_hashes)
         await on_item_completed(item, value)
+        if retained is not None:
+            try:
+                saving = asyncio.create_task(
+                    asyncio.to_thread(retained.put, _source_descriptor_sha256(item), value)
+                )
+                try:
+                    await asyncio.shield(saving)
+                except BaseException:
+                    # Keep temp files and the run lock alive until the writer
+                    # finishes, even when the user interrupts during checkpointing.
+                    try:
+                        await asyncio.shield(saving)
+                    except BaseException:
+                        pass
+                    raise
+            except MediaLimitError:
+                # Retention is an acceleration only; the metadata checkpoint is
+                # already durable and can safely fall back to source verification.
+                report_progress(
+                    "Недостаточно места в лимите запуска для сохранения кадров."
+                    if current_ui_language() == "ru"
+                    else "Run disk budget has no room for retained frames."
+                )
 
     processed = await _process_media(
         adapter,
@@ -1920,6 +2036,7 @@ async def _prepare_collection_media(
         defer_expected_ids=set(guarded),
         resume_cached=cached,
         resume_analysis=cached_analysis,
+        resume_ready=ready,
         on_item_completed=record_unguarded,
     )
     collection, processed = await _reconcile_cross_collection_media(
@@ -1957,7 +2074,13 @@ async def _resume_cached_processed_media(
     dict[str, _SemanticOutcome],
     dict[str, ProcessedMedia],
 ]:
-    if cache is None or resume_elements is None or config is None or taxonomy_version is None:
+    if (
+        cache is None
+        or resume_elements is None
+        or config is None
+        or taxonomy_version is None
+        or set(config.ai.languages) != {"ru", "en"}
+    ):
         return {}, {}, {}
     qualifications = ModelQualificationRegistry.load(snapshot.root)
     routing_registry = RoutingReasonRegistry.load(snapshot.root)
@@ -2005,23 +2128,14 @@ async def _resume_cached_processed_media(
             or not element.ai_requests
         ):
             continue
-    # Batch membership is decided before cache lookup. If even one item's
-    # deterministic context is unavailable, none of the AI chunks can be
-    # reconstructed without risking a different neighbour set.
-    if len(candidates) != len(collection.items):
-        return (
-            restored,
-            semantic_outcomes,
-            {
-                native_id: candidate
-                for native_id, candidate in candidates.items()
-                if native_id not in restored
-            },
-        )
+    # An unfinished sibling must not hide an exact saved singleton. All cache
+    # reads below still require the original request identity and a zero request
+    # budget: a subset of an old multi-item batch can never become a new batch.
     ai_items = [
         item
         for item in collection.items
-        if _needs_generated_description(
+        if item.native_id in candidates
+        and _needs_generated_description(
             snapshot,
             collection.platform,
             item,
@@ -2040,32 +2154,36 @@ async def _resume_cached_processed_media(
             cache_alias_scope=cache_alias_scope,
             checkpoint_traces=traces,
         )
-        if any(item.native_id not in chunk_traces for item in chunk):
-            continue
-        try:
-            outcomes = await _describe_batch(
-                chunk,
-                candidates,
-                config=config,
-                cache=cache,
-                budget=RequestBudget(max_requests=0),
-                ai_state=_AIState(),
-                api_key=None,
-                temporary=TemporaryMediaRun(),
-                taxonomy_version=taxonomy_version,
-                qualifications=qualifications,
-                routing_registry=routing_registry,
-                cache_alias_scope=cache_alias_scope,
-                resume_request_traces=chunk_traces,
-                require_exact_resume=True,
-            )
-        except (AIError, CacheError, CommandError, ValueError):
-            continue
-        if set(outcomes) != {item.native_id for item in chunk}:
-            continue
-        for item in chunk:
-            restored[item.native_id] = candidates[item.native_id]
-            semantic_outcomes[item.native_id] = outcomes[item.native_id]
+        groups = (
+            [chunk]
+            if all(item.native_id in chunk_traces for item in chunk)
+            else [(item,) for item in chunk if item.native_id in chunk_traces]
+        )
+        for group in groups:
+            try:
+                outcomes = await _describe_batch(
+                    group,
+                    candidates,
+                    config=config,
+                    cache=cache,
+                    budget=RequestBudget(max_requests=0),
+                    ai_state=_AIState(),
+                    api_key=None,
+                    temporary=TemporaryMediaRun(),
+                    taxonomy_version=taxonomy_version,
+                    qualifications=qualifications,
+                    routing_registry=routing_registry,
+                    cache_alias_scope=cache_alias_scope,
+                    resume_request_traces=chunk_traces,
+                    require_exact_resume=True,
+                )
+            except (AIError, CacheError, CommandError, ValueError):
+                continue
+            if set(outcomes) != {item.native_id for item in group}:
+                continue
+            for item in group:
+                restored[item.native_id] = candidates[item.native_id]
+                semantic_outcomes[item.native_id] = outcomes[item.native_id]
     return (
         restored,
         semantic_outcomes,
@@ -2438,6 +2556,7 @@ async def _process_media(
     defer_expected_ids: set[str] | None = None,
     resume_cached: Mapping[str, ProcessedMedia] | None = None,
     resume_analysis: Mapping[str, ProcessedMedia] | None = None,
+    resume_ready: Mapping[str, ProcessedMedia] | None = None,
     on_item_completed: _MediaCompletion | None = None,
 ) -> dict[str, ProcessedMedia]:
     semaphore = asyncio.Semaphore(concurrency)
@@ -2446,6 +2565,12 @@ async def _process_media(
         len(collection.items),
     )
     first_failure: BaseException | None = None
+    ready = {
+        item.native_id: resume_ready[item.native_id]
+        for item in collection.items
+        if resume_ready is not None and item.native_id in resume_ready
+    }
+    progress.completed = len(ready)
 
     async def tracked_stream(item: SourceEmoji) -> AsyncIterator[bytes]:
         progress.phase(item.native_id, "download")
@@ -2513,12 +2638,13 @@ async def _process_media(
 
     async with progress:
         outcomes = await asyncio.gather(
-            *(process_one(item) for item in collection.items), return_exceptions=True
+            *(process_one(item) for item in collection.items if item.native_id not in ready),
+            return_exceptions=True,
         )
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
-    return dict(cast(list[tuple[str, ProcessedMedia]], outcomes))
+    return {**ready, **dict(cast(list[tuple[str, ProcessedMedia]], outcomes))}
 
 
 def _cross_collection_existing_emojis(
@@ -2834,6 +2960,9 @@ async def _descriptions_for_collection(
                 progress.phase(key, event)
                 request_count = f"{budget.requests_used}/{budget.max_requests}"
                 messages = {
+                    "transport_retry": "соединение прервано; повторное подключение"
+                    if ru
+                    else "connection interrupted; reconnecting",
                     "request": f"AI-запрос {request_count}; ожидаем ответ"
                     if ru
                     else f"AI request {request_count}; waiting for response",
@@ -4314,6 +4443,7 @@ def _semantic_outcome(
         generation=SemanticGenerationMetadata(
             provider=result.provider,
             model=result.model,
+            prompt_version=current_prompt_version(),
             model_revision=result.model_revision,
             description_profile="standard-v1",
             prompt_sha256=prompt_sha256(),
@@ -4489,6 +4619,7 @@ def _generation_from_existing(
         return SemanticGenerationMetadata(
             provider=cast(str, provenance.provider),
             model=cast(str, provenance.model),
+            prompt_version=cast(str, provenance.prompt_version),
             model_revision=provenance.model_revision,
             description_profile=cast(str, provenance.description_profile),
             prompt_sha256=cast(str, provenance.prompt_sha256),
@@ -4710,7 +4841,7 @@ def _cache_key(
         provider=config.ai.provider,
         model=model,
         model_revision=model_revision,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=current_prompt_version(),
         prompt_sha256=prompt_sha256(),
         schema_version=SCHEMA_VERSION,
         pipeline_version=PIPELINE_VERSION,

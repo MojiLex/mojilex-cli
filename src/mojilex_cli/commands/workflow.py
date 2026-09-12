@@ -311,6 +311,7 @@ def resume_command(
     run_id: str,
     *,
     ai_concurrency: int | None = None,
+    download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -319,6 +320,11 @@ def resume_command(
         confirmation=confirmation,
         unknown_cost_confirmation=unknown_cost_confirmation,
         **({"ai_concurrency": ai_concurrency} if ai_concurrency is not None else {}),
+        **(
+            {"download_concurrency": download_concurrency}
+            if download_concurrency is not None
+            else {}
+        ),
     )
 
 

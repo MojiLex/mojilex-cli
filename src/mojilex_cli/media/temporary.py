@@ -22,6 +22,7 @@ class TemporaryMediaRun:
         self.bytes_written = 0
         self._accounted: dict[Path, int] = {}
         self._reserved_bytes = 0
+        self._retained_bytes = 0
         self._account_lock = threading.RLock()
 
     def __enter__(self) -> TemporaryMediaRun:
@@ -32,6 +33,7 @@ class TemporaryMediaRun:
         self._accounted.clear()
         self.bytes_written = 0
         self._reserved_bytes = 0
+        self._retained_bytes = 0
         try:
             os.chmod(self.path, 0o700)
         except OSError:
@@ -48,6 +50,25 @@ class TemporaryMediaRun:
         self._accounted.clear()
         self.bytes_written = 0
         self._reserved_bytes = 0
+        self._retained_bytes = 0
+
+    def reserve_retained_bytes(self, count: int) -> None:
+        """Charge resumable frames against the same run disk budget."""
+        if count < 0:
+            raise ValueError("retained byte reservation must be non-negative")
+        with self._account_lock:
+            if (
+                self.bytes_written + self._reserved_bytes + self._retained_bytes + count
+                > self.limits.max_run_temp_bytes
+            ):
+                raise MediaLimitError("run temporary disk limit exceeded")
+            self._retained_bytes += count
+
+    def release_retained_bytes(self, count: int) -> None:
+        with self._account_lock:
+            if not 0 <= count <= self._retained_bytes:
+                raise ValueError("invalid retained byte release")
+            self._retained_bytes -= count
 
     async def write_stream(
         self, chunks: AsyncIterator[bytes], *, expected_size: int | None = None
@@ -71,7 +92,10 @@ class TemporaryMediaRun:
                         raise MediaLimitError("media download exceeds 20 MiB")
                     with self._account_lock:
                         if (
-                            self.bytes_written + self._reserved_bytes + len(chunk)
+                            self.bytes_written
+                            + self._reserved_bytes
+                            + self._retained_bytes
+                            + len(chunk)
                             > self.limits.max_run_temp_bytes
                         ):
                             raise MediaLimitError("run temporary disk limit exceeded")
@@ -130,7 +154,10 @@ class TemporaryMediaRun:
             inspect(Path(value))
         with self._account_lock:
             delta = sum(size - self._accounted.get(path, 0) for path, size in observed.items())
-            if self.bytes_written + self._reserved_bytes + delta > self.limits.max_run_temp_bytes:
+            if (
+                self.bytes_written + self._reserved_bytes + self._retained_bytes + delta
+                > self.limits.max_run_temp_bytes
+            ):
                 raise MediaLimitError("run temporary disk limit exceeded")
             self.bytes_written += delta
             self._accounted.update(observed)

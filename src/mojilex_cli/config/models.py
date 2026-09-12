@@ -39,7 +39,7 @@ class TelegramConfig(BaseModel):
 
     timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     download_concurrency: int = Field(default=4, ge=1, le=32)
-    max_attempts: int = Field(default=4, ge=1, le=8)
+    max_attempts: int = Field(default=6, ge=1, le=8)
 
 
 class AIConfig(BaseModel):

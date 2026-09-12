@@ -11,6 +11,21 @@ from decimal import Decimal
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+SEMANTIC_VALIDATION_CODES = frozenset(
+    {
+        "motion_presence_mismatch",
+        "text_items_must_be_empty",
+        "recognized_text_items_required",
+        "text_content_type_required",
+        "number_content_type_required",
+        "text_uncertainty_required",
+        "style_uncertainty_required",
+        "semantic_tags_repeat_facets",
+        "motion_uncertainty_required",
+    }
+)
 
 
 class AIError(RuntimeError):
@@ -19,6 +34,10 @@ class AIError(RuntimeError):
 
 class AIOutputError(AIError):
     code = "AI_OUTPUT_INVALID"
+
+
+class AITransientError(AIError):
+    """A known transient transport/provider failure eligible for bounded retry."""
 
 
 class BudgetExceededError(AIError):
@@ -168,7 +187,9 @@ class LocalizedDescription(BaseModel):
     @model_validator(mode="after")
     def motion_contract(self) -> LocalizedDescription:
         if (self.motion_status == "described") != (self.motion is not None):
-            raise ValueError("motion is present exactly when motion_status=described")
+            raise PydanticCustomError(
+                "motion_presence_mismatch", "motion is present exactly when motion_status=described"
+            )
         return self
 
 
@@ -268,9 +289,13 @@ class SemanticTextContent(BaseModel):
     @model_validator(mode="after")
     def status_matches_items(self) -> SemanticTextContent:
         if self.status in {"none", "unreadable"} and self.items:
-            raise ValueError(f"text status {self.status} requires empty items")
+            raise PydanticCustomError(
+                "text_items_must_be_empty", "text status none or unreadable requires empty items"
+            )
         if self.status in {"recognized", "partially-recognized"} and not self.items:
-            raise ValueError(f"text status {self.status} requires at least one item")
+            raise PydanticCustomError(
+                "recognized_text_items_required", "recognized text requires at least one item"
+            )
         return self
 
 
@@ -369,18 +394,27 @@ class SemanticFacets(BaseModel):
     @model_validator(mode="after")
     def conditional_facets(self) -> SemanticFacets:
         if self.text_content.status != "none" and "text" not in self.content_types:
-            raise ValueError("visible text requires the text content type")
+            raise PydanticCustomError(
+                "text_content_type_required", "visible text requires the text content type"
+            )
         if any(item.kind == "number" for item in self.text_content.items):
             if "number" not in self.content_types:
-                raise ValueError("numeric text requires the number content type")
+                raise PydanticCustomError(
+                    "number_content_type_required", "numeric text requires the number content type"
+                )
         if self.text_content.status in {"partially-recognized", "unreadable"}:
             if "text" not in self.uncertainties:
-                raise ValueError("partial or unreadable text requires text uncertainty")
+                raise PydanticCustomError(
+                    "text_uncertainty_required",
+                    "partial or unreadable text requires text uncertainty",
+                )
         if (
             {"minimal", "detailed"}.issubset(self.styles)
             or {"outline", "solid"}.issubset(self.styles)
         ) and "style" not in self.uncertainties:
-            raise ValueError("conflicting styles require style uncertainty")
+            raise PydanticCustomError(
+                "style_uncertainty_required", "conflicting styles require style uncertainty"
+            )
         return self
 
 
@@ -429,12 +463,17 @@ class DescriptionItem(BaseModel):
         }
         duplicated = controlled & set(self.semantic_tags)
         if duplicated:
-            raise ValueError("controlled facet values must not be repeated in semantic_tags")
+            raise PydanticCustomError(
+                "semantic_tags_repeat_facets",
+                "controlled facet values must not be repeated in semantic_tags",
+            )
         if (
             self.descriptions.ru.motion_status == "undetermined"
             or self.descriptions.en.motion_status == "undetermined"
         ) and "motion" not in self.facets.uncertainties:
-            raise ValueError("undetermined motion requires motion uncertainty")
+            raise PydanticCustomError(
+                "motion_uncertainty_required", "undetermined motion requires motion uncertainty"
+            )
         return self
 
 
@@ -577,15 +616,26 @@ async def describe_with_recovery(
         if progress_callback is not None:
             progress_callback(event)
 
+    async def request_with_transport_retries(target: DescriptionRequest) -> DescriptionResult:
+        for transport_attempt in range(3):
+            progress("approval")
+            await budget.reserve(provider.estimate(target))
+            progress("request")
+            try:
+                return await provider.describe(target)
+            except AITransientError:
+                if transport_attempt == 2:
+                    raise
+                progress("transport_retry")
+                await asyncio.sleep(2**transport_attempt)
+        raise AssertionError("unreachable transport retry state")
+
     last_error: AIOutputError | None = None
     for attempt in range(2):
         if attempt:
             progress("retry")
-        progress("approval")
-        await budget.reserve(provider.estimate(request))
-        progress("request")
         try:
-            result = await provider.describe(request)
+            result = await request_with_transport_retries(request)
             _validate_result_identity(result, provider.name, request.model)
             validate_result_labels(result, request.expected_labels)
             return result
@@ -610,11 +660,8 @@ async def describe_with_recovery(
         for attempt in range(2):
             if attempt:
                 progress("retry")
-            progress("approval")
-            await budget.reserve(provider.estimate(single))
-            progress("request")
             try:
-                result = await provider.describe(single)
+                result = await request_with_transport_retries(single)
                 _validate_result_identity(result, provider.name, single.model)
                 validate_result_labels(result, (label,))
                 recovered.extend(result.batch.items)

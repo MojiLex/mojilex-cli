@@ -11,7 +11,13 @@ MVP therefore uses allowlists and fail-closed validation at each boundary.
   bounded. Lottie external resources and expressions are rejected.
 - Decoder workers receive a minimal environment and never receive Telegram, Gemini, or GitHub
   credentials.
-- Persistent caches contain hashes, safe metadata, and validated structured AI results only.
+- The SQLite metadata/AI cache contains hashes, safe metadata, and validated AI results only.
+  A separate `resume-media` directory under the configured cache directory retains generated
+  PNG frames for saved runs, never raw downloads. It stays outside the dataset, rejects links,
+  junctions and path traversal, checks exact hashes and rendering identity, and charges retained
+  bytes against the same run disk limit. Missing/corrupt entries are cache misses. Frames remain
+  available after import for a subsequent describe/resume; metadata `cache prune` does not delete
+  these frame directories.
 - Opt-in credential persistence uses the operating-system keyring. API credentials are never
   written to MojiLex configuration files, caches, run state, or repositories; environment values
   take precedence over keyring values.
