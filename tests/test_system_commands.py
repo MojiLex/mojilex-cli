@@ -123,6 +123,9 @@ def test_init_reports_missing_credentials_and_github_access(
     warnings = "\n".join(str(item) for item in result.warnings)
     assert "TELEGRAM_BOT_TOKEN" in warnings
     assert "GEMINI_API_KEY" in warnings
+    assert "interactive `mojilex add ...`" in warnings
+    assert "hidden input" in warnings
+    assert "--non-interactive, --json, or --quiet" in warnings
     assert "missing" in warnings
 
 
@@ -254,7 +257,7 @@ def test_init_wizard_selects_config_and_saves_missing_identity_only_in_config(
 def test_init_existing_file_refuses_before_any_wizard_prompt(tmp_path: Path) -> None:
     target = tmp_path / "config.toml"
     target.write_text("preserved", encoding="utf-8")
-    with pytest.raises(CommandError, match="already exists"):
+    with pytest.raises(CommandError, match="already exists") as captured:
         system.init_command(
             repo="MojiLex/mojilex",
             provider="gemini",
@@ -264,6 +267,10 @@ def test_init_existing_file_refuses_before_any_wizard_prompt(tmp_path: Path) -> 
             force=False,
             prompt=lambda *_args: pytest.fail("must not prompt before overwrite refusal"),
         )
+    assert "Initialization is already complete" in captured.value.error.hint
+    assert "init never requests or stores API keys" in captured.value.error.hint
+    assert "mojilex add <PUBLIC_PACK_URL>" in captured.value.error.hint
+    assert "without --non-interactive" in captured.value.error.hint
     assert target.read_text(encoding="utf-8") == "preserved"
 
 

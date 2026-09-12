@@ -206,7 +206,13 @@ def initialize(
     lang: Annotated[
         list[str] | None, typer.Option("--lang", help="Repeat for each language.")
     ] = None,
-    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    non_interactive: Annotated[
+        bool,
+        typer.Option(
+            "--non-interactive",
+            help="Skip the non-secret setup wizard; init never requests credentials.",
+        ),
+    ] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,

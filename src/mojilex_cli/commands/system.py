@@ -58,7 +58,12 @@ def init_command(
         raise CommandError(
             "CONFIG_INVALID",
             f"Configuration already exists: {target}",
-            hint="Use --force only after reviewing the existing non-secret configuration.",
+            hint=(
+                "Initialization is already complete. init never requests or stores API keys. "
+                "Run `mojilex add <PUBLIC_PACK_URL>` without --non-interactive; it will request "
+                "missing Telegram and Gemini credentials with hidden input. Use --force only "
+                "to replace the reviewed non-secret configuration."
+            ),
         )
     if prompt is not None:
         repo = prompt("Target dataset path or OWNER/REPO", repo).strip()
@@ -146,11 +151,15 @@ def init_command(
     warnings = _check_warnings(checks, required_publication=publish)
     if not credentials.telegram_bot_token:
         warnings.append(
-            "TELEGRAM_BOT_TOKEN is not set; Telegram imports cannot run until it is provided."
+            "TELEGRAM_BOT_TOKEN is not set; an interactive `mojilex add ...` run will request "
+            "it with hidden input and use it only for that run. Set it in the environment for "
+            "--non-interactive, --json, or --quiet."
         )
     if not selected_credential:
         warnings.append(
-            "GEMINI_API_KEY is not set; uncached AI descriptions cannot run until it is provided."
+            "GEMINI_API_KEY is not set; an interactive `mojilex add ...` run will request it "
+            "with hidden input and use it only for that run. Set it in the environment for "
+            "--non-interactive, --json, or --quiet."
         )
     github_ready = bool(checks["github_access"].get("can_publish_pr"))
     ready = bool(

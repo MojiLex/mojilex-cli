@@ -36,6 +36,12 @@ gh auth login
 mojilex init --model gemini-3.8-flash --non-interactive
 ```
 
+`init` creates only non-secret settings and never requests or stores API keys.
+The `--non-interactive` flag also disables the settings wizard. If the
+configuration already exists, do not run `init` again: the next interactive
+`mojilex add ...` command requests missing Telegram and Gemini credentials with
+hidden input and uses them only for that run.
+
 Check a pack without AI requests or publication:
 
 ```console
