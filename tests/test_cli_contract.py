@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from typer.testing import CliRunner
 
-from mojilex_cli.cli import _unknown_cost_callback, app
+from mojilex_cli.cli import _unknown_cost_callback, _with_runtime_secrets, app
 from mojilex_cli.commands import workflow
 from mojilex_cli.commands.runtime import CommandError, CommandResult
 from test_dataset_helpers import write_fixture
@@ -54,6 +55,46 @@ def test_yes_explicitly_authorizes_unknown_ai_cost() -> None:
     authorize = _unknown_cost_callback(yes=True, non_interactive=True, json_output=True)
 
     assert authorize(1)
+
+
+def test_runtime_secret_prompt_is_ephemeral(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    prompted: list[str] = []
+    supplied = iter(("telegram-test-value", "gemini-test-value"))
+
+    def action() -> CommandResult:
+        assert os.environ["TELEGRAM_BOT_TOKEN"] == "telegram-test-value"
+        assert os.environ["GEMINI_API_KEY"] == "gemini-test-value"
+        return CommandResult(result={"ready": True})
+
+    result = _with_runtime_secrets(
+        action,
+        names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
+        prompt=lambda label: prompted.append(label) or next(supplied),
+    )
+
+    assert result.result == {"ready": True}
+    assert prompted == ["Telegram Bot API token", "Gemini API key"]
+    assert os.environ.get("TELEGRAM_BOT_TOKEN") is None
+    assert os.environ.get("GEMINI_API_KEY") is None
+
+
+def test_runtime_secret_prompt_preserves_existing_environment(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "existing-test-value")
+
+    result = _with_runtime_secrets(
+        lambda: CommandResult(
+            result={
+                "token": os.environ["TELEGRAM_BOT_TOKEN"],
+            }
+        ),
+        names=("TELEGRAM_BOT_TOKEN",),
+        prompt=lambda _label: pytest.fail("existing credential must not be prompted"),
+    )
+
+    assert result.result == {"token": "existing-test-value"}
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "existing-test-value"
 
 
 def test_sensitive_add_prompt_is_deferred_until_exact_plan_exists(monkeypatch) -> None:

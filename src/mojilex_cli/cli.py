@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
@@ -137,6 +138,49 @@ def _unknown_cost_callback(
     return confirm
 
 
+def _with_runtime_secrets(
+    action: Callable[[], CommandResult],
+    *,
+    names: Sequence[str],
+    prompt: Callable[[str], str] | None,
+) -> CommandResult:
+    """Prompt for missing credentials without persisting them after the command."""
+
+    previous = {name: os.environ.get(name) for name in names}
+    labels = {
+        "TELEGRAM_BOT_TOKEN": "Telegram Bot API token",
+        "GEMINI_API_KEY": "Gemini API key",
+    }
+    try:
+        if prompt is not None:
+            for name in names:
+                if os.environ.get(name):
+                    continue
+                prompted_value = prompt(labels.get(name, name)).strip()
+                if not prompted_value:
+                    raise CommandError(
+                        "CREDENTIAL_MISSING",
+                        f"{name} was not provided.",
+                        hint="Enter the credential or set it in the process environment.",
+                    )
+                os.environ[name] = prompted_value
+        return action()
+    finally:
+        for name, previous_value in previous.items():
+            if previous_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous_value
+
+
+def _secret_prompt(
+    *, non_interactive: bool, json_output: bool, quiet: bool
+) -> Callable[[str], str] | None:
+    if non_interactive or json_output or quiet or not sys.stdin.isatty():
+        return None
+    return lambda label: str(typer.prompt(label, hide_input=True, err=True))
+
+
 @app.callback()
 def root(
     version: Annotated[
@@ -167,6 +211,8 @@ def initialize(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
+    """Create non-secret settings; authoring commands request missing credentials."""
+
     execute(
         "init",
         lambda: init_command(
@@ -232,6 +278,8 @@ def add(
     no_color: Annotated[bool, typer.Option("--no-color")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
 ) -> None:
+    """Analyze public emoji packs and publish validated metadata."""
+
     from mojilex_cli.commands.workflow import add_command, collect_sources
 
     def action():  # type: ignore[no-untyped-def]
@@ -278,9 +326,20 @@ def add(
             ),
         )
 
+    required_secrets = (
+        ("TELEGRAM_BOT_TOKEN",) if dry_run else ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY")
+    )
     execute(
         "add",
-        action,
+        lambda: _with_runtime_secrets(
+            action,
+            names=required_secrets,
+            prompt=_secret_prompt(
+                non_interactive=non_interactive,
+                json_output=json_output,
+                quiet=quiet,
+            ),
+        ),
         json_output=json_output,
         quiet=quiet,
         debug=debug,
@@ -301,17 +360,27 @@ def import_sources(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
+    """Download and verify media in a staging run without AI or publication."""
+
     from mojilex_cli.commands.workflow import import_command
 
     execute(
         "import",
-        lambda: import_command(
-            sources,
-            repo=repo,
-            platform=platform,
-            max_items=max_items,
-            check_media=check_media,
-            fail_fast=fail_fast,
+        lambda: _with_runtime_secrets(
+            lambda: import_command(
+                sources,
+                repo=repo,
+                platform=platform,
+                max_items=max_items,
+                check_media=check_media,
+                fail_fast=fail_fast,
+            ),
+            names=("TELEGRAM_BOT_TOKEN",),
+            prompt=_secret_prompt(
+                non_interactive=False,
+                json_output=json_output,
+                quiet=quiet,
+            ),
         ),
         json_output=json_output,
         quiet=quiet,
@@ -333,21 +402,31 @@ def describe(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
+    """Generate AI metadata for a staged run without publishing it."""
+
     from mojilex_cli.commands.workflow import describe_command
 
     execute(
         "describe",
-        lambda: describe_command(
-            selectors,
-            provider=provider,
-            model=model,
-            max_ai_requests=max_ai_requests,
-            max_cost_usd=_decimal(max_cost_usd),
-            allow_unknown_cost=allow_unknown_cost,
-            unknown_cost_confirmation=_unknown_cost_callback(
-                yes=yes,
+        lambda: _with_runtime_secrets(
+            lambda: describe_command(
+                selectors,
+                provider=provider,
+                model=model,
+                max_ai_requests=max_ai_requests,
+                max_cost_usd=_decimal(max_cost_usd),
+                allow_unknown_cost=allow_unknown_cost,
+                unknown_cost_confirmation=_unknown_cost_callback(
+                    yes=yes,
+                    non_interactive=non_interactive,
+                    json_output=json_output,
+                ),
+            ),
+            names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
+            prompt=_secret_prompt(
                 non_interactive=non_interactive,
                 json_output=json_output,
+                quiet=quiet,
             ),
         ),
         json_output=json_output,
@@ -408,6 +487,8 @@ def submit(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
+    """Validate and publish a staged run or local data change."""
+
     from mojilex_cli.commands.workflow import submit_command
 
     def action():  # type: ignore[no-untyped-def]
@@ -641,17 +722,25 @@ def resume(
 
     execute(
         "resume",
-        lambda: resume_command(
-            run_id,
-            confirmation=_confirmation_callback(
-                yes=yes,
-                non_interactive=non_interactive,
-                json_output=json_output,
+        lambda: _with_runtime_secrets(
+            lambda: resume_command(
+                run_id,
+                confirmation=_confirmation_callback(
+                    yes=yes,
+                    non_interactive=non_interactive,
+                    json_output=json_output,
+                ),
+                unknown_cost_confirmation=_unknown_cost_callback(
+                    yes=yes,
+                    non_interactive=non_interactive,
+                    json_output=json_output,
+                ),
             ),
-            unknown_cost_confirmation=_unknown_cost_callback(
-                yes=yes,
+            names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
+            prompt=_secret_prompt(
                 non_interactive=non_interactive,
                 json_output=json_output,
+                quiet=quiet,
             ),
         ),
         json_output=json_output,

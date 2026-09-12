@@ -2,6 +2,49 @@
 
 English | [Русский](README_RU.md)
 
+## Quick start
+
+Normal use does not require cloning either repository or creating an IDE
+project. Install the CLI from GitHub with one
+[`uv`](https://docs.astral.sh/uv/getting-started/installation/) command:
+
+```console
+uv tool install git+https://github.com/MojiLex/mojilex-cli.git@main
+```
+
+If `mojilex` is not found afterward, run `uv tool update-shell` and open a new
+terminal.
+
+Authenticate with GitHub once and create the non-secret configuration:
+
+```console
+gh auth login
+mojilex init --model gemini-3.8-flash --non-interactive
+```
+
+Check a pack without AI requests or publication:
+
+```console
+mojilex add https://t.me/addemoji/PackName --dry-run --check-media
+```
+
+Analyze the pack and upload the result as a GitHub pull request:
+
+```console
+mojilex add https://t.me/addemoji/PackName
+```
+
+Replace `PackName` with the target set name. `add` temporarily clones the data
+repository, downloads and validates the emoji, creates Russian and English
+metadata, validates the complete result, creates a commit, and opens a pull
+request. Missing Telegram and Gemini credentials are requested through hidden
+interactive prompts and remain in memory only for that command.
+
+Git, GitHub CLI (`gh`), and the applicable media backends are required. WebP
+works after the one-command install. Run `mojilex doctor` to check WebM and TGS;
+if `ready` is `false`, follow [Media prerequisites](docs/media-prerequisites.md)
+for the backend named in the report.
+
 `mojilex` imports public Telegram custom-emoji sets, prepares temporary media for
 deterministic analysis, creates Russian and English semantic metadata, finds duplicate
 candidates, validates the
@@ -18,7 +61,10 @@ This repository contains the `0.2.0` MVP. It adds bounded, offline, read-only ac
 explicitly selected `distribution-v1` snapshot. The data format has its own independently
 versioned JSON Schema (`1.0.0`). Python 3.11 or newer is required.
 
-## Installation
+## Development installation from source
+
+This section is for CLI development. Normal users should use the one-command
+installation in Quick start.
 
 Clone the CLI and data repositories side by side:
 
@@ -72,76 +118,31 @@ not supported. See
 environment is ready only when the reported `ready` value is `true`. A TGS
 import requires an available `mojilex-rlottie-rgba` adapter.
 
-## Quick start
+## Separate analysis and submission
 
-1. Provide credentials through the process environment before initialization or
-   import:
+The `add` command above is the normal path and performs analysis and pull-request
+publication in one run. To review the generated change before uploading it, use
+the staged workflow:
 
-   ```text
-   TELEGRAM_BOT_TOKEN
-   GEMINI_API_KEY
-   GH_TOKEN or GITHUB_TOKEN (only for GitHub publication)
-   ```
+```console
+mojilex import https://t.me/addemoji/PackName
+mojilex describe RUN_ID
+mojilex submit RUN_ID
+```
 
-   `init` deliberately does not request or store secrets. It only reports
-   whether the required variables are present. Never put credentials in
-   `.mojilex.toml` or command-line arguments.
+Use the `RUN_ID` printed by `import` in the next two commands. Interactive
+commands request missing Telegram and Gemini credentials through hidden prompts.
+For JSON, quiet, piped-input, or non-interactive operation, set
+`TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` in the process environment instead.
+`init` does not request secrets because it exits after writing non-secret
+configuration. Existing `gh auth login` authorization is sufficient for normal
+pull-request publication; `GH_TOKEN` or `GITHUB_TOKEN` is intended primarily for
+automation.
 
-   On Windows PowerShell, read secrets into the current process without
-   displaying them or placing their values in command history:
-
-   ```powershell
-   function Set-SessionSecret([string]$Name) {
-       $secure = Read-Host "Enter $Name" -AsSecureString
-       $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-       try {
-           $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
-           [Environment]::SetEnvironmentVariable($Name, $value, "Process")
-       }
-       finally {
-           [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-       }
-   }
-
-   Set-SessionSecret "TELEGRAM_BOT_TOKEN"
-   Set-SessionSecret "GEMINI_API_KEY"
-   ```
-
-   On Linux or macOS, use `read -s` and export the resulting variables in the
-   same shell session.
-
-2. Initialize a non-secret project configuration for the adjacent data
-   repository:
-
-   ```console
-   mojilex init --repo ../mojilex --provider gemini --model "EXACT_MODEL_ID" --publish local --lang ru --lang en --config .mojilex.toml --non-interactive
-   ```
-
-   The model ID is deliberately explicit so the selected provider target is visible in the
-   configuration and provenance. `init` writes only non-secret settings, runs the same real media
-   fixture probes as `doctor`, and reports credential, Git identity, and GitHub access readiness.
-   Running `mojilex init` without `--non-interactive` opens a setup wizard for
-   non-secret settings. If Git identity is missing, the wizard can save it only
-   in the MojiLex configuration; it never changes global Git settings. JSON,
-   quiet and piped-input modes never prompt; a missing model is an error.
-
-3. Preview an import without AI calls or persistent changes:
-
-   ```console
-   mojilex add https://t.me/addemoji/PackName --repo ../mojilex --dry-run
-   ```
-
-4. Import and describe locally, or create a contributor pull request:
-
-   ```console
-   mojilex add https://t.me/addemoji/PackName --repo ../mojilex --publish local
-   mojilex add https://t.me/addemoji/PackName --repo MojiLex/mojilex --publish pr
-   ```
-
-Direct pushes are deliberately separate and require `--direct-push`, write access, successful
-checks for the exact candidate commit, an unchanged base branch, ruleset bypass permission, and a
-late confirmation that shows the final commit SHA and exact diff paths. Repeated submission of one
-run updates its existing PR branch with an ordinary non-force descendant commit.
+Direct pushes remain separate and require `--direct-push`, write access,
+successful checks for the exact candidate commit, an unchanged base branch,
+ruleset bypass permission, and a late confirmation showing the final commit SHA
+and exact paths. Force push is never used.
 
 ## Commands
 
