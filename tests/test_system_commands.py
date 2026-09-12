@@ -64,7 +64,7 @@ def test_init_checks_runtime_and_writes_only_non_secret_configuration(
     monkeypatch.setattr(
         system,
         "_effective_git_identity",
-        lambda _repository: ("Misha20062006", "perogovskij@gmail.com"),
+        lambda _repository: ("Example Developer", "developer@example.test"),
     )
     monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: _checks())
 
@@ -89,8 +89,8 @@ def test_init_checks_runtime_and_writes_only_non_secret_configuration(
     parsed = tomllib.loads(raw)
     assert parsed["ai"]["model"] == "gemini-explicit-model"
     assert parsed["git_identity"] == {
-        "name": "Misha20062006",
-        "email": "perogovskij@gmail.com",
+        "name": "Example Developer",
+        "email": "developer@example.test",
     }
 
 
@@ -102,7 +102,7 @@ def test_init_reports_missing_credentials_and_github_access(
     monkeypatch.setattr(
         system,
         "_effective_git_identity",
-        lambda _repository: ("Misha20062006", "perogovskij@gmail.com"),
+        lambda _repository: ("Example Developer", "developer@example.test"),
     )
     monkeypatch.setattr(
         system,

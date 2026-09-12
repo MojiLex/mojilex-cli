@@ -23,7 +23,7 @@ Telegram не сохраняются в Git. В репозиторий данн�
 Используются два соседних репозитория:
 
 ```text
-PycharmProjects\
+projects\
 ├── mojilex-cli\   код утилиты, единственный проект PyCharm
 └── mojilex\       данные и JSON Schema
 ```
@@ -50,7 +50,7 @@ PycharmProjects\
 
 ## Установка из исходников в Windows
 
-Откройте PowerShell в `C:\Users\Misha20062006\PycharmProjects\mojilex-cli`:
+Откройте PowerShell в корне клонированного репозитория `mojilex-cli`:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -237,9 +237,12 @@ mojilex snapshot verify PATH           проверка готового snapsho
 
 Не отключайте проверку для всех репозиториев. Добавьте только точные пути:
 
+Если PowerShell открыт в корне `mojilex-cli`, добавьте только два точных
+разрешённых пути:
+
 ```powershell
-git config --global --add safe.directory C:/Users/Misha20062006/PycharmProjects/mojilex-cli
-git config --global --add safe.directory C:/Users/Misha20062006/PycharmProjects/mojilex
+git config --global --add safe.directory (Resolve-Path .).Path
+git config --global --add safe.directory (Resolve-Path ..\mojilex).Path
 ```
 
 ### Не обрабатывается TGS или WebM
