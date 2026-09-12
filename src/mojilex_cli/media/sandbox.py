@@ -116,7 +116,10 @@ class SafeMediaWorker:
         except subprocess.TimeoutExpired:
             _terminate_worker(process, job)
             job = None
-            raise MediaRenderError("media worker exceeded the 30 second wall-time limit") from None
+            raise MediaRenderError(
+                f"media worker exceeded the {self.limits.worker_timeout_seconds:g} "
+                "second wall-time limit"
+            ) from None
         except BaseException:
             _terminate_worker(process, job)
             job = None

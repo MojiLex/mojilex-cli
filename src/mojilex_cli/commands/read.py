@@ -373,9 +373,7 @@ def register_read_commands(app: typer.Typer) -> None:
     app.command("snapshots", help="List release snapshots from the configured catalog.")(
         snapshots_cli
     )
-    app.command("search", help="Search a pinned local snapshot by text and filters.")(
-        search_cli
-    )
+    app.command("search", help="Search a pinned local snapshot by text and filters.")(search_cli)
     app.command("get", help="Read one emoji record from a pinned local snapshot.")(get_cli)
     app.command(
         "get-collection",
@@ -385,9 +383,7 @@ def register_read_commands(app: typer.Typer) -> None:
         "resolve",
         help="Resolve a platform-native reference to a canonical MojiLex identity.",
     )(resolve_cli)
-    app.command("similar", help="Find related or duplicate candidates for an emoji.")(
-        similar_cli
-    )
+    app.command("similar", help="Find related or duplicate candidates for an emoji.")(similar_cli)
 
 
 @dataclass(slots=True)
@@ -921,9 +917,7 @@ def snapshots_cli(
     )
 
 
-@snapshot_app.command(
-    "pull", help="Fetch a named immutable snapshot from the configured mirror."
-)
+@snapshot_app.command("pull", help="Fetch a named immutable snapshot from the configured mirror.")
 def snapshot_pull_cli(
     snapshot_id: Annotated[str, typer.Argument()] = "latest",
     json_output: Annotated[bool, typer.Option("--json")] = False,

@@ -601,6 +601,36 @@ def test_worker_base_exception_invokes_tree_termination(
     assert terminated and terminated[0][0] is process
 
 
+def test_worker_timeout_reports_configured_limit_and_terminates_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.webp"
+    Image.new("RGB", (2, 2), "red").save(source, "WEBP")
+
+    class FakeProcess:
+        returncode = None
+
+        def communicate(self, *, timeout: float) -> tuple[bytes, bytes]:
+            assert timeout == 2.5
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+    process = FakeProcess()
+    job = object()
+    terminated: list[object] = []
+    monkeypatch.setattr(sandbox_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(sandbox_module, "_attach_windows_job", lambda *args: job)
+    monkeypatch.setattr(
+        sandbox_module,
+        "_terminate_worker",
+        lambda child, attached_job: terminated.append((child, attached_job)),
+    )
+    with pytest.raises(MediaError, match=r"exceeded the 2\.5 second wall-time limit"):
+        SafeMediaWorker(MediaLimits(worker_timeout_seconds=2.5)).process(
+            source, tmp_path / "output", expected_format="webp"
+        )
+    assert terminated == [(process, job)]
+
+
 def test_unix_termination_targets_worker_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[int, int]] = []
 

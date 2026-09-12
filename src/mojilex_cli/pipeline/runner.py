@@ -8,7 +8,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -62,6 +62,7 @@ from mojilex_cli.cache import (
 from mojilex_cli.cache import (
     media_digest as cache_media_digest,
 )
+from mojilex_cli.commands.progress import BatchProgress
 from mojilex_cli.commands.runtime import (
     CommandError,
     CommandResult,
@@ -95,6 +96,7 @@ from mojilex_cli.github import (
     PublicationPhase,
     RepositoryRef,
 )
+from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.media import (
     PIPELINE_VERSION,
     ContactSheet,
@@ -1261,6 +1263,13 @@ async def _run_import(
             cast(Path, config.cache_dir) / "cache-v1.sqlite3",
             repository_root=workspace.root,
         )
+
+        async def record_import_item(item: SourceEmoji, value: ProcessedMedia) -> None:
+            nonlocal checkpoint
+            _cache_deterministic_analysis(cache, item, value)
+            checkpoint = _checkpoint_media_item(checkpoint, item, value)
+            store.save(checkpoint)
+
         try:
             async with TelegramBotAPI(
                 credentials.telegram_bot_token,
@@ -1297,6 +1306,22 @@ async def _run_import(
                                 hint="Raise the explicit item budget and retry.",
                                 source=source.canonical_url,
                             )
+                        memberships = _membership_map(
+                            checkpoint.safe_parameters.get("source_memberships")
+                        )
+                        memberships[source.native_id] = current_members
+                        checkpoint = checkpoint.model_copy(
+                            update={
+                                "safe_parameters": {
+                                    **checkpoint.safe_parameters,
+                                    "source_memberships": {
+                                        key: list(value)
+                                        for key, value in sorted(memberships.items())
+                                    },
+                                }
+                            }
+                        )
+                        store.save(checkpoint)
                         with TemporaryMediaRun(limits=_media_limits(config)) as temporary:
                             source, processed = await _prepare_collection_media(
                                 initial,
@@ -1305,20 +1330,13 @@ async def _run_import(
                                 MediaProcessor(temporary),
                                 concurrency=config.telegram.download_concurrency,
                                 expected_hashes=expected_hashes,
+                                cache=cache,
+                                resume_elements=checkpoint.elements,
+                                import_only=True,
+                                on_item_completed=record_import_item,
                             )
                             _cache_deterministic_analyses(cache, source, processed)
                         checkpoint = _checkpoint_media(checkpoint, source, processed)
-                        memberships = _membership_map(
-                            checkpoint.safe_parameters.get("source_memberships")
-                        )
-                        memberships[source.native_id] = current_members
-                        safe_parameters = dict(checkpoint.safe_parameters)
-                        safe_parameters["source_memberships"] = {
-                            key: list(value) for key, value in sorted(memberships.items())
-                        }
-                        checkpoint = checkpoint.model_copy(
-                            update={"safe_parameters": safe_parameters}
-                        )
                         store.save(checkpoint)
                         imported += 1
                     except Exception as exc:
@@ -1804,6 +1822,7 @@ async def _prepare_collection_media(
     overwrite_reviewed: bool = False,
     verified_semantic_outcomes: dict[str, _SemanticOutcome] | None = None,
     on_item_completed: _MediaCompletion | None = None,
+    import_only: bool = False,
 ) -> tuple[SourceCollection, dict[str, ProcessedMedia]]:
     """Download media and reconcile global IDs already seen in another collection."""
 
@@ -1816,6 +1835,23 @@ async def _prepare_collection_media(
         and element.media_sha256
         and element.media_sha256 != _emoji_media_hashes(existing)
     }
+    backend_candidates: dict[str, tuple[str, ...]] = {}
+    if cache is not None and resume_elements:
+        formats = sorted(
+            {item.media_format for item in collection.items if item.native_id in resume_elements}
+        )
+        async with BatchProgress(
+            "Проверка кэша" if current_ui_language() == "ru" else "Checking cache", len(formats)
+        ) as checking:
+            for media_format in formats:
+                checking.phase(media_format, "verify")
+                try:
+                    backend_candidates[media_format] = await asyncio.to_thread(
+                        _decoder_backend_candidates, media_format, processor
+                    )
+                except AnalysisError:
+                    backend_candidates[media_format] = ()
+                checking.finish(media_format)
     cached, cached_outcomes, cached_analysis = await _resume_cached_processed_media(
         snapshot,
         collection,
@@ -1831,7 +1867,28 @@ async def _prepare_collection_media(
         forbidden_native_ids=set(guarded),
         redescribe=redescribe,
         overwrite_reviewed=overwrite_reviewed,
+        backend_candidates=backend_candidates,
     )
+    if import_only and cache is not None and resume_elements is not None:
+        for item in collection.items:
+            element = resume_elements.get(item.native_id)
+            if element is None or item.native_id in guarded:
+                continue
+            restored = _restore_deterministic_cache_entry(
+                cache, item, processor, element, backend_candidates=backend_candidates
+            )
+            if restored is not None:
+                cached[item.native_id] = restored
+        if cached:
+            report_progress(
+                f"{'Сохранённый анализ' if current_ui_language() == 'ru' else 'Saved analysis'}: "
+                f"{len(cached)}/{len(collection.items)}; "
+                + (
+                    "повторная проверка файлов без рендера."
+                    if current_ui_language() == "ru"
+                    else "rechecking file hashes without rendering."
+                )
+            )
     if verified_semantic_outcomes is not None:
         verified_semantic_outcomes.clear()
         verified_semantic_outcomes.update(cached_outcomes)
@@ -1882,6 +1939,7 @@ async def _resume_cached_processed_media(
     forbidden_native_ids: set[str],
     redescribe: str,
     overwrite_reviewed: bool,
+    backend_candidates: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[
     dict[str, ProcessedMedia],
     dict[str, _SemanticOutcome],
@@ -1895,6 +1953,8 @@ async def _resume_cached_processed_media(
     semantic_outcomes: dict[str, _SemanticOutcome] = {}
     candidates: dict[str, ProcessedMedia] = {}
     traces = _request_traces_from_checkpoint(collection.items, resume_elements)
+    if backend_candidates is None:
+        backend_candidates = {}
     for item in collection.items:
         element = resume_elements.get(item.native_id)
         if (
@@ -1912,6 +1972,7 @@ async def _resume_cached_processed_media(
             item,
             processor,
             element,
+            backend_candidates=backend_candidates,
         )
         if candidate is None:
             continue
@@ -2230,6 +2291,8 @@ def _restore_deterministic_cache_entry(
     source: SourceEmoji,
     processor: MediaProcessor,
     checkpoint: ElementCheckpoint,
+    *,
+    backend_candidates: dict[str, tuple[str, ...]] | None = None,
 ) -> ProcessedMedia | None:
     key = checkpoint.deterministic_cache_key
     descriptor_sha256 = checkpoint.source_descriptor_sha256
@@ -2295,7 +2358,9 @@ def _restore_deterministic_cache_entry(
             or analysis.color_profile_sha256 != color_profile.sha256
             or analysis.dedupe_profile != dedupe_profile.profile_id
             or analysis.dedupe_profile_sha256 != dedupe_profile.sha256
-            or not _decoder_backend_is_current(source.media_format, analysis, processor)
+            or not _decoder_backend_is_current(
+                source.media_format, analysis, processor, backend_candidates=backend_candidates
+            )
         ):
             return None
         restored = ProcessedMedia(
@@ -2317,7 +2382,17 @@ def _decoder_backend_is_current(
     media_format: str,
     analysis: DeterministicMediaAnalysis,
     processor: MediaProcessor,
+    *,
+    backend_candidates: dict[str, tuple[str, ...]] | None = None,
 ) -> bool:
+    if backend_candidates is None:
+        backend_candidates = {}
+    if media_format not in backend_candidates:
+        backend_candidates[media_format] = _decoder_backend_candidates(media_format, processor)
+    return analysis.decoder_backend_fingerprint in backend_candidates[media_format]
+
+
+def _decoder_backend_candidates(media_format: str, processor: MediaProcessor) -> tuple[str, ...]:
     worker = processor.worker
     candidates: tuple[str, ...]
     if media_format == "webp":
@@ -2337,8 +2412,8 @@ def _decoder_backend_is_current(
             for preserve_alpha in (False, True)
         )
     else:
-        return False
-    return analysis.decoder_backend_fingerprint in candidates
+        return ()
+    return candidates
 
 
 async def _process_media(
@@ -2354,48 +2429,80 @@ async def _process_media(
     on_item_completed: _MediaCompletion | None = None,
 ) -> dict[str, ProcessedMedia]:
     semaphore = asyncio.Semaphore(concurrency)
+    progress = BatchProgress(
+        f"{'Медиа' if current_ui_language() == 'ru' else 'Media'} {collection.native_id}",
+        len(collection.items),
+    )
+    first_failure: BaseException | None = None
+
+    async def tracked_stream(item: SourceEmoji) -> AsyncIterator[bytes]:
+        progress.phase(item.native_id, "download")
+        async for chunk in adapter.fetch_media(item):
+            yield chunk
+        progress.phase(item.native_id, "render")
 
     async def process_one(item: SourceEmoji) -> tuple[str, ProcessedMedia]:
+        nonlocal first_failure
         expected = expected_hashes.get(item.native_id) if expected_hashes else None
         if defer_expected_ids is not None and item.native_id in defer_expected_ids:
             expected = None
         async with semaphore:
-            cached = resume_cached.get(item.native_id) if resume_cached is not None else None
-            analysis = resume_analysis.get(item.native_id) if resume_analysis is not None else None
-            if cached is not None:
-                digest, size = await processor.verify_stream(
-                    adapter.fetch_media(item),
-                    declared_size=item.declared_file_size,
-                    expected_sha256=cached.metadata.sha256,
+            if first_failure is not None:
+                raise first_failure
+            try:
+                return await process_item(item, expected)
+            except BaseException as exc:
+                if not isinstance(exc, asyncio.CancelledError):
+                    progress.finish(item.native_id, failed=True)
+                    if first_failure is None:
+                        first_failure = exc
+                        report_progress(
+                            f"{structured_exception(exc).code}: {structured_exception(exc).message}"
+                        )
+                raise
+
+    async def process_item(
+        item: SourceEmoji, expected: tuple[str, ...] | None
+    ) -> tuple[str, ProcessedMedia]:
+        cached = resume_cached.get(item.native_id) if resume_cached is not None else None
+        analysis = resume_analysis.get(item.native_id) if resume_analysis is not None else None
+        if cached is not None:
+            digest, size = await processor.verify_stream(
+                tracked_stream(item),
+                declared_size=item.declared_file_size,
+                expected_sha256=cached.metadata.sha256,
+            )
+            if digest != cached.metadata.sha256 or size != cached.metadata.byte_size:
+                raise SourceChangedDuringRunError(
+                    "downloaded media no longer matches the deterministic cache"
                 )
-                if digest != cached.metadata.sha256 or size != cached.metadata.byte_size:
-                    raise SourceChangedDuringRunError(
-                        "downloaded media no longer matches the deterministic cache"
-                    )
-                value = cached
-            elif analysis is not None:
-                value = await processor.process_stream_reusing_analysis(
-                    adapter.fetch_media(item),
-                    expected_format=item.media_format,
-                    declared_size=item.declared_file_size,
-                    cached=analysis,
-                    needs_repainting=item.needs_repainting,
-                )
-            else:
-                value = await processor.process_stream(
-                    adapter.fetch_media(item),
-                    expected_format=item.media_format,
-                    declared_size=item.declared_file_size,
-                    expected_sha256=expected[0] if expected and len(expected) == 1 else None,
-                    needs_repainting=item.needs_repainting,
-                )
-            if on_item_completed is not None:
-                await on_item_completed(item, value)
+            value = cached
+        elif analysis is not None:
+            value = await processor.process_stream_reusing_analysis(
+                tracked_stream(item),
+                expected_format=item.media_format,
+                declared_size=item.declared_file_size,
+                cached=analysis,
+                needs_repainting=item.needs_repainting,
+            )
+        else:
+            value = await processor.process_stream(
+                tracked_stream(item),
+                expected_format=item.media_format,
+                declared_size=item.declared_file_size,
+                expected_sha256=expected[0] if expected and len(expected) == 1 else None,
+                needs_repainting=item.needs_repainting,
+            )
+        if on_item_completed is not None:
+            progress.phase(item.native_id, "save")
+            await on_item_completed(item, value)
+        progress.finish(item.native_id)
         return item.native_id, value
 
-    outcomes = await asyncio.gather(
-        *(process_one(item) for item in collection.items), return_exceptions=True
-    )
+    async with progress:
+        outcomes = await asyncio.gather(
+            *(process_one(item) for item in collection.items), return_exceptions=True
+        )
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -2685,9 +2792,14 @@ async def _descriptions_for_collection(
     taxonomy_version = str(snapshot.manifest["taxonomy_version"])
 
     semaphore = asyncio.Semaphore(config.ai.ai_concurrency)
+    progress = BatchProgress(
+        "AI-описания" if current_ui_language() == "ru" else "AI descriptions",
+        len(candidates),
+    )
 
-    async def describe_chunk(chunk: Sequence[SourceEmoji]) -> dict[str, _SemanticOutcome]:
+    async def generate_chunk(chunk: Sequence[SourceEmoji]) -> dict[str, _SemanticOutcome]:
         async with semaphore:
+            progress.phase(chunk[0].native_id, "ai")
             effective_traces = _recover_ai_request_traces(
                 cache,
                 chunk,
@@ -2722,12 +2834,25 @@ async def _descriptions_for_collection(
                     "AI chunk did not produce one exact traced outcome per source item"
                 )
             if on_chunk_completed is not None:
+                progress.phase(chunk[0].native_id, "save")
                 await on_chunk_completed(chunk, generated)
             return generated
 
-    outcomes = await asyncio.gather(
-        *(describe_chunk(chunk) for chunk in chunks), return_exceptions=True
-    )
+    async def describe_chunk(chunk: Sequence[SourceEmoji]) -> dict[str, _SemanticOutcome]:
+        try:
+            generated = await generate_chunk(chunk)
+        except Exception as exc:
+            progress.finish(chunk[0].native_id, count=len(chunk), failed=True)
+            error = structured_exception(exc)
+            report_progress(f"{error.code}: {error.message}")
+            raise
+        progress.finish(chunk[0].native_id, count=len(chunk))
+        return generated
+
+    async with progress:
+        outcomes = await asyncio.gather(
+            *(describe_chunk(chunk) for chunk in chunks), return_exceptions=True
+        )
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome

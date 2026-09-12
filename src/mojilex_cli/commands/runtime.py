@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import traceback
@@ -157,7 +158,7 @@ def require_local_repository(value: str | Path) -> Path:
 def structured_exception(exc: BaseException, *, debug: bool = False) -> StructuredError:
     if isinstance(exc, CommandError):
         return exc.error
-    if isinstance(exc, (KeyboardInterrupt, typer.Abort)):
+    if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError, typer.Abort)):
         return StructuredError(
             code="INTERRUPTED",
             message="Operation interrupted by the user.",
@@ -314,9 +315,7 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
                 )
             console.print(table)
         for warning in envelope.warnings:
-            console.print(
-                f"{ui_text('Warning')}: {redact(warning)}", style="yellow", markup=False
-            )
+            console.print(f"{ui_text('Warning')}: {redact(warning)}", style="yellow", markup=False)
         return
     for error in envelope.errors:
         safe_error = error.as_dict()

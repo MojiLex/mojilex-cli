@@ -129,7 +129,10 @@ def process(
         "binary",
         "translucent",
     }
-    if declared_alpha and not analyzed_alpha:
+    # Render-only resumes reuse a full-stream analysis verified by the parent
+    # against the downloaded bytes. Its absence here is intentional; sampled
+    # frames can all be opaque even when other frames contain transparency.
+    if not render_only and declared_alpha and not analyzed_alpha:
         raise RuntimeError("ffmpeg did not preserve the WebM alpha channel")
     observed_dark_requirement = (
         needs_repainting
@@ -350,10 +353,18 @@ def _validate_tgs_rgba_header(
 
 
 def _transparent_rgb_is_zero(payload: bytes) -> bool:
-    return all(
-        payload[offset + 3] != 0 or payload[offset : offset + 3] == b"\0\0\0"
-        for offset in range(0, len(payload), 4)
-    )
+    # Mask away visible pixels in native Pillow code. A nonzero remaining RGB
+    # channel is precisely a violation of the lossless stream's hidden-RGB rule.
+    image = Image.frombytes("RGBA", (len(payload) // 4, 1), payload)
+    alpha = image.getchannel("A")
+    visible = alpha.point((0,) + (255,) * 255)
+    try:
+        image.paste((0, 0, 0, 0), mask=visible)
+        return image.getbbox(alpha_only=False) is None
+    finally:
+        visible.close()
+        alpha.close()
+        image.close()
 
 
 def _render_webm(

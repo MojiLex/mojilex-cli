@@ -1,5 +1,13 @@
 # MojiLex CLI
 
+Long-running `add`, `import`, `describe`, and `resume` operations report completed
+items, percentage, errors, elapsed time, and active download/processing/AI phases.
+A heartbeat repeats every 5 seconds while waiting; elapsed time never counts as
+completed work. Media failures stop queued jobs while already active jobs finish
+safely. Imports checkpoint each completed file, so `mojilex resume RUN_ID` checks
+its bytes again without recomputing valid cached analysis. Progress goes to stderr
+(including with `--json`) and is hidden by `--quiet`.
+
 English | [Русский](README_RU.md)
 
 ## Quick start

@@ -7,9 +7,10 @@ import hashlib
 import math
 import struct
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from fractions import Fraction
+from functools import lru_cache
 from itertools import pairwise
 
 from PIL import Image, ImageOps
@@ -250,13 +251,14 @@ def _normalized_native_rgba(image: Image.Image) -> Image.Image:
     rgba = oriented.convert("RGBA")
     if oriented is not image:
         oriented.close()
-    raw = bytearray(rgba.tobytes())
-    for offset in range(3, len(raw), 4):
-        if raw[offset] == 0:
-            raw[offset - 3 : offset] = b"\0\0\0"
-    normalized = Image.frombytes("RGBA", rgba.size, bytes(raw))
-    rgba.close()
-    return normalized
+    alpha = rgba.getchannel("A")
+    hidden = alpha.point((255,) + (0,) * 255)
+    try:
+        rgba.paste((0, 0, 0, 0), mask=hidden)
+    finally:
+        hidden.close()
+        alpha.close()
+    return rgba
 
 
 def _layout_canvas(image: Image.Image) -> Image.Image:
@@ -300,17 +302,54 @@ def _fit_rgba(image: Image.Image, box_size: int) -> Image.Image:
     else:
         target_height = box_size
         target_width = max(1, (width * box_size + height // 2) // height)
-    source = image.load()
-    target = Image.new("RGBA", (target_width, target_height))
-    destination = target.load()
-    if source is None or destination is None:
-        raise AnalysisError("Pillow did not expose deterministic pixel access")
-    for y in range(target_height):
-        source_y = min(height - 1, ((2 * y + 1) * height) // (2 * target_height))
-        for x in range(target_width):
-            source_x = min(width - 1, ((2 * x + 1) * width) // (2 * target_width))
-            destination[x, y] = source[source_x, source_y]
-    return target
+    x_corrections = _nearest_axis_corrections(width, target_width)
+    y_corrections = _nearest_axis_corrections(height, target_height)
+    if not x_corrections and not y_corrections:
+        return image.resize((target_width, target_height), Image.Resampling.NEAREST)
+    horizontal = image.resize((target_width, height), Image.Resampling.NEAREST)
+    try:
+        for target_x, source_x in x_corrections:
+            column = image.crop((source_x, 0, source_x + 1, height))
+            try:
+                horizontal.paste(column, (target_x, 0))
+            finally:
+                column.close()
+        target = horizontal.resize((target_width, target_height), Image.Resampling.NEAREST)
+        for target_y, source_y in y_corrections:
+            row = horizontal.crop((0, source_y, target_width, source_y + 1))
+            try:
+                target.paste(row, (0, target_y))
+            finally:
+                row.close()
+        return target
+    finally:
+        horizontal.close()
+
+
+@lru_cache(maxsize=128)
+def _nearest_axis_corrections(source_size: int, target_size: int) -> tuple[tuple[int, int], ...]:
+    """Find native resize coordinates that differ from the exact integer profile.
+
+    Some ratios land on floating-point boundaries in Pillow. Verify its actual
+    coordinate selection once per size and correct those rows/columns above.
+    """
+    coordinates = Image.new("I", (source_size, 1))
+    coordinates.putdata(range(source_size))
+    resized = coordinates.resize((target_size, 1), Image.Resampling.NEAREST)
+    try:
+        return tuple(
+            (index, expected)
+            for index in range(target_size)
+            if resized.getpixel((index, 0))
+            != (
+                expected := min(
+                    source_size - 1, ((2 * index + 1) * source_size) // (2 * target_size)
+                )
+            )
+        )
+    finally:
+        resized.close()
+        coordinates.close()
 
 
 def _rendering_signals(
@@ -363,20 +402,20 @@ def _dominant_palette(
         bins: defaultdict[tuple[int, int, int], int] = defaultdict(int)
         family_weights: defaultdict[str, int] = defaultdict(int)
         total = 0
-        raw = frame.tobytes()
-        for offset in range(0, len(raw), 4):
-            red, green, blue, alpha = raw[offset : offset + 4]
+        for count, color in _rgba_color_counts(frame):
+            red, green, blue, alpha = color
             if alpha < _ALPHA_THRESHOLD:
                 continue
+            weight = alpha * count
             key = (red >> 3, green >> 3, blue >> 3)
-            bins[key] += alpha
+            bins[key] += weight
             values = channel_sums[key]
-            values[0] += red * alpha
-            values[1] += green * alpha
-            values[2] += blue * alpha
-            values[3] += alpha
-            family_weights[_color_family(red, green, blue)] += alpha
-            total += alpha
+            values[0] += red * weight
+            values[1] += green * weight
+            values[2] += blue * weight
+            values[3] += weight
+            family_weights[_color_family(red, green, blue)] += weight
+            total += weight
         if total:
             for key, weight in bins.items():
                 scores[key] += Fraction(weight, total)
@@ -407,6 +446,21 @@ def _dominant_palette(
         )
     colors.sort(key=lambda color: (-color.coverage_bp, color.family, color.hex))
     return tuple(colors), tuple(family_frames)
+
+
+def _rgba_color_counts(frame: Image.Image) -> Iterator[tuple[int, tuple[int, ...]]]:
+    # Keep native histogram memory bounded for large, high-entropy static media.
+    # If the bound is exceeded, retain the original exact per-pixel calculation.
+    native_colors = frame.getcolors(maxcolors=min(frame.width * frame.height, 65_536))
+    if native_colors is not None:
+        for count, color in native_colors:
+            if not isinstance(color, tuple) or len(color) != 4:
+                raise AnalysisError("palette analysis requires RGBA pixels")
+            yield count, color
+    else:
+        raw = frame.tobytes()
+        for offset in range(0, len(raw), 4):
+            yield 1, tuple(raw[offset : offset + 4])
 
 
 def _apportion_palette_coverage(
@@ -583,16 +637,21 @@ def _edge_map(luminance: bytes, size: tuple[int, int]) -> bytes:
 
 def _phash64(values: bytes, size: tuple[int, int]) -> int:
     resized = _resize_l_nearest(values, size, (_PHASH_SIZE, _PHASH_SIZE))
+    # The integer DCT is separable: reuse each horizontal row sum for all
+    # vertical frequencies without changing rounding or coefficient ordering.
+    horizontal_rows = tuple(
+        tuple(
+            sum(resized[y * _PHASH_SIZE + x] * cosines[x] for x in range(_PHASH_SIZE))
+            for y in range(_PHASH_SIZE)
+        )
+        for cosines in _COSINE_Q14
+    )
     coefficients: list[int] = []
     for vertical in range(_PHASH_LOW):
         vertical_cosines = _COSINE_Q14[vertical]
         for horizontal in range(_PHASH_LOW):
-            horizontal_cosines = _COSINE_Q14[horizontal]
-            coefficient = 0
-            for y in range(_PHASH_SIZE):
-                row = y * _PHASH_SIZE
-                row_sum = sum(resized[row + x] * horizontal_cosines[x] for x in range(_PHASH_SIZE))
-                coefficient += row_sum * vertical_cosines[y]
+            row_sums = horizontal_rows[horizontal]
+            coefficient = sum(row_sums[y] * vertical_cosines[y] for y in range(_PHASH_SIZE))
             coefficients.append(coefficient)
     median = sorted(coefficients[1:])[(len(coefficients) - 1) // 2]
     result = 0
