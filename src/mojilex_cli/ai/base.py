@@ -577,6 +577,7 @@ async def describe_with_recovery(
         if progress_callback is not None:
             progress_callback(event)
 
+    last_error: AIOutputError | None = None
     for attempt in range(2):
         if attempt:
             progress("retry")
@@ -588,12 +589,16 @@ async def describe_with_recovery(
             _validate_result_identity(result, provider.name, request.model)
             validate_result_labels(result, request.expected_labels)
             return result
-        except AIOutputError:
-            pass
-    if single_requests is None or set(single_requests) != set(request.expected_labels):
-        raise AIOutputError(
-            "batch response invalid and no exact per-item recovery requests supplied"
-        )
+        except AIOutputError as exc:
+            last_error = exc
+    # A single-item request has already used its two attempts. The pipeline
+    # constructs separate exact images for batch fallback and needs the actual
+    # validation failure, not a misleading missing-recovery configuration error.
+    if len(request.expected_labels) == 1 or single_requests is None:
+        assert last_error is not None
+        raise last_error
+    if set(single_requests) != set(request.expected_labels):
+        raise ValueError("single recovery requests must cover every expected label")
     recovered: list[DescriptionItem] = []
     progress("recovery")
     usages: list[AIUsage] = []

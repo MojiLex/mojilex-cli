@@ -193,6 +193,7 @@ def describe_command(
     max_ai_requests: int | None,
     max_cost_usd: Decimal | None,
     allow_unknown_cost: bool,
+    ai_concurrency: int | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
     if len(selectors) == 1 and selectors[0].startswith("mlxrun_"):
@@ -201,6 +202,7 @@ def describe_command(
             PipelineOptions(
                 provider=provider,
                 model=model,
+                ai_concurrency=ai_concurrency,
                 max_ai_requests=max_ai_requests,
                 max_cost_usd=max_cost_usd,
                 allow_unknown_cost=allow_unknown_cost,
@@ -212,6 +214,7 @@ def describe_command(
             "ai": {
                 "provider": provider,
                 "model": model,
+                "ai_concurrency": ai_concurrency,
                 "max_ai_requests": max_ai_requests,
                 "max_cost_usd": max_cost_usd,
                 "allow_unknown_cost": allow_unknown_cost or None,
@@ -230,6 +233,7 @@ def describe_command(
             repository=config.repository.target,
             provider=config.ai.provider,
             model=config.ai.model,
+            ai_concurrency=config.ai.ai_concurrency,
             max_ai_requests=config.ai.max_ai_requests,
             max_cost_usd=config.ai.max_cost_usd,
             allow_unknown_cost=config.ai.allow_unknown_cost,
@@ -306,6 +310,7 @@ def submit_command(
 def resume_command(
     run_id: str,
     *,
+    ai_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -313,6 +318,7 @@ def resume_command(
         run_id,
         confirmation=confirmation,
         unknown_cost_confirmation=unknown_cost_confirmation,
+        **({"ai_concurrency": ai_concurrency} if ai_concurrency is not None else {}),
     )
 
 

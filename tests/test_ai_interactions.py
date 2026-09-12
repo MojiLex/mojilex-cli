@@ -135,7 +135,13 @@ async def test_interaction_output_is_strictly_validated_without_raw_error_leak(f
     )
     with pytest.raises(AIOutputError) as captured:
         await provider.describe(_request())
-    assert str(captured.value) == "Gemini returned invalid or incomplete structured JSON"
+    expected = {
+        "invalid-json": "invalid_json",
+        "local-rule": "schema_validation: $.items[].label (string_pattern_mismatch)",
+        "incomplete": "interaction_incomplete",
+        "wrong-model": "model_mismatch",
+    }
+    assert str(captured.value).startswith("Gemini structured response: " + expected[failure])
     assert captured.value.__cause__ is None
     assert captured.value.__suppress_context__ is True
 

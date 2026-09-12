@@ -477,6 +477,7 @@ def describe(
     max_ai_requests: Annotated[int | None, typer.Option("--max-ai-requests", min=0)] = None,
     max_cost_usd: Annotated[str | None, typer.Option("--max-cost-usd")] = None,
     allow_unknown_cost: Annotated[bool, typer.Option("--allow-unknown-cost")] = False,
+    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -494,6 +495,7 @@ def describe(
                 selectors,
                 provider=provider,
                 model=model,
+                ai_concurrency=ai_concurrency,
                 max_ai_requests=max_ai_requests,
                 max_cost_usd=_decimal(max_cost_usd),
                 allow_unknown_cost=allow_unknown_cost,
@@ -800,6 +802,7 @@ def dedupe_review(
 @app.command("resume")
 def resume(
     run_id: Annotated[str, typer.Argument()],
+    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -813,6 +816,7 @@ def resume(
         lambda: _with_runtime_secrets(
             lambda: resume_command(
                 run_id,
+                ai_concurrency=ai_concurrency,
                 confirmation=_confirmation_callback(
                     yes=yes,
                     non_interactive=non_interactive,

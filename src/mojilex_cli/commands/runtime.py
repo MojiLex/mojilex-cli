@@ -190,6 +190,10 @@ def structured_exception(exc: BaseException, *, debug: bool = False) -> Structur
             "https://github.com/MojiLex/mojilex-cli/blob/main/docs/media-prerequisites.md"
         ),
         "VALIDATION_FAILED": "Run mojilex validate --strict and fix every reported issue.",
+        "AI_OUTPUT_INVALID": (
+            "The model response failed validation. Saved results are retained; "
+            "resume with the same run ID. If it repeats, report the validation code and field path."
+        ),
         "INTERNAL_ERROR": "Rerun with --debug and report the sanitized traceback.",
     }
     details = {"exception_type": type(exc).__name__} if debug else None

@@ -174,18 +174,18 @@ class GeminiVisionProvider:
             raise AIError(
                 f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
             ) from None
+        if getattr(response, "status", None) != "completed":
+            raise AIOutputError("Gemini structured response: interaction_incomplete") from None
+        if getattr(response, "model", None) not in (self.model, f"models/{self.model}"):
+            raise AIOutputError("Gemini structured response: model_mismatch") from None
+        text = getattr(response, "output_text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise AIOutputError("Gemini structured response: output_missing") from None
         try:
-            if getattr(response, "status", None) != "completed":
-                raise ValueError("interaction is incomplete")
-            if getattr(response, "model", None) not in {self.model, f"models/{self.model}"}:
-                raise ValueError("interaction returned a different model")
-            text = getattr(response, "output_text", None)
-            if not isinstance(text, str) or not text:
-                raise ValueError("missing structured response")
             batch = DescriptionBatch.model_validate_json(text)
-        except (ValidationError, ValueError, TypeError):
+        except ValidationError as exc:
             # Validation errors may quote generated content; never preserve their chain.
-            raise AIOutputError("Gemini returned invalid or incomplete structured JSON") from None
+            raise AIOutputError(_safe_validation_summary(exc)) from None
         usage_metadata = getattr(response, "usage", None)
         usage = AIUsage(
             input_tokens=_int_or_none(getattr(usage_metadata, "total_input_tokens", None)),
@@ -202,6 +202,55 @@ class GeminiVisionProvider:
         )
         validate_result_labels(result, request.expected_labels)
         return result
+
+
+def _safe_validation_summary(exc: ValidationError) -> str:
+    """Expose only schema-owned paths and closed error codes, never generated values."""
+
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    if any(error["type"] == "json_invalid" for error in errors):
+        return "Gemini structured response: invalid_json"
+    known_codes = {
+        "missing",
+        "extra_forbidden",
+        "model_type",
+        "dict_type",
+        "list_type",
+        "tuple_type",
+        "string_type",
+        "string_too_short",
+        "string_too_long",
+        "string_pattern_mismatch",
+        "literal_error",
+        "too_short",
+        "too_long",
+        "value_error",
+    }
+    schema = DescriptionBatch.model_json_schema()
+    details: list[str] = []
+    for error in errors[:4]:
+        node = schema
+        path = "$"
+        for part in error["loc"]:
+            if "$ref" in node:
+                node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]]
+            if type(part) is int and "items" in node:
+                node = node["items"]
+                path += "[]"
+            elif isinstance(part, str) and part in node.get("properties", {}):
+                node = node["properties"][part]
+                path += "." + part
+            else:
+                # Extra field names can themselves contain secrets or user content.
+                path += ".<unknown-field>"
+                break
+        code = error["type"] if error["type"] in known_codes else "schema_error"
+        detail = f"{path} ({code})"
+        if detail not in details:
+            details.append(detail)
+    if len(errors) > 4:
+        details.append("additional errors omitted")
+    return "Gemini structured response: schema_validation: " + "; ".join(details)
 
 
 def _disable_interaction_retries(interactions: Any) -> None:

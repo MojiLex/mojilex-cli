@@ -52,6 +52,13 @@ class BatchProgress:
     def stop_queue(self) -> None:
         self.queue_stopped = True
 
+    def advance(self, key: str, *, count: int) -> None:
+        """Record durable items without marking their entire batch complete."""
+        self.completed += count
+        self.active_counts[key] = max(0, self.active_counts.get(key, 0) - count)
+        self.last_completion = time.monotonic()
+        self._report()
+
     def finish(self, key: str, *, count: int = 1, failed: bool = False) -> None:
         self.active.pop(key, None)
         self.active_counts.pop(key, None)

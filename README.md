@@ -83,6 +83,21 @@ work. A failed batch or declined cost approval stops queued batches; successful
 in-flight batches still checkpoint their results. Each Gemini request has a
 30-second timeout. An unchanged emoji count can mean a batch is still awaiting
 or validating its response, not that those emojis are complete.
+During per-item recovery, each validated result is checkpointed and counted
+immediately, even if a later item fails.
+
+To process several AI batches at once, set `--ai-concurrency` (1–16):
+
+```console
+mojilex describe RUN_ID --ai-concurrency 4
+mojilex resume RUN_ID --ai-concurrency 4
+```
+
+`add` also accepts this option. Without it, saved runs keep their previous
+concurrency; new runs use configuration (default: 1). This changes parallelism
+without resetting request/cost budgets or increasing their limits. Completed
+results are reused on resume. Actual speed depends on model latency and provider
+quotas; retrying invalid responses can still dominate the running time.
 
 When current model pricing is unknown, one confirmation covers the remaining
 request limit for this invocation, including retries. It never increases

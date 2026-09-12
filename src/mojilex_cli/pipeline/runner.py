@@ -372,6 +372,7 @@ def run_describe(run_id: str, overrides: PipelineOptions | None = None) -> Comma
 def run_resume_sync(
     run_id: str,
     *,
+    ai_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -381,6 +382,7 @@ def run_resume_sync(
         return asyncio.run(
             run_resume(
                 run_id,
+                ai_concurrency=ai_concurrency,
                 confirmation=confirmation,
                 unknown_cost_confirmation=unknown_cost_confirmation,
             )
@@ -1394,6 +1396,11 @@ async def _run_describe(
             options,
             provider=overrides.provider if overrides.provider is not None else options.provider,
             model=overrides.model if overrides.model is not None else options.model,
+            ai_concurrency=(
+                overrides.ai_concurrency
+                if overrides.ai_concurrency is not None
+                else options.ai_concurrency
+            ),
             max_ai_requests=(
                 overrides.max_ai_requests
                 if overrides.max_ai_requests is not None
@@ -1434,6 +1441,7 @@ async def _run_describe(
 async def run_resume(
     run_id: str,
     *,
+    ai_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
@@ -1449,6 +1457,7 @@ async def run_resume(
     options = replace(
         options,
         repository=staging_value if use_staging else checkpoint.target_repository,
+        ai_concurrency=ai_concurrency if ai_concurrency is not None else options.ai_concurrency,
         dry_run=False,
         confirmation=confirmation,
         unknown_cost_confirmation=unknown_cost_confirmation,
@@ -2839,6 +2848,25 @@ async def _descriptions_for_collection(
                     report_progress(f"{batch_label} — {messages[event]}")
 
             callback_token = _AI_PROGRESS_CALLBACK.set(request_progress)
+            saved_items: set[str] = set()
+
+            async def save_recovered_items(
+                items: Sequence[SourceEmoji], generated: Mapping[str, _SemanticOutcome]
+            ) -> None:
+                expected = {item.native_id for item in items}
+                if (
+                    set(generated) != expected
+                    or not expected.issubset({item.native_id for item in chunk})
+                    or expected & saved_items
+                    or any(not outcome.request_trace for outcome in generated.values())
+                ):
+                    raise AIOutputError("AI recovery did not produce exact traced outcomes")
+                if on_chunk_completed is not None:
+                    progress.phase(key, "save")
+                    await on_chunk_completed(items, generated)
+                saved_items.update(expected)
+                progress.advance(key, count=len(items))
+
             try:
                 effective_traces = _recover_ai_request_traces(
                     cache,
@@ -2864,6 +2892,7 @@ async def _descriptions_for_collection(
                     resume_ai_cache_keys=resume_ai_cache_keys,
                     cache_alias_scope=cache_alias_scope,
                     resume_request_traces=effective_traces or None,
+                    on_item_completed=save_recovered_items,
                 )
                 expected_native_ids = {item.native_id for item in chunk}
                 if set(generated) != expected_native_ids or (
@@ -2873,9 +2902,12 @@ async def _descriptions_for_collection(
                     raise AIOutputError(
                         "AI chunk did not produce one exact traced outcome per source item"
                     )
-                if on_chunk_completed is not None:
+                remaining = tuple(item for item in chunk if item.native_id not in saved_items)
+                if on_chunk_completed is not None and remaining:
                     progress.phase(key, "save")
-                    await on_chunk_completed(chunk, generated)
+                    await on_chunk_completed(
+                        remaining, {item.native_id: generated[item.native_id] for item in remaining}
+                    )
             except Exception as exc:
                 if first_failure is None:
                     first_failure = exc
@@ -2887,13 +2919,13 @@ async def _descriptions_for_collection(
                         else "AI queue stopped. In-flight batches will finish; "
                         "the remaining batches have not started."
                     )
-                progress.finish(key, count=len(chunk), failed=True)
+                progress.finish(key, count=len(chunk) - len(saved_items), failed=True)
                 error = structured_exception(exc)
                 report_progress(f"{error.code}: {error.message}")
                 raise
             finally:
                 _AI_PROGRESS_CALLBACK.reset(callback_token)
-            progress.finish(key, count=len(chunk))
+            progress.finish(key, count=len(chunk) - len(saved_items))
             return generated
 
     async with progress:
@@ -3462,6 +3494,7 @@ async def _describe_batch(
     cache_alias_scope: str | None = None,
     resume_request_traces: Mapping[str, Sequence[_AICacheTrace]] | None = None,
     require_exact_resume: bool = False,
+    on_item_completed: _AIChunkCompletion | None = None,
 ) -> dict[str, _SemanticOutcome]:
     del resume_ai_cache_keys
     if not items:
@@ -3535,6 +3568,49 @@ async def _describe_batch(
                 prior_trace=prior_trace,
             )
 
+    async def resolve_primary(
+        item: SourceEmoji, primary: CachedAIResult, primary_trace: _AICacheTrace
+    ) -> _SemanticOutcome:
+        primary_outcome = _semantic_outcome(
+            primary,
+            generation_stage="primary",
+            routing_reasons=(),
+            config=config,
+            taxonomy_version=taxonomy_version,
+            qualifications=qualifications,
+            routing_registry=routing_registry,
+            request_trace=(primary_trace,),
+        )
+        reasons = set(semantic_routing_reasons(primary_outcome.description))
+        if primary_outcome.generation.qualification_id is None:
+            reasons.add(RoutingReason.UNQUALIFIED_MODEL)
+        canonical_reasons = routing_registry.canonicalize(reasons)
+        if should_escalate(
+            config.ai.model_routing,
+            canonical_reasons,
+            escalation_model=config.ai.escalation_model,
+        ):
+            identity = (
+                _resume_request_identity(
+                    (item,),
+                    processed,
+                    resume_request_traces,
+                    model=config.ai.escalation_model,
+                    stage="escalated",
+                )
+                if resume_request_traces is not None
+                else None
+            )
+            return await routed_single(
+                item,
+                model=config.ai.escalation_model,
+                generation_stage="escalated",
+                routing_reasons=canonical_reasons,
+                request_identity=identity,
+                prior_trace=(primary_trace,),
+            )
+        return primary_outcome
+
     result: dict[str, _SemanticOutcome] = {}
     primary_items: list[SourceEmoji] = []
     for item in items:
@@ -3570,6 +3646,48 @@ async def _describe_batch(
             primary_items.append(item)
     if not primary_items:
         return result
+
+    # An interrupted per-item recovery can have durable singleton results even
+    # when the original batch never completed. Restore only exact singleton
+    # identities; a row from a different batch is not interchangeable here.
+    if resume_request_traces is not None and not require_exact_resume:
+        remaining_primary: list[SourceEmoji] = []
+        for item in primary_items:
+            identity = _resume_request_identity(
+                (item,),
+                processed,
+                resume_request_traces,
+                model=config.ai.model,
+                stage="primary",
+            )
+            if identity is None:
+                remaining_primary.append(item)
+                continue
+            try:
+                restored = await _load_or_describe_primary_batch(
+                    (item,),
+                    processed,
+                    config=config,
+                    cache=cache,
+                    budget=budget,
+                    ai_state=ai_state,
+                    api_key=api_key,
+                    temporary=temporary,
+                    taxonomy_version=taxonomy_version,
+                    request_identity=identity,
+                    resume_request_traces=resume_request_traces,
+                    cache_alias_scope=cache_alias_scope,
+                )
+            except (AIOutputError, CacheError, ValueError):
+                remaining_primary.append(item)
+                continue
+            primary, restored_trace = restored[item.native_id]
+            result[item.native_id] = await resolve_primary(item, primary, restored_trace)
+            if on_item_completed is not None:
+                await on_item_completed((item,), {item.native_id: result[item.native_id]})
+        primary_items = remaining_primary
+        if not primary_items:
+            return result
 
     primary_results: dict[str, tuple[CachedAIResult, _AICacheTrace]] = {}
     loaded_from_resume = False
@@ -3609,10 +3727,16 @@ async def _describe_batch(
                 resume_request_traces=None,
                 cache_alias_scope=cache_alias_scope,
             )
-        except AIOutputError:
+        except AIOutputError as batch_error:
+            callback = _AI_PROGRESS_CALLBACK.get()
+            if callback is not None and len(primary_items) > 1:
+                callback("recovery")
             for item in primary_items:
                 trace: list[_AICacheTrace] = []
                 try:
+                    if len(primary_items) == 1:
+                        # This exact singleton already exhausted its two attempts.
+                        raise batch_error
                     cached = await _load_or_describe_single(
                         item,
                         processed[item.native_id],
@@ -3650,53 +3774,18 @@ async def _describe_batch(
                         routing_registry=routing_registry,
                         cache_alias_scope=cache_alias_scope,
                     )
-                    continue
-                primary_results[item.native_id] = (cached, trace[0])
+                else:
+                    result[item.native_id] = await resolve_primary(item, cached, trace[0])
+                # Keep each validated recovery, even if a later item fails or
+                # exhausts the shared budget before this batch can finish.
+                if on_item_completed is not None:
+                    await on_item_completed((item,), {item.native_id: result[item.native_id]})
 
     for item in primary_items:
         if item.native_id in result:
             continue
         primary, primary_trace = primary_results[item.native_id]
-        primary_outcome = _semantic_outcome(
-            primary,
-            generation_stage="primary",
-            routing_reasons=(),
-            config=config,
-            taxonomy_version=taxonomy_version,
-            qualifications=qualifications,
-            routing_registry=routing_registry,
-            request_trace=(primary_trace,),
-        )
-        reasons = set(semantic_routing_reasons(primary_outcome.description))
-        if primary_outcome.generation.qualification_id is None:
-            reasons.add(RoutingReason.UNQUALIFIED_MODEL)
-        canonical_reasons = routing_registry.canonicalize(reasons)
-        if should_escalate(
-            config.ai.model_routing,
-            canonical_reasons,
-            escalation_model=config.ai.escalation_model,
-        ):
-            identity = (
-                _resume_request_identity(
-                    (item,),
-                    processed,
-                    resume_request_traces,
-                    model=config.ai.escalation_model,
-                    stage="escalated",
-                )
-                if resume_request_traces is not None
-                else None
-            )
-            result[item.native_id] = await routed_single(
-                item,
-                model=config.ai.escalation_model,
-                generation_stage="escalated",
-                routing_reasons=canonical_reasons,
-                request_identity=identity,
-                prior_trace=(primary_trace,),
-            )
-        else:
-            result[item.native_id] = primary_outcome
+        result[item.native_id] = await resolve_primary(item, primary, primary_trace)
     return result
 
 

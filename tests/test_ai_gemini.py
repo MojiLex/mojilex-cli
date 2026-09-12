@@ -11,6 +11,7 @@ import pytest
 
 from mojilex_cli.ai import (
     AIError,
+    AIOutputError,
     BudgetExceededError,
     CostEstimate,
     DescriptionRequest,
@@ -98,6 +99,82 @@ async def test_gemini_uses_official_async_structured_schema() -> None:
     assert call["response_format"]["schema"]["type"] == "object"
     assert call["generation_config"]["max_output_tokens"] == 8192
     assert call["store"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"status": "synthetic-private-status"}, "interaction_incomplete"),
+        ({"model": "synthetic-private-model"}, "model_mismatch"),
+        ({"model": {"synthetic-private-key": "private-value"}}, "model_mismatch"),
+        ({"output_text": None}, "output_missing"),
+        ({"output_text": "  \n"}, "output_missing"),
+        ({"output_text": {"synthetic-private-key": "private-value"}}, "output_missing"),
+        ({"output_text": "{synthetic-private-json"}, "invalid_json"),
+    ],
+)
+async def test_gemini_response_diagnostics_are_distinct_and_safe(overrides, reason):
+    async def create(**kwargs):
+        response = {
+            "status": "completed",
+            "model": "gemini-test",
+            "output_text": json.dumps(_payload()),
+        }
+        response.update(overrides)
+        return SimpleNamespace(**response)
+
+    provider = GeminiVisionProvider(
+        model="gemini-test",
+        client=SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(create=create))),
+    )
+    with pytest.raises(AIOutputError) as captured:
+        await provider.describe(_request())
+    assert str(captured.value) == "Gemini structured response: " + reason
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "enum", "text", "extra", "many"])
+async def test_gemini_schema_diagnostics_use_only_known_paths_and_codes(failure):
+    payload = _payload()
+    item = payload["items"][0]
+    if failure == "missing":
+        del item["descriptions"]["ru"]["text"]
+        expected = "$.items[].descriptions.ru.text (missing)"
+    elif failure == "enum":
+        item["content"]["rating"] = "synthetic-private-value"
+        expected = "$.items[].content.rating (literal_error)"
+    elif failure == "text":
+        item["descriptions"]["ru"]["text"] = "<private>synthetic-private-value</private>"
+        expected = "$.items[].descriptions.ru.text (value_error)"
+    elif failure == "extra":
+        item["descriptions"]["ru"]["synthetic-private-key"] = "synthetic-private-value"
+        expected = "$.items[].descriptions.ru.<unknown-field> (extra_forbidden)"
+    else:
+        payload["items"] = [{} for _ in range(16)]
+        expected = "additional errors omitted"
+
+    async def create(**kwargs):
+        return SimpleNamespace(
+            status="completed", model="gemini-test", output_text=json.dumps(payload)
+        )
+
+    provider = GeminiVisionProvider(
+        model="gemini-test",
+        client=SimpleNamespace(aio=SimpleNamespace(interactions=SimpleNamespace(create=create))),
+    )
+    with pytest.raises(AIOutputError) as captured:
+        await provider.describe(_request())
+    message = str(captured.value)
+    assert message.startswith("Gemini structured response: schema_validation: ")
+    assert expected in message
+    assert "synthetic-private" not in message
+    assert "E001" not in message
+    assert len(message) < 500
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
 
 
 @pytest.mark.asyncio

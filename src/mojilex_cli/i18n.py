@@ -399,6 +399,15 @@ _RUSSIAN_MESSAGES = {
     ),
     "estimated AI cost limit would be exceeded": "Будет превышен лимит расчётной стоимости AI.",
     "AI request limit would be exceeded": "Будет превышен лимит AI-запросов.",
+    "The model response failed validation. Saved results are retained; "
+    "resume with the same run ID. If it repeats, report the validation code and field path.": (
+        "Ответ модели не прошёл проверку. Сохранённые результаты остаются; "
+        "продолжите через resume с тем же ID запуска. При повторении сообщите код и поле ошибки."
+    ),
+    "Gemini structured response: interaction_incomplete": "Gemini не завершил ответ.",
+    "Gemini structured response: model_mismatch": "Gemini вернул ответ другой модели.",
+    "Gemini structured response: output_missing": "Gemini вернул ответ без текста JSON.",
+    "Gemini structured response: invalid_json": "Gemini вернул некорректный JSON.",
     "The existing AI cache could not be inspected; plan assumes misses.": (
         "Не удалось проверить существующий AI-кеш; план рассчитан без его использования."
     ),
@@ -638,6 +647,10 @@ def text(value: str, *, language: UiLanguage | None = None) -> str:
         return value
     if value in _RUSSIAN_MESSAGES:
         return _RUSSIAN_MESSAGES[value]
+    if value.startswith("Gemini structured response: schema_validation: "):
+        return "Ответ Gemini нарушает схему: " + value.removeprefix(
+            "Gemini structured response: schema_validation: "
+        )
     invalid = re.fullmatch(r"Invalid value for (.+?): (.+)", value, flags=re.DOTALL)
     if invalid:
         return f"Некорректное значение {invalid[1]}: {text(invalid[2], language=selected)}"
