@@ -1,5 +1,7 @@
 # MojiLex CLI
 
+[Русское описание и инструкция](README_RU.md)
+
 `mojilex` imports public Telegram custom-emoji sets, prepares temporary media for
 deterministic analysis, creates Russian and English semantic metadata, finds duplicate
 candidates, validates the
