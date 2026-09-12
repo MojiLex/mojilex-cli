@@ -5,15 +5,29 @@ English | [Русский](README_RU.md)
 ## Quick start
 
 Normal use does not require cloning either repository or creating an IDE
-project. Install the CLI from GitHub with one
-[`uv`](https://docs.astral.sh/uv/getting-started/installation/) command:
+project. On Windows, first install
+[`uv`](https://docs.astral.sh/uv/getting-started/installation/) once:
 
 ```console
-uv tool install git+https://github.com/MojiLex/mojilex-cli.git@main
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-If `mojilex` is not found afterward, run `uv tool update-shell` and open a new
-terminal.
+Close PowerShell or Command Prompt after installation and open a new window.
+Then run the following commands in either shell:
+
+```console
+uv --version
+uv tool install --python 3.11 "git+https://github.com/MojiLex/mojilex-cli.git@main"
+uv tool update-shell
+```
+
+Markdown square brackets and parentheses are not part of the Git URL; copy the
+quoted argument without link markup. After `uv tool update-shell`, open another
+new terminal and verify the installation:
+
+```console
+mojilex --version
+```
 
 Authenticate with GitHub once and create the non-secret configuration:
 
