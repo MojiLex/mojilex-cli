@@ -204,7 +204,9 @@ def _worker_environment(temp_dir: Path) -> dict[str, str]:
         "TMP": str(temp_dir),
         "TEMP": str(temp_dir),
     }
-    for name in ("SYSTEMROOT", "WINDIR"):
+    # Python reads these non-secret architecture fields for platform.machine()
+    # on Windows; dropping them changes the worker's decoder fingerprint.
+    for name in ("SYSTEMROOT", "WINDIR", "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432"):
         if name in os.environ:
             result[name] = os.environ[name]
     return result
