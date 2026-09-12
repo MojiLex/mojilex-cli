@@ -16,6 +16,25 @@ _CURRENT_UI_LANGUAGE: ContextVar[UiLanguage] = ContextVar(
     "mojilex_ui_language", default="en"
 )
 
+_ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pack_workflow", ("add", "import", "describe", "submit", "resume", "update")),
+    (
+        "read",
+        ("search", "get", "get-collection", "resolve", "similar", "snapshots"),
+    ),
+    ("quality", ("validate", "dedupe", "review", "set-status", "takedown")),
+    ("releases", ("snapshot", "build-index", "benchmark-dedupe", "benchmark-model")),
+    ("setup", ("init", "doctor", "config", "cache")),
+)
+
+_PANEL_TITLES: dict[str, tuple[str, str]] = {
+    "pack_workflow": ("Pack analysis and publication", "Анализ и публикация паков"),
+    "read": ("Search and read", "Поиск и чтение"),
+    "quality": ("Validation and moderation", "Проверка и модерация"),
+    "releases": ("Snapshots and benchmarks", "Снимки и тесты"),
+    "setup": ("Setup and maintenance", "Настройка и обслуживание"),
+}
+
 
 _COMMAND_HELP: dict[str, tuple[str, str]] = {
     "mojilex": (
@@ -239,6 +258,19 @@ _TEXT: dict[str, tuple[str, str]] = {
     "interrupted": ("interrupted", "прервано"),
     "Telegram Bot API token": ("Telegram Bot API token", "Токен Telegram Bot API"),
     "Gemini API key": ("Gemini API key", "API-ключ Gemini"),
+    "RuntimeError: the MojiLex rlottie RGBA renderer is required for TGS": (
+        "The MojiLex rlottie RGBA renderer is required for TGS.",
+        "Для обработки TGS требуется RGBA-рендерер MojiLex на базе rlottie.",
+    ),
+    (
+        "Run mojilex doctor and install the backend it reports. TGS setup: "
+        "https://github.com/MojiLex/mojilex-cli/blob/main/docs/media-prerequisites.md"
+    ): (
+        "Run mojilex doctor and install the backend it reports. TGS setup: "
+        "https://github.com/MojiLex/mojilex-cli/blob/main/docs/media-prerequisites.md",
+        "Запустите mojilex doctor и установите указанный им компонент. Настройка TGS: "
+        "https://github.com/MojiLex/mojilex-cli/blob/main/docs/media-prerequisites.md",
+    ),
     "Configured repository target looks like a local path, but it does not exist.": (
         "Configured repository target looks like a local path, but it does not exist.",
         "Настроенный репозиторий похож на локальный путь, но такого пути не существует.",
@@ -320,6 +352,7 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
 
     if not path:
         _localize_rich_framework(language)
+        _group_root_commands(command, language)
     key = " ".join(path) if path else "mojilex"
     if key in _COMMAND_HELP:
         command.help = _COMMAND_HELP[key][1 if language == "ru" else 0]
@@ -330,6 +363,25 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
             parameter.help = help_text[1 if language == "ru" else 0]
     for name, child in getattr(command, "commands", {}).items():
         localize_command_tree(child, language, (*path, name))
+
+
+def _group_root_commands(command: Any, language: UiLanguage) -> None:
+    commands = getattr(command, "commands", None)
+    if not isinstance(commands, dict):
+        return
+    ordered: dict[str, Any] = {}
+    for section, names in _ROOT_COMMAND_SECTIONS:
+        title = _PANEL_TITLES[section][1 if language == "ru" else 0]
+        for name in names:
+            child = commands.get(name)
+            if child is None:
+                continue
+            child.rich_help_panel = title
+            ordered[name] = child
+    for name, child in commands.items():
+        if name not in ordered:
+            ordered[name] = child
+    command.commands = ordered
 
 
 def _localize_rich_framework(language: UiLanguage) -> None:

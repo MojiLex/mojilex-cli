@@ -183,6 +183,10 @@ def structured_exception(exc: BaseException, *, debug: bool = False) -> Structur
     retryable = bool(getattr(exc, "retryable", False))
     hints = {
         "CONFIG_INVALID": "Check the command options and non-secret configuration.",
+        "SYSTEM_DEPENDENCY_MISSING": (
+            "Run mojilex doctor and install the backend it reports. TGS setup: "
+            "https://github.com/MojiLex/mojilex-cli/blob/main/docs/media-prerequisites.md"
+        ),
         "VALIDATION_FAILED": "Run mojilex validate --strict and fix every reported issue.",
         "INTERNAL_ERROR": "Rerun with --debug and report the sanitized traceback.",
     }

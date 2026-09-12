@@ -36,6 +36,18 @@ def test_russian_help_describes_every_command(
     assert "Команды" in output
     assert "Проверить черновик" in output
     assert "Язык интерфейса" in output
+    panel_titles = (
+        "Анализ и публикация паков",
+        "Поиск и чтение",
+        "Проверка и модерация",
+        "Снимки и тесты",
+        "Настройка и обслуживание",
+    )
+    assert all(title in output for title in panel_titles)
+    assert [output.index(title) for title in panel_titles] == sorted(
+        output.index(title) for title in panel_titles
+    )
+    assert output.index("add") < output.index("import") < output.index("describe")
 
 
 def test_ui_language_flag_is_global_and_cli_overrides_environment() -> None:

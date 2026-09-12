@@ -34,11 +34,14 @@ Prompt windows:
 
 ```powershell
 mojilex --ui-language ru --help
+$env:MOJILEX_UI_LANGUAGE = "ru"
 setx MOJILEX_UI_LANGUAGE ru
 ```
 
-Open a new terminal after `setx`. Command names, option names, and JSON fields
-remain stable in English.
+`$env:MOJILEX_UI_LANGUAGE` applies immediately to the current PowerShell
+process. Open a new terminal after `setx`, which persists the language only for
+future processes. Command names, option names, and JSON fields remain stable in
+English.
 
 Authenticate with GitHub once and create the non-secret configuration:
 
@@ -177,7 +180,9 @@ not supported. See
 
 `MojiLex doctor: succeeded` means that the diagnostic command completed. The
 environment is ready only when the reported `ready` value is `true`. A TGS
-import requires an available `mojilex-rlottie-rgba` adapter.
+import requires an available `mojilex-rlottie-rgba` adapter. After installing
+it, continue a saved failed run with `mojilex resume mlxrun_YOUR_ID` instead of
+starting over.
 
 ## Separate analysis and submission
 

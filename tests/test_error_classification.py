@@ -7,6 +7,7 @@ from mojilex_cli.dataset import (
     ValidationIssue,
     ValidationReport,
 )
+from mojilex_cli.media.models import MediaDependencyError
 from mojilex_cli.runs import ResumeIncompatibleError, RunLockedError, RunStoreError
 
 
@@ -38,3 +39,13 @@ def test_run_store_errors_have_stable_classification(
     structured = structured_exception(error)
     assert structured.code == expected_code
     assert structured.retryable is retryable
+
+
+def test_media_dependency_error_has_actionable_setup_hint() -> None:
+    structured = structured_exception(
+        MediaDependencyError("the MojiLex rlottie RGBA renderer is required for TGS")
+    )
+
+    assert structured.code == "SYSTEM_DEPENDENCY_MISSING"
+    assert "mojilex doctor" in structured.hint
+    assert "media-prerequisites.md" in structured.hint
