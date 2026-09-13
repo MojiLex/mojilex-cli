@@ -46,6 +46,8 @@ jobs:
           RLOTTIE_HELPER="$RUNNER_TEMP/mojilex-rlottie-rgba"
           git clone --no-checkout --filter=blob:none https://github.com/Samsung/rlottie.git "$RLOTTIE_SOURCE"
           git -C "$RLOTTIE_SOURCE" checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
+          # Upstream's formatting script shadows libc++ <format> through its root include path.
+          mv "$RLOTTIE_SOURCE/format" "$RLOTTIE_SOURCE/format.sh"
           meson setup "$RLOTTIE_BUILD" "$RLOTTIE_SOURCE" -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
           meson compile -C "$RLOTTIE_BUILD"
           c++ -std=c++14 -O2 -Wall -Wextra -Werror \
@@ -61,6 +63,8 @@ jobs:
           $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           Import-Module (Join-Path $installation 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
           Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $env:CC = 'cl'
+          $env:CXX = 'cl'
           $source = Join-Path $env:RUNNER_TEMP 'rlottie'
           $build = Join-Path $env:RUNNER_TEMP 'rlottie-build'
           $helper = Join-Path $env:RUNNER_TEMP 'mojilex-rlottie-rgba.exe'
@@ -68,7 +72,7 @@ jobs:
           git -C $source checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
           meson setup $build $source -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
           meson compile -C $build
-          cl /nologo /std:c++14 /EHsc /O2 /W4 /WX "/I$source\inc" tools\rlottie_rgba_renderer.cpp "/link" "/LIBPATH:$build\src" rlottie.lib Shlwapi.lib "/OUT:$helper"
+          cl /nologo /std:c++14 /EHsc /O2 /MD /W4 /WX "/I$source\inc" tools\rlottie_rgba_renderer.cpp "/link" "$build\src\librlottie.a" Shlwapi.lib "/OUT:$helper"
           "MOJILEX_RLOTTIE_RGBA=$helper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: python -m build
       - name: Install wheel into a clean environment on Unix
