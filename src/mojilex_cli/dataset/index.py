@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mojilex_cli.domain.hashes import media_digest
-from mojilex_cli.domain.models import ContentRating, ReviewStatus
+from mojilex_cli.domain.models import ReviewStatus
 
 from .distribution import build_distribution
 from .layout import assert_no_link_or_reparse, is_link_or_reparse_point
@@ -124,13 +124,7 @@ def _status_counts(snapshot: DatasetSnapshot) -> dict[str, Any]:
 
 
 def _publishable(emoji: Any) -> bool:
-    if emoji.review.status is ReviewStatus.APPROVED:
-        return True
-    return (
-        emoji.review.status is ReviewStatus.UNREVIEWED
-        and emoji.content.rating is ContentRating.GENERAL
-        and not emoji.content.warnings
-    )
+    return emoji.review.status in {ReviewStatus.APPROVED, ReviewStatus.UNREVIEWED}
 
 
 def _search_row(
@@ -397,6 +391,11 @@ def _payloads(snapshot: DatasetSnapshot) -> tuple[dict[str, bytes], dict[str, in
     for membership in active_memberships:
         collections_for_emoji.setdefault(membership.emoji_id, []).append(membership.collection_id)
     active_emojis = [eligible_emojis[item] for item in sorted(collections_for_emoji)]
+    search_emojis = [
+        item
+        for item in active_emojis
+        if item.concept_mapping_status.value == "complete" and item.concept_ids
+    ]
     for values in collections_for_emoji.values():
         values.sort()
     approved_relations = _current_approved_relations(snapshot)
@@ -438,7 +437,7 @@ def _payloads(snapshot: DatasetSnapshot) -> tuple[dict[str, bytes], dict[str, in
                     group_ids.get(item.id, []),
                     "ru",
                 )
-                for item in active_emojis
+                for item in search_emojis
             ),
             sort_key="emoji_id",
         ),
@@ -450,7 +449,7 @@ def _payloads(snapshot: DatasetSnapshot) -> tuple[dict[str, bytes], dict[str, in
                     group_ids.get(item.id, []),
                     "en",
                 )
-                for item in active_emojis
+                for item in search_emojis
             ),
             sort_key="emoji_id",
         ),
@@ -471,8 +470,8 @@ def _payloads(snapshot: DatasetSnapshot) -> tuple[dict[str, bytes], dict[str, in
         "tombstones": len(snapshot.tombstones),
         "active_emojis": len(active_emojis),
         "active_memberships": len(active_memberships),
-        "search_ru": len(active_emojis),
-        "search_en": len(active_emojis),
+        "search_ru": len(search_emojis),
+        "search_en": len(search_emojis),
         "collection_facets": len(collection_facets),
         "duplicate_groups": len(duplicate_groups),
         "visual_relations": len(approved_relations),

@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from mojilex_cli.dataset import load_dataset
-from mojilex_cli.dataset.distribution import DataError
+from mojilex_cli.dataset.distribution import _eligible_search
 from mojilex_cli.dataset.staging import AtomicDatasetWriter
 from mojilex_cli.domain import ConceptMappingStatus, Review, reviewed_content_sha256
 from test_build_index_determinism import _build, _prepare_distribution_fixture, _tree_bytes
@@ -35,26 +36,56 @@ def _set_mapping(dataset: Path, *, complete: bool, approved: bool) -> None:
 
 
 @pytest.mark.parametrize("approved", [False, True])
-def test_pending_concepts_fail_before_creating_snapshot(tmp_path: Path, approved: bool) -> None:
+@pytest.mark.parametrize("complete", [False, True])
+def test_release_retains_pending_canonical_records_until_search_mapping_is_complete(
+    tmp_path: Path, approved: bool, complete: bool
+) -> None:
     dataset = _prepare_distribution_fixture(tmp_path / "dataset")
-    _set_mapping(dataset, complete=False, approved=approved)
+    _set_mapping(dataset, complete=complete, approved=approved)
     output = tmp_path / "dist"
 
-    with pytest.raises(DataError, match="complete concept mapping before building"):
-        _build(dataset, output)
+    before = _tree_bytes(dataset)
+    _build(dataset, output)
+    canonical = json.loads((output / "emojis.jsonl").read_bytes())
+    active = json.loads((output / "emojis-active.jsonl").read_bytes())
+    assert active == canonical
+    assert canonical["concept_mapping_status"] == ("complete" if complete else "pending")
+    assert canonical["concept_ids"] == (["animal.cat"] if complete else [])
+    assert canonical["review"]["status"] == ("approved" if approved else "unreviewed")
+    assert (output / "memberships.jsonl").read_bytes()
+    for language in ("en", "ru"):
+        search = (output / f"search-{language}.jsonl").read_bytes()
+        if complete:
+            assert json.loads(search)["semantic"]["concept_ids"] == ["animal.cat"]
+        else:
+            assert search == b""
+    assert _tree_bytes(dataset) == before
 
-    assert not output.exists()
 
-
-def test_pending_concepts_preserve_existing_release(tmp_path: Path) -> None:
+def test_rebuild_removes_stale_search_rows_without_discarding_pending_records(
+    tmp_path: Path,
+) -> None:
     dataset = _prepare_distribution_fixture(tmp_path / "dataset")
     _set_mapping(dataset, complete=True, approved=True)
     output = tmp_path / "dist"
     _build(dataset, output)
-    original = _tree_bytes(output)
+    assert (output / "search-en.jsonl").read_bytes()
     _set_mapping(dataset, complete=False, approved=True)
 
-    with pytest.raises(DataError, match="incomplete concept mapping"):
-        _build(dataset, output)
+    _build(dataset, output)
+    assert not (output / "search-en.jsonl").read_bytes()
+    assert json.loads((output / "emojis-active.jsonl").read_bytes())["concept_mapping_status"] == (
+        "pending"
+    )
 
-    assert _tree_bytes(output) == original
+
+@pytest.mark.parametrize(
+    ("status", "concept_ids", "expected"),
+    [("complete", ["animal.cat"], True), ("complete", [], False), ("pending", [], False)],
+)
+def test_search_requires_both_complete_mapping_and_nonempty_concepts(
+    status: str, concept_ids: list[str], expected: bool
+) -> None:
+    assert (
+        _eligible_search({"concept_mapping_status": status, "concept_ids": concept_ids}) is expected
+    )

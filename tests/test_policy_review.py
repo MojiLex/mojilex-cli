@@ -15,7 +15,6 @@ from mojilex_cli.domain import (
 from mojilex_cli.policy import (
     ModelQualificationRegistry,
     PolicyError,
-    ReviewGateError,
     ReviewPriority,
     ReviewReason,
     ReviewRoutingReport,
@@ -32,21 +31,18 @@ def _report(snapshot: DatasetSnapshot) -> ReviewRoutingReport:
     return compute_review_routing(snapshot, qualifications, policy)
 
 
-def test_unqualified_is_blocking_until_valid_human_approval(tmp_path: Path) -> None:
+def test_unqualified_output_does_not_require_human_approval(tmp_path: Path) -> None:
     snapshot = write_fixture(tmp_path)
     emoji = next(iter(snapshot.emojis.values()))
     emoji.provenance.qualification_id = None
     emoji.provenance.routing_reason_codes = [RoutingReason.UNQUALIFIED_MODEL]
 
     item = _report(snapshot).items[0]
-    assert item.priority is ReviewPriority.BLOCKING
-    assert ReviewReason.UNQUALIFIED_MODEL in item.reason_codes
-    try:
-        official_submission_report(snapshot)
-    except ReviewGateError as exc:
-        assert exc.report.blocking_count == 1
-    else:  # pragma: no cover - protects the fail-closed contract
-        raise AssertionError("unqualified official submission was not blocked")
+    assert item.priority is ReviewPriority.LOW
+    assert ReviewReason.UNQUALIFIED_MODEL not in item.reason_codes
+    assert not official_submission_report(snapshot).blocking
+    assert emoji.review.status.value == "unreviewed"
+    assert emoji.provenance.qualification_id is None
 
     emoji.review = Review(
         status="approved",

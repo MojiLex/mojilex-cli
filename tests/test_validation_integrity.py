@@ -41,12 +41,13 @@ def test_detects_fingerprint_and_review_hash_tampering(tmp_path) -> None:
     assert {"FINGERPRINT", "REVIEW_HASH"}.issubset(codes)
 
 
-def test_sensitive_or_warned_content_must_be_approved(tmp_path) -> None:
+def test_sensitive_content_does_not_require_approval(tmp_path) -> None:
     write_fixture(tmp_path)
     loaded = load_dataset(tmp_path)
     emoji = next(iter(loaded.emojis.values()))
     emoji.content.rating = ContentRating.SENSITIVE
-    assert "POLICY_REVIEW" in _codes(validate_snapshot(loaded))
+    assert validate_snapshot(loaded).valid
+    assert emoji.review.status.value == "unreviewed"
 
 
 def test_no_media_and_secret_scan_are_fail_closed(tmp_path) -> None:

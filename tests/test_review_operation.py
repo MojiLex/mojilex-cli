@@ -3,7 +3,6 @@ import pytest
 from mojilex_cli.dataset import (
     DatasetValidationError,
     apply_snapshot,
-    emoji_bucket_path,
     load_dataset,
     validate_snapshot,
 )
@@ -106,13 +105,7 @@ def test_review_can_approve_one_sensitive_item_while_another_is_pending(tmp_path
     staged = load_dataset(tmp_path)
     assert staged.emojis[first_id].review.status.value == "approved"
     assert staged.emojis[second_id].review.status.value == "unreviewed"
-    policy_issues = [
-        issue
-        for issue in validate_snapshot(staged, canonical=True).issues
-        if issue.code == "POLICY_REVIEW"
-    ]
-    assert len(policy_issues) == 1
-    assert policy_issues[0].path == str(emoji_bucket_path("telegram", second_id))
+    assert validate_snapshot(staged, canonical=True).valid
 
     review_emoji(
         tmp_path,
@@ -124,16 +117,14 @@ def test_review_can_approve_one_sensitive_item_while_another_is_pending(tmp_path
     assert validate_snapshot(load_dataset(tmp_path), canonical=True).valid
 
 
-def test_human_approval_can_promote_an_unqualified_ai_staging_item(tmp_path) -> None:
+def test_human_approval_is_optional_for_an_unqualified_ai_item(tmp_path) -> None:
     write_fixture(tmp_path)
     before = load_dataset(tmp_path)
     staged = before.clone()
     emoji = next(iter(staged.emojis.values()))
     emoji.provenance.qualification_id = None
     apply_snapshot(before, staged)
-    assert "QUALIFICATION" in {
-        issue.code for issue in validate_snapshot(load_dataset(tmp_path), canonical=True).issues
-    }
+    assert validate_snapshot(load_dataset(tmp_path), canonical=True).valid
 
     review_emoji(
         tmp_path,

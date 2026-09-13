@@ -197,7 +197,7 @@ def test_strict_validation_checks_profile_bytes_and_exact_qualification(tmp_path
     assert "PROFILE_HASH" in _codes(snapshot, canonical=True)
 
     emoji = next(iter(snapshot.emojis.values()))
-    emoji.provenance.qualification_id = None
+    emoji.provenance.qualification_id = "mq_unknown-claim"
     assert "QUALIFICATION" in _codes(snapshot, canonical=True)
 
 

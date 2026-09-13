@@ -1,5 +1,35 @@
 # MojiLex CLI
 
+## Everyday commands
+
+After setup, use saved pack names instead of internal paths:
+
+```console
+mojilex list
+mojilex show NewsEmoji
+mojilex review NewsEmoji
+mojilex publish NewsEmoji --local
+mojilex publish NewsEmoji
+mojilex resume NewsEmoji
+```
+
+`show` displays saved descriptions, motion, usage, tags, and content warnings in
+the terminal without AI requests. `review` is optional browsing, with no approval
+or status mutation. `publish --local` validates without upload; `publish` creates
+a GitHub pull request from the completed draft, without repeating AI analysis.
+Content ratings and warnings remain in the data but never require manual approval,
+block publication, or trigger model escalation. Missing model qualifications do not
+require human approval. Structural validation and verification of declared
+qualification metadata still apply.
+
+Start a new pack with `mojilex import PACK_URL`, then `mojilex describe PACK_NAME`.
+`show` selects ready results, `publish` selects the latest completed draft, and
+`resume` selects the latest unfinished run. Completed runs are not restarted.
+`list` shows ready results and separate progress for another unfinished run.
+Ambiguous names across repositories/source groups require an explicit Run ID from
+`list`. Commands support `--json`; existing Run IDs, `submit`, and explicit
+`review ID approve` remain supported.
+
 Long-running `add`, `import`, `describe`, and `resume` operations report completed
 items, percentage, errors, elapsed time, and active download/processing/AI phases.
 A heartbeat repeats every 5 seconds while waiting; elapsed time never counts as

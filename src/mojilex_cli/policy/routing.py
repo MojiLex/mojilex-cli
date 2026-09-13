@@ -111,8 +111,6 @@ def semantic_routing_reasons(description: DescriptionItem) -> tuple[RoutingReaso
         reasons.add(RoutingReason.CHARACTER_OR_BRAND)
     if "content-type" in facets.uncertainties or "style" in facets.uncertainties:
         reasons.add(RoutingReason.FACET_CONFLICT)
-    if description.content.rating != "general" or description.content.warnings:
-        reasons.add(RoutingReason.SENSITIVE_CONTENT)
     return tuple(sorted(reasons, key=str))
 
 
@@ -125,7 +123,8 @@ def should_escalate(
     """Return one explicit route decision and fail closed on unsafe setup."""
 
     parsed_mode = RoutingMode(mode)
-    materialized = tuple(reasons)
+    # Retain legacy reasons in provenance, but content labels no longer escalate.
+    materialized = tuple(reason for reason in reasons if reason != RoutingReason.SENSITIVE_CONTENT)
     if parsed_mode is RoutingMode.OFF:
         return False
     if not escalation_model:

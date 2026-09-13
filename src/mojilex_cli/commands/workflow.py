@@ -196,9 +196,23 @@ def describe_command(
     ai_concurrency: int | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
-    if len(selectors) == 1 and selectors[0].startswith("mlxrun_"):
+    saved_run = selectors[0] if len(selectors) == 1 and selectors[0].startswith("mlxrun_") else None
+    if (
+        len(selectors) == 1
+        and saved_run is None
+        and "://" not in selectors[0]
+        and not selectors[0].startswith(("mxe_", "mxc_"))
+    ):
+        from .packs import resolve_pack_run
+
+        try:
+            saved_run = resolve_pack_run(selectors[0], purpose="describe").run_id
+        except CommandError as exc:
+            if exc.error.code != "CONFIG_MISSING":
+                raise
+    if saved_run is not None:
         return run_describe(
-            selectors[0],
+            saved_run,
             PipelineOptions(
                 provider=provider,
                 model=model,
@@ -315,6 +329,21 @@ def resume_command(
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
 ) -> CommandResult:
+    from .packs import resolve_pack_run
+
+    selector = run_id
+    checkpoint = resolve_pack_run(selector, purpose="resume")
+    run_id = checkpoint.run_id
+    if checkpoint.status in {"succeeded", "noop"}:
+        next_command = "describe" if checkpoint.command == "import" else "show"
+        return CommandResult(
+            run_id=run_id,
+            status="noop",  # type: ignore[arg-type]
+            result={
+                "message": "This run is already complete.",
+                "next": f"mojilex {next_command} {selector}",
+            },
+        )
     return run_resume_sync(
         run_id,
         confirmation=confirmation,
@@ -325,6 +354,38 @@ def resume_command(
             if download_concurrency is not None
             else {}
         ),
+    )
+
+
+def publish_pack_command(
+    selector: str,
+    *,
+    local: bool = False,
+    direct_push: bool = False,
+    confirmation: Callable[[str], bool] | None = None,
+) -> CommandResult:
+    from .packs import resolve_pack_run
+
+    if local and direct_push:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "Choose either --local or --direct-push.",
+            hint="Use mojilex publish PACK for a GitHub pull request.",
+        )
+    checkpoint = resolve_pack_run(selector, purpose="publish")
+    if checkpoint.command != "describe" or checkpoint.status not in {"succeeded", "noop"}:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "The pack analysis is not complete.",
+            hint=f"Complete mojilex describe {selector} before publishing.",
+        )
+    return submit_command(
+        checkpoint.run_id,
+        repo=None,
+        publish="local" if local else "pr",
+        direct_push=direct_push,
+        base=None,
+        confirmation=confirmation,
     )
 
 

@@ -1,5 +1,15 @@
 # Architecture
 
+Content ratings and warnings are retained as metadata and do not require manual
+approval. Missing model qualifications are allowed; a declared qualification must
+still match its registry entry and generation context. Negative explicit review
+decisions and structural validation remain effective.
+
+Canonical records may keep pending concept mappings. Canonical/active exports keep
+those records; derived search rows require complete, non-empty concept mappings to
+meet the existing search schema. Search text kinds project letter/punctuation to
+symbol and code/other to mixed, without rewriting canonical text items.
+
 Text references generated for light/dark PNG views are bound deterministically to
 the single primary source media when building a dataset record. Those views are not
 separate source files. Only supplied backgrounds with no variant ID can be bound;

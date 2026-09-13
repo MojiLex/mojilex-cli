@@ -114,7 +114,6 @@ def test_rules_use_only_typed_deterministic_and_validated_semantic_signals(
     assert semantic == (
         RoutingReason.CHARACTER_OR_BRAND,
         RoutingReason.PARTIAL_TEXT,
-        RoutingReason.SENSITIVE_CONTENT,
     )
 
 

@@ -6,9 +6,22 @@ import pytest
 from typer.testing import CliRunner
 
 from mojilex_cli import cli
-from mojilex_cli.commands import workflow
+from mojilex_cli.commands import packs, workflow
 from mojilex_cli.commands.runtime import CommandResult
 from mojilex_cli.pipeline import runner
+
+
+@pytest.fixture(autouse=True)
+def saved_interrupted_run(monkeypatch):
+    monkeypatch.setattr(
+        packs,
+        "resolve_pack_run",
+        lambda selector, **kwargs: SimpleNamespace(
+            run_id=selector,
+            status="interrupted",
+            command="add",
+        ),
+    )
 
 
 @pytest.mark.parametrize("concurrency", [None, 1, 8, 32])

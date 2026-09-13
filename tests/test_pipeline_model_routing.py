@@ -294,8 +294,9 @@ def _source_variant(native_id: str, position: int) -> SourceEmoji:
 
 
 @pytest.mark.asyncio
-async def test_rules_accept_one_complete_escalation_result_with_actual_provenance(
-    tmp_path: Path,
+@pytest.mark.parametrize("facet_conflict", [False, True])
+async def test_rules_escalate_quality_conflict_but_not_content_labels(
+    tmp_path: Path, facet_conflict: bool
 ) -> None:
     dataset_root = tmp_path / "dataset"
     write_fixture(dataset_root)
@@ -311,6 +312,10 @@ async def test_rules_accept_one_complete_escalation_result_with_actual_provenanc
     processed = _processed()
     cache = CacheStore(tmp_path / "cache.sqlite3", repository_root=dataset_root)
     primary = _description("Primary sensitive draft.", sensitive=True)
+    if facet_conflict:
+        primary_data = primary.model_dump(mode="json")
+        primary_data["facets"]["uncertainties"] = ["style"]
+        primary = DescriptionItem.model_validate(primary_data)
     # Keep the final result sensitive too: it must be accepted, never escalated twice.
     strong = _description("Strong complete final object.", sensitive=True)
     primary_trace = _put_result(
@@ -350,12 +355,15 @@ async def test_rules_accept_one_complete_escalation_result_with_actual_provenanc
     )
 
     outcome = result[source.native_id]
-    assert outcome.description == strong
-    assert outcome.description != primary
-    assert outcome.generation.model == "strong-model"
-    assert outcome.generation.generation_stage == "escalated"
-    assert outcome.generation.qualification_id == "mq_standard-v1_strong"
-    assert outcome.generation.routing_reason_codes == ("sensitive-content",)
+    assert outcome.description == (strong if facet_conflict else primary)
+    assert outcome.generation.model == ("strong-model" if facet_conflict else "primary-model")
+    assert outcome.generation.generation_stage == ("escalated" if facet_conflict else "primary")
+    assert outcome.generation.qualification_id == (
+        "mq_standard-v1_strong" if facet_conflict else "mq_standard-v1_primary"
+    )
+    assert outcome.generation.routing_reason_codes == (
+        ("facet-conflict",) if facet_conflict else ()
+    )
     cache.close()
 
 

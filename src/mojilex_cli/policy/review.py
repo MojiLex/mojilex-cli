@@ -13,20 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from mojilex_cli.dataset.repository import DatasetSnapshot
 from mojilex_cli.dataset.serialization import parse_json
 from mojilex_cli.domain import (
-    ContentRating,
     Emoji,
-    ProvenanceOrigin,
-    ReviewStatus,
     RoutingReason,
     Uncertainty,
-    reviewed_content_sha256,
 )
 
-from .qualification import (
-    ModelQualificationRegistry,
-    QualificationQuery,
-    match_qualification,
-)
+from .qualification import ModelQualificationRegistry
 from .routing import PolicyError, RoutingReasonRegistry
 
 
@@ -226,14 +218,7 @@ def compute_review_routing(
     rule_priorities = {rule.reason_code: rule.priority for rule in policy.rules}
     items: list[ReviewRoutingItem] = []
     for emoji in sorted(snapshot.emojis.values(), key=lambda value: value.id):
-        approved = _valid_human_approval(emoji)
         reasons: set[ReviewReason] = set()
-        if _is_unqualified(emoji, qualifications) and not approved:
-            reasons.add(ReviewReason.UNQUALIFIED_MODEL)
-        if (
-            emoji.content.rating is not ContentRating.GENERAL or emoji.content.warnings
-        ) and not approved:
-            reasons.add(ReviewReason.MODERATION_UNCERTAINTY)
         if Uncertainty.MOTION in emoji.facets.uncertainties:
             reasons.add(ReviewReason.MOTION_UNCERTAINTY)
         if Uncertainty.TEXT in emoji.facets.uncertainties:
@@ -272,59 +257,6 @@ def official_submission_report(snapshot: DatasetSnapshot) -> ReviewRoutingReport
     if report.blocking:
         raise ReviewGateError(report)
     return report
-
-
-def _valid_human_approval(emoji: Emoji) -> bool:
-    return bool(
-        emoji.review.status is ReviewStatus.APPROVED
-        and emoji.review.reviewed_content_sha256 == reviewed_content_sha256(emoji)
-    )
-
-
-def _is_unqualified(emoji: Emoji, registry: ModelQualificationRegistry) -> bool:
-    provenance = emoji.provenance
-    if provenance.origin not in {ProvenanceOrigin.AI, ProvenanceOrigin.MIXED}:
-        return False
-    if emoji.concept_ids and provenance.concept_registry_id is None:
-        return True
-    required = (
-        provenance.provider,
-        provenance.model,
-        provenance.description_profile,
-        provenance.prompt_sha256,
-        provenance.request_parameters_sha256,
-        provenance.pipeline_version,
-        provenance.routing_policy_version,
-        provenance.generated_at,
-    )
-    if any(value is None for value in required) or provenance.qualification_id is None:
-        return True
-    query = QualificationQuery(
-        provider=str(provenance.provider),
-        model=str(provenance.model),
-        model_revision=provenance.model_revision,
-        description_profile=str(provenance.description_profile),
-        prompt_sha256=str(provenance.prompt_sha256),
-        request_parameters_sha256=str(provenance.request_parameters_sha256),
-        schema_version=emoji.schema_version,
-        taxonomy_version=emoji.facets.taxonomy_version,
-        pipeline_version=str(provenance.pipeline_version),
-        routing_policy_version=str(provenance.routing_policy_version),
-        languages=tuple(emoji.descriptions),
-        generated_at=str(provenance.generated_at),
-        concept_registry_id=provenance.concept_registry_id,
-        concept_registry_sha256=provenance.concept_registry_sha256,
-        concept_candidate_set_sha256=provenance.concept_candidate_set_sha256,
-        concept_candidate_profile_id=provenance.concept_candidate_profile_id,
-        concept_candidate_profile_sha256=provenance.concept_candidate_profile_sha256,
-        model_routing_policy_id=provenance.model_routing_policy_id,
-        model_routing_policy_sha256=provenance.model_routing_policy_sha256,
-    )
-    return not match_qualification(
-        registry,
-        query,
-        qualification_id=provenance.qualification_id,
-    ).qualified
 
 
 def _exact_group_description_conflicts(snapshot: DatasetSnapshot) -> set[str]:

@@ -387,7 +387,10 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
         label = ui_text(raw_label)
         console.print(f"[green]MojiLex {envelope.command}: {label}[/green]")
         safe_result = redact(envelope.result)
-        if isinstance(safe_result, Mapping) and safe_result:
+        rendered_pack = isinstance(safe_result, Mapping) and _render_pack_result(
+            console, envelope.command, safe_result
+        )
+        if isinstance(safe_result, Mapping) and safe_result and not rendered_pack:
             table = Table(show_header=False, box=None, pad_edge=False)
             for key, value in safe_result.items():
                 table.add_row(
@@ -395,6 +398,11 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
                     Text(ui_text(str(value))),
                 )
             console.print(table)
+        publication = redact(envelope.publication)
+        if isinstance(publication, Mapping):
+            for key in ("pr_url", "pull_request_url", "url"):
+                if isinstance(publication.get(key), str):
+                    console.print(str(publication[key]), markup=False)
         for warning in envelope.warnings:
             safe_warning = redact(warning)
             if isinstance(safe_warning, Mapping) and isinstance(safe_warning.get("message"), str):
@@ -416,6 +424,93 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
         console.print(f"{error.code}: {message}", style="red", markup=False)
         console.print(f"{ui_text('Hint')}: {hint}", markup=False)
     console.print(f"{ui_text('Run ID')}: {envelope.run_id}", markup=False)
+
+
+def _render_pack_result(console: Console, command: str, result: Mapping[str, Any]) -> bool:
+    """Render pack data as readable text, never Python dicts or Rich markup."""
+    if command == "publish":
+        if result.get("validated"):
+            console.print(ui_text("Validation passed."))
+        if isinstance(result.get("changed_paths"), list):
+            console.print(Text(f"{ui_text('Changed data files')}: {len(result['changed_paths'])}"))
+        return True
+    if command == "list" and isinstance(result.get("packs"), list):
+        packs = result["packs"]
+        if not packs:
+            console.print(ui_text("No saved packs. Start with mojilex import PACK_URL."))
+            return True
+        table = Table()
+        for heading in ("Pack", "Status", "Descriptions", "Updated"):
+            table.add_column(ui_text(heading))
+        names = [name.casefold() for pack in packs for name in pack["names"]]
+        ambiguous = len(names) != len(set(names))
+        unfinished = any(pack.get("latest_unfinished") for pack in packs)
+        if unfinished:
+            table.add_column(ui_text("Unfinished run"))
+        if ambiguous:
+            table.add_column("Run ID")
+        for pack in packs:
+            cells = [
+                Text(", ".join(pack["names"])),
+                Text(ui_text(str(pack["status"]))),
+                Text(f"{pack['ai_ready']}/{pack['items']}"),
+                Text(str(pack["updated_at"]).replace("T", " ")[:19]),
+            ]
+            if unfinished:
+                active = pack.get("latest_unfinished")
+                cells.append(Text(f"{active['ai_ready']}/{active['items']}" if active else "—"))
+            if ambiguous:
+                cells.append(Text(pack["run_id"]))
+            table.add_row(*cells)
+        console.print(table)
+        console.print(ui_text("Open a pack: mojilex show NAME"), markup=False)
+        if unfinished:
+            console.print(ui_text("Continue unfinished work: mojilex resume NAME"), markup=False)
+        return True
+    if command not in {"show", "review"} or "pack" not in result:
+        return False
+    pack = result["pack"]
+    counts = result["counts"]
+    console.print(
+        Text(
+            f"{', '.join(pack['names'])} — {counts['ready']}/{pack['items']} "
+            f"{ui_text('descriptions')}"
+        ),
+    )
+    if command == "review":
+        console.print(ui_text("Optional viewing. Content warnings do not require approval."))
+    for index, item in enumerate(result["items"], 1):
+        console.print()
+        console.print(Text(f"{index}. {item['native_id']}", style="bold"))
+        for language, description in item["descriptions"].items():
+            console.print(Text(f"{language.upper()}: {description['text']}"))
+            if description.get("motion"):
+                console.print(Text(f"  {ui_text('Motion')}: {description['motion']}"))
+            if description.get("usage"):
+                console.print(
+                    Text(f"  {ui_text('Usage examples')}: " + "; ".join(description["usage"]))
+                )
+        if item.get("semantic_tags"):
+            console.print(Text(f"{ui_text('Tags')}: " + ", ".join(item["semantic_tags"])))
+        content = item["content"]
+        console.print(Text(f"{ui_text('Content rating')}: {content['rating']}"))
+        if content["warnings"]:
+            console.print(Text(f"{ui_text('Content warnings')}: " + ", ".join(content["warnings"])))
+        facets = item.get("facets", {})
+        for facet_name in ("content_types", "styles", "suggested_uses", "uncertainties"):
+            if facets.get(facet_name):
+                console.print(Text(f"{ui_text(facet_name)}: " + ", ".join(facets[facet_name])))
+        for fragment in facets.get("text_content", {}).get("items", []):
+            console.print(Text(f"{ui_text('Text in emoji')}: {fragment.get('value', '')}"))
+    if any(counts.get(key) for key in ("pending", "missing", "invalid")):
+        console.print(
+            Text(
+                f"{ui_text('Pending')}: {counts.get('pending', 0)}; "
+                f"{ui_text('Unavailable')}: {counts.get('missing', 0)}; "
+                f"{ui_text('Invalid')}: {counts.get('invalid', 0)}"
+            )
+        )
+    return True
 
 
 def is_usage_error(exc: BaseException) -> bool:

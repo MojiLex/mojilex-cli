@@ -37,7 +37,6 @@ from mojilex_cli.domain.ids import (
 from mojilex_cli.domain.models import (
     AvailabilityStatus,
     ColorFamily,
-    ContentRating,
     ContentType,
     FingerprintStatus,
     MediaRole,
@@ -889,16 +888,6 @@ def _validate_emoji_policy(
             expected = reviewed_content_sha256(emoji)
             if emoji.review.reviewed_content_sha256 != expected:
                 _issue(issues, "REVIEW_HASH", path, f"review hash must be {expected}")
-        needs_approval = emoji.content.rating is not ContentRating.GENERAL or bool(
-            emoji.content.warnings
-        )
-        if needs_approval and emoji.review.status is not ReviewStatus.APPROVED:
-            _issue(
-                issues,
-                "POLICY_REVIEW",
-                path,
-                "non-general or warned content requires approved review",
-            )
         for language, description in emoji.descriptions.items():
             if unicodedata.normalize("NFC", language) != language:
                 _issue(issues, "NFC", path, f"language key {language!r} is not NFC")
@@ -1260,7 +1249,6 @@ def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationI
         emoji
         for emoji in snapshot.emojis.values()
         if emoji.provenance.origin in {ProvenanceOrigin.AI, ProvenanceOrigin.MIXED}
-        and emoji.review.status is not ReviewStatus.APPROVED
     ]
     try:
         registry = ModelQualificationRegistry.load(snapshot.root)
@@ -1276,7 +1264,11 @@ def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationI
         provenance = emoji.provenance
         path_display = str(emoji_bucket_path(emoji.platform, emoji.id))
         qualification_id = provenance.qualification_id
-        if emoji.concept_ids and provenance.concept_registry_id is None:
+        if (
+            emoji.concept_ids
+            and provenance.concept_registry_id is None
+            and emoji.review.status is not ReviewStatus.APPROVED
+        ):
             _issue(
                 issues,
                 "QUALIFICATION",
@@ -1285,12 +1277,7 @@ def _validate_qualifications(snapshot: DatasetSnapshot, issues: list[ValidationI
             )
             continue
         if qualification_id is None:
-            _issue(
-                issues,
-                "QUALIFICATION",
-                path_display,
-                "unreviewed AI output requires qualification_id",
-            )
+            # Missing qualification is an absent attestation, not a review requirement.
             continue
         query = QualificationQuery(
             provider=str(provenance.provider),

@@ -1,8 +1,24 @@
 from decimal import Decimal
+from types import SimpleNamespace
 
-from mojilex_cli.commands import workflow
+import pytest
+
+from mojilex_cli.commands import packs, workflow
 from mojilex_cli.commands.runtime import CommandResult
 from mojilex_cli.output import RunStatus
+
+
+@pytest.fixture(autouse=True)
+def saved_interrupted_run(monkeypatch):
+    monkeypatch.setattr(
+        packs,
+        "resolve_pack_run",
+        lambda selector, **kwargs: SimpleNamespace(
+            run_id=selector,
+            status="interrupted",
+            command="add",
+        ),
+    )
 
 
 def test_import_forwards_download_concurrency(monkeypatch) -> None:

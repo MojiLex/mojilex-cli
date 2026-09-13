@@ -518,6 +518,69 @@ def describe(
     )
 
 
+@app.command("list")
+def list_packs(
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """List saved packs and analysis progress."""
+    from mojilex_cli.commands.packs import list_packs_command
+
+    execute("list", list_packs_command, json_output=json_output, quiet=quiet, debug=debug)
+
+
+@app.command("show")
+def show_pack(
+    pack: Annotated[str, typer.Argument(help="Pack name or run ID.")],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """Read saved descriptions without AI requests."""
+    from mojilex_cli.commands.packs import show_pack_command
+
+    execute(
+        "show",
+        lambda: show_pack_command(pack),
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
+@app.command("publish")
+def publish_pack(
+    pack: Annotated[str, typer.Argument(help="Pack name or run ID.")],
+    local: Annotated[bool, typer.Option("--local", help="Validate without uploading.")] = False,
+    direct_push: Annotated[bool, typer.Option("--direct-push")] = False,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """Publish a completed pack through a GitHub pull request."""
+    from mojilex_cli.commands.workflow import publish_pack_command
+
+    execute(
+        "publish",
+        lambda: publish_pack_command(
+            pack,
+            local=local,
+            direct_push=direct_push,
+            confirmation=_confirmation_callback(
+                yes=yes,
+                non_interactive=non_interactive,
+                json_output=json_output,
+            ),
+        ),
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
 @app.command("validate")
 def validate(
     path: Annotated[Path, typer.Argument(help="Local dataset root.")] = Path("."),
@@ -814,11 +877,24 @@ def resume(
 ) -> None:
     from mojilex_cli.commands.workflow import resume_command
 
-    execute(
-        "resume",
-        lambda: _with_runtime_secrets(
+    def action():  # type: ignore[no-untyped-def]
+        from mojilex_cli.commands.packs import resolve_pack_run
+
+        checkpoint = resolve_pack_run(run_id, purpose="resume")
+        selected_run_id = checkpoint.run_id
+        if checkpoint.status in {"succeeded", "noop"}:
+            next_command = "describe" if checkpoint.command == "import" else "show"
+            return CommandResult(
+                run_id=selected_run_id,
+                status="noop",  # type: ignore[arg-type]
+                result={
+                    "message": "This run is already complete.",
+                    "next": f"mojilex {next_command} {run_id}",
+                },
+            )
+        return _with_runtime_secrets(
             lambda: resume_command(
-                run_id,
+                selected_run_id,
                 ai_concurrency=ai_concurrency,
                 download_concurrency=download_concurrency,
                 confirmation=_confirmation_callback(
@@ -838,7 +914,11 @@ def resume(
                 json_output=json_output,
                 quiet=quiet,
             ),
-        ),
+        )
+
+    execute(
+        "resume",
+        action,
         json_output=json_output,
         quiet=quiet,
         debug=debug,
@@ -848,16 +928,25 @@ def resume(
 @app.command("review")
 def review(
     emoji_id: Annotated[str, typer.Argument()],
-    action: Annotated[str, typer.Argument(help="approve, request-changes, or reject")],
+    action: Annotated[
+        str | None, typer.Argument(help="Optional: approve, request-changes, or reject")
+    ] = None,
     repo: Annotated[Path, typer.Option("--repo")] = Path("."),
     reviewer: Annotated[str | None, typer.Option("--reviewer")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
+    """Browse a pack; optionally record an explicit review of one emoji."""
+    from mojilex_cli.commands.packs import show_pack_command
+
     execute(
         "review",
-        lambda: review_command(repo, emoji_id, action, reviewer),
+        lambda: (
+            show_pack_command(emoji_id, review=True)
+            if action is None
+            else review_command(repo, emoji_id, action, reviewer)
+        ),
         json_output=json_output,
         quiet=quiet,
         debug=debug,

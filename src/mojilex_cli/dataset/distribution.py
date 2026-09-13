@@ -344,15 +344,11 @@ def _platform_registry(root: Path) -> tuple[dict[str, Any], list[Path], str]:
 
 
 def _eligible_review(emoji: dict[str, Any]) -> bool:
-    status = emoji["review"]["status"]
-    return bool(
-        status == "approved"
-        or (
-            status == "unreviewed"
-            and emoji["content"]["rating"] == "general"
-            and emoji["content"]["warnings"] == []
-        )
-    )
+    return emoji["review"]["status"] in {"approved", "unreviewed"}
+
+
+def _eligible_search(emoji: dict[str, Any]) -> bool:
+    return emoji["concept_mapping_status"] == "complete" and bool(emoji["concept_ids"])
 
 
 def _rights_summary(
@@ -696,10 +692,11 @@ def _current_visual_relations(
 
 def _literal_text(emoji: dict[str, Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    search_kinds = {"letter": "symbol", "punctuation": "symbol", "code": "mixed", "other": "mixed"}
     for item in emoji["facets"]["text_content"]["items"]:
         projected = {
             "value": item["value"],
-            "kind": item["kind"],
+            "kind": search_kinds.get(item["kind"], item["kind"]),
             "script": item["script"],
         }
         if "language" in item:
@@ -1407,13 +1404,6 @@ def build_distribution(
     eligible_emojis = [
         all_emojis[emoji_id] for emoji_id in sorted(collection_ids_by_emoji, key=str.encode)
     ]
-    for emoji in eligible_emojis:
-        if emoji["concept_mapping_status"] != "complete" or not emoji["concept_ids"]:
-            raise DataError(
-                f"eligible emoji {emoji['id']} has incomplete concept mapping; "
-                "complete concept mapping before building a release snapshot"
-            )
-
     duplicate_groups, duplicate_memberships = build_duplicate_groups(
         [emoji for emoji in emojis if emoji["id"] in eligible_ids],
         visual_relations,
@@ -1568,6 +1558,8 @@ def build_distribution(
     }
     search_rows: dict[str, list[dict[str, Any]]] = {language: [] for language in REQUIRED_LANGUAGES}
     for emoji in eligible_emojis:
+        if not _eligible_search(emoji):
+            continue
         for language in REQUIRED_LANGUAGES:
             if language not in emoji["descriptions"]:
                 raise DataError(f"eligible emoji {emoji['id']} lacks required language {language}")

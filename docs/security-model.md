@@ -32,7 +32,8 @@ MVP therefore uses allowlists and fail-closed validation at each boundary.
 - Logs and machine errors redact authorization headers, known token forms, Telegram download URLs,
   and raw provider responses.
 
-AI classification is not final moderation. Non-general, critically warned, or unqualified records
-stay out of public data until either an exact active model qualification applies or a human approval
-hash matches the exact current content. Qualification-registry structural errors are never bypassed
-by staging or review operations.
+Content classification is descriptive metadata: ratings and warnings never require manual approval,
+block publication, or trigger model escalation. Missing model qualifications do not require human
+approval. Explicit negative review decisions and validation of declared qualifications remain
+effective. Qualification-registry structural errors are never
+bypassed by staging or review operations. Consumer filters can still select ratings and warnings.

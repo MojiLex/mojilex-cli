@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 import typer
 
@@ -47,7 +49,8 @@ def test_russian_help_describes_every_command(
     assert [output.index(title) for title in panel_titles] == sorted(
         output.index(title) for title in panel_titles
     )
-    assert output.index("add") < output.index("import") < output.index("describe")
+    commands = re.findall(r"(?m)^\s*│\s+(list|show|import|describe|publish)\s", output)
+    assert commands == ["list", "show", "import", "describe", "publish"]
 
 
 def test_ui_language_flag_is_global_and_cli_overrides_environment() -> None:

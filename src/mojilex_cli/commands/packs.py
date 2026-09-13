@@ -1,0 +1,397 @@
+"""Read-only pack discovery and saved-description browsing by public pack name."""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+from mojilex_cli.cache import CacheError, CacheStore
+from mojilex_cli.config import MojiLexConfig, load_config
+from mojilex_cli.dataset import DatasetLoadError
+from mojilex_cli.dataset.layout import assert_no_link_or_reparse
+from mojilex_cli.dataset.repository import _load_dataset_unlocked
+from mojilex_cli.dataset.transaction import TRANSACTION_DIRECTORY_NAME
+from mojilex_cli.runs import RunCheckpoint, RunStore, RunStoreError
+
+from .runtime import CommandError, CommandResult
+
+_RUN_ID = re.compile(r"mlxrun_[0-9a-f]{32}\Z")
+_PACK_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
+_MAX_RUNS = 10_000
+_Purpose = Literal["latest", "view", "publish", "resume", "describe"]
+_COMPLETE = {"succeeded", "noop"}
+
+
+def _source_name(source: object) -> str | None:
+    if not isinstance(source, str):
+        return None
+    if _PACK_NAME.fullmatch(source):
+        return source
+    try:
+        parsed = urlsplit(source)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+        "t.me",
+        "telegram.me",
+        "www.t.me",
+        "www.telegram.me",
+    }:
+        return None
+    pieces = parsed.path.strip("/").split("/")
+    if len(pieces) != 2 or pieces[0].lower() not in {"addemoji", "addstickers"}:
+        return None
+    return pieces[1] if _PACK_NAME.fullmatch(pieces[1]) else None
+
+
+def _names(checkpoint: RunCheckpoint) -> tuple[str, ...]:
+    sources = checkpoint.safe_parameters.get("sources")
+    if not isinstance(sources, (list, tuple)):
+        return ()
+    names = {
+        name.casefold(): name for source in sources if (name := _source_name(source)) is not None
+    }
+    return tuple(names[key] for key in sorted(names))
+
+
+def _group(checkpoint: RunCheckpoint) -> tuple[tuple[str, ...], str]:
+    return tuple(name.casefold() for name in _names(checkpoint)), checkpoint.target_repository
+
+
+def _runs(config: MojiLexConfig) -> tuple[list[RunCheckpoint], int]:
+    if config.runs_dir is None:
+        return [], 0
+    store = RunStore(config.runs_dir, write_enabled=False)
+    if not store.root.is_dir():
+        return [], 0
+    checkpoints = []
+    skipped = 0
+    for index, path in enumerate(sorted(store.root.glob("mlxrun_*.json"))):
+        if index >= _MAX_RUNS:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "There are too many saved runs to list safely.",
+                hint="Use an exact RunID to open the required run.",
+            )
+        if not _RUN_ID.fullmatch(path.stem):
+            continue
+        try:
+            checkpoint = store.load(path.stem)
+        except (RunStoreError, OSError, ValueError):
+            skipped += 1
+            continue
+        if _names(checkpoint):
+            checkpoints.append(checkpoint)
+    checkpoints.sort(key=lambda run: (run.updated_at, run.run_id), reverse=True)
+    return checkpoints, skipped
+
+
+def _select(matches: list[RunCheckpoint], purpose: _Purpose) -> RunCheckpoint:
+    if purpose in {"latest", "describe"}:
+        return matches[0]
+    if purpose == "resume":
+        return next((run for run in matches if run.status not in _COMPLETE), matches[0])
+    if purpose == "publish":
+        completed = [
+            run for run in matches if run.command == "describe" and run.status in _COMPLETE
+        ]
+        if not completed:
+            raise CommandError(
+                "CONFIG_MISSING",
+                "No completed description run is ready to publish for this pack.",
+                hint="Complete mojilex describe for this pack first, or choose an exact RunID.",
+            )
+        return completed[0]
+    if purpose == "view":
+        ready = [
+            run
+            for run in matches
+            if any(element.ai_facets_complete for element in run.elements.values())
+        ]
+        completed = [run for run in ready if run.status in _COMPLETE]
+        if completed:
+            return completed[0]
+        if ready:
+            return ready[0]
+        for run in matches:
+            staging = run.safe_parameters.get("staging_repository")
+            if isinstance(staging, str) and Path(staging).is_dir():
+                return run
+        return matches[0]
+    raise ValueError("unknown pack selection purpose")
+
+
+def _resolve(
+    selector: str,
+    config: MojiLexConfig,
+    *,
+    purpose: _Purpose = "latest",
+) -> RunCheckpoint:
+    if selector.startswith("mlxrun_"):
+        if config.runs_dir is None:
+            raise RunStoreError("run storage is not configured")
+        return RunStore(config.runs_dir, write_enabled=False).load(selector)
+    name = _source_name(selector)
+    if name is None:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "Use a pack name or an exact RunID.",
+            hint="Run mojilex list to see saved packs.",
+        )
+    runs, _ = _runs(config)
+    matches = [run for run in runs if name.casefold() in {n.casefold() for n in _names(run)}]
+    if not matches:
+        raise CommandError(
+            "CONFIG_MISSING",
+            "No saved run matches this pack name.",
+            hint="Run mojilex list to see saved packs, or pass an exact RunID.",
+        )
+    if len({_group(run) for run in matches}) != 1:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "This pack name matches different source groups or repositories.",
+            hint="Choose an exact RunID from mojilex list.",
+            details={"runs": [run.run_id for run in matches]},
+        )
+    selected = _select(matches, purpose)
+    if purpose in {"describe", "resume", "publish"} and len(_names(selected)) > 1:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "This saved run contains multiple packs.",
+            hint=(
+                f"Use mojilex {purpose} {selected.run_id} "
+                "to explicitly select all packs in this run."
+            ),
+        )
+    return selected
+
+
+def resolve_pack_run(selector: str, *, purpose: _Purpose = "latest") -> RunCheckpoint:
+    """Resolve a pack for one operation; an explicit RunID is never redirected."""
+    return _resolve(selector, load_config(), purpose=purpose)
+
+
+def _summary(checkpoint: RunCheckpoint, config: MojiLexConfig) -> dict[str, Any]:
+    maximum = checkpoint.safe_parameters.get("max_ai_requests")
+    checkpoint_maximum = type(maximum) is int and maximum >= 0
+    return {
+        "run_id": checkpoint.run_id,
+        "names": list(_names(checkpoint)),
+        "status": checkpoint.status,
+        "updated_at": checkpoint.updated_at.isoformat(),
+        "items": len(checkpoint.elements),
+        "ai_ready": sum(element.ai_facets_complete for element in checkpoint.elements.values()),
+        "requests_used": checkpoint.ai_requests_used,
+        "max_ai_requests": maximum if checkpoint_maximum else config.ai.max_ai_requests,
+        "max_ai_requests_source": "checkpoint" if checkpoint_maximum else "config",
+    }
+
+
+def list_packs_command() -> CommandResult:
+    config = load_config()
+    runs, skipped = _runs(config)
+    groups: dict[tuple[tuple[str, ...], str], list[RunCheckpoint]] = {}
+    for run in runs:
+        groups.setdefault(_group(run), []).append(run)
+    rows = []
+    for group in groups.values():
+        visible = _select(group, "view")
+        row = _summary(visible, config)
+        unfinished = next((run for run in group if run.status not in _COMPLETE), None)
+        if unfinished is not None and unfinished.run_id != visible.run_id:
+            row["latest_unfinished"] = _summary(unfinished, config)
+        rows.append(row)
+    return CommandResult(
+        result={
+            "packs": rows,
+            "saved_runs": len(runs),
+        },
+        warnings=["Some saved run files could not be read."] if skipped else [],
+    )
+
+
+def _semantic_fields(value: Any) -> dict[str, Any]:
+    facets = value.facets.model_dump(mode="json")
+    return {
+        "descriptions": {
+            language: description.model_dump(mode="json")
+            for language, description in (
+                value.descriptions.items()
+                if isinstance(value.descriptions, dict)
+                else (("ru", value.descriptions.ru), ("en", value.descriptions.en))
+            )
+        },
+        "semantic_tags": list(value.semantic_tags),
+        "content": value.content.model_dump(mode="json"),
+        "concept_ids": list(value.concept_ids),
+        "facets": {
+            key: facets[key]
+            for key in (
+                "text_content",
+                "content_types",
+                "styles",
+                "suggested_uses",
+                "uncertainties",
+            )
+        },
+    }
+
+
+def _staging_items(
+    checkpoint: RunCheckpoint,
+    names: tuple[str, ...],
+    warnings: list[str],
+) -> dict[str, dict[str, Any]]:
+    staging = checkpoint.safe_parameters.get("staging_repository")
+    if not isinstance(staging, str) or not Path(staging).is_dir():
+        return {}
+    try:
+        # Public load_dataset recovers transactions and creates a writer lock.
+        # Browsing must not do either, so refuse pending writes and use the
+        # parsing-only loader with before/after consistency checks.
+        root = Path(staging)
+        assert_no_link_or_reparse(root)
+        root = root.resolve()
+        transaction = root / TRANSACTION_DIRECTORY_NAME
+        if transaction.exists() or transaction.is_symlink():
+            raise DatasetLoadError("staging has an unfinished transaction")
+        snapshot = _load_dataset_unlocked(root)
+        if transaction.exists() or transaction.is_symlink():
+            raise DatasetLoadError("staging changed while being read")
+        for relative, original in snapshot.source_bytes.items():
+            path = root / relative
+            assert_no_link_or_reparse(path, boundary=root)
+            if path.read_bytes() != original:
+                raise DatasetLoadError("staging changed while being read")
+    except (OSError, DatasetLoadError, ValueError):
+        warnings.append("The saved staging dataset could not be read; using exact cached results.")
+        return {}
+    wanted = {name.casefold() for name in names}
+    collections = {
+        item.id for item in snapshot.collections.values() if item.native_id.casefold() in wanted
+    }
+    member_ids = {
+        item.emoji_id
+        for item in snapshot.memberships.values()
+        if item.collection_id in collections and item.status.value == "active"
+    }
+    result = {}
+    for emoji in snapshot.emojis.values():
+        if emoji.id not in member_ids:
+            continue
+        result[emoji.native_id] = {
+            "native_id": emoji.native_id,
+            **_semantic_fields(emoji),
+            "review_status": emoji.review.status.value,
+            "source": "staging",
+        }
+    return result
+
+
+def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
+    """Browse saved text only. Review mode never approves or changes an item."""
+    config = load_config()
+    checkpoint = _resolve(selector, config, purpose="view")
+    all_names = _names(checkpoint)
+    selected_name = None if _RUN_ID.fullmatch(selector) else _source_name(selector)
+    names = tuple(
+        name
+        for name in all_names
+        if selected_name is None or name.casefold() == selected_name.casefold()
+    )
+    warnings: list[str] = []
+    staging = _staging_items(checkpoint, names, warnings)
+    membership_map = checkpoint.safe_parameters.get("source_memberships")
+    native_ids: set[str] = set()
+    if isinstance(membership_map, dict):
+        for name, members in membership_map.items():
+            if name.casefold() in {item.casefold() for item in names} and isinstance(members, list):
+                native_ids.update(member for member in members if isinstance(member, str))
+    if selected_name is None or len(all_names) == 1:
+        native_ids.update(checkpoint.elements)
+    elif not native_ids and not staging:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "This multi-pack run has no saved membership for the selected pack.",
+            hint="Use its exact RunID to browse all saved items.",
+        )
+    native_ids.update(staging)
+    counts = {"ready": 0, "pending": 0, "missing": 0, "invalid": 0}
+    items = []
+    cache: CacheStore | None = None
+    needs_cache = any(native_id not in staging for native_id in native_ids)
+    cache_path = config.cache_dir / "cache-v1.sqlite3" if config.cache_dir is not None else None
+    if needs_cache and cache_path is not None and cache_path.is_file():
+        try:
+            cache = CacheStore(cache_path, read_only=True)
+        except (CacheError, OSError):
+            warnings.append(
+                "The cache cannot be read without changing it; "
+                "retry after the running command ends."
+            )
+    try:
+        for native_id in sorted(native_ids):
+            if native_id in staging:
+                items.append(staging[native_id])
+                counts["ready"] += 1
+                continue
+            element = checkpoint.elements.get(native_id)
+            if element is None or element.ai_cache_key is None:
+                counts["pending"] += 1
+                continue
+            if cache is None:
+                counts["missing"] += 1
+                continue
+            try:
+                hit = cache.get_ai_entry(element.ai_cache_key, follow_aliases=False)
+                if hit is None:
+                    counts["missing"] += 1
+                    continue
+                result = hit[1].result
+                if len(result.batch.items) != 1:
+                    counts["invalid"] += 1
+                    continue
+                items.append(
+                    {
+                        "native_id": native_id,
+                        **_semantic_fields(result.batch.items[0]),
+                        "review_status": "unreviewed",
+                        "source": "ai_cache",
+                        "generated_at": hit[1].generated_at,
+                    }
+                )
+                counts["ready"] += 1
+            except (CacheError, sqlite3.Error, ValueError, TypeError):
+                counts["invalid"] += 1
+    finally:
+        if cache is not None:
+            cache.close()
+    if counts["missing"]:
+        warnings.append(
+            "Some exact cached descriptions are unavailable; saved progress was not changed."
+        )
+    summary = _summary(checkpoint, config)
+    summary.update(
+        {
+            "names": list(names),
+            "items": len(native_ids),
+            "ai_ready": sum(
+                element.ai_facets_complete
+                for native_id, element in checkpoint.elements.items()
+                if native_id in native_ids
+            ),
+        }
+    )
+    return CommandResult(
+        run_id=checkpoint.run_id,
+        result={
+            "pack": summary,
+            "items": items,
+            "counts": counts,
+            "review": review,
+        },
+        warnings=list(warnings),
+    )

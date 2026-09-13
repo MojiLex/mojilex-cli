@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
 from mojilex_cli.cli import _unknown_cost_callback, _with_runtime_secrets, app
-from mojilex_cli.commands import workflow
+from mojilex_cli.commands import packs, workflow
 from mojilex_cli.commands.runtime import CommandError, CommandResult
 from test_dataset_helpers import write_fixture
+
+
+@pytest.fixture(autouse=True)
+def saved_interrupted_run(monkeypatch):
+    monkeypatch.setattr(
+        packs,
+        "resolve_pack_run",
+        lambda selector, **kwargs: SimpleNamespace(
+            run_id=selector,
+            status="interrupted",
+            command="add",
+        ),
+    )
 
 
 def test_validate_json_is_one_machine_readable_object(tmp_path) -> None:

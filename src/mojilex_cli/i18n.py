@@ -19,7 +19,10 @@ UI_LANGUAGE_ENV = "MOJILEX_UI_LANGUAGE"
 _CURRENT_UI_LANGUAGE: ContextVar[UiLanguage] = ContextVar("mojilex_ui_language", default="en")
 
 _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pack_workflow", ("add", "import", "describe", "submit", "resume", "update")),
+    (
+        "pack_workflow",
+        ("list", "show", "import", "describe", "publish", "resume", "add", "submit", "update"),
+    ),
     (
         "read",
         ("search", "get", "get-collection", "resolve", "similar", "snapshots"),
@@ -39,6 +42,12 @@ _PANEL_TITLES: dict[str, tuple[str, str]] = {
 
 
 _COMMAND_HELP: dict[str, tuple[str, str]] = {
+    "list": ("List saved packs and progress.", "Показать сохранённые паки и прогресс анализа."),
+    "show": ("Read saved pack descriptions.", "Показать готовые описания пака без AI-запросов."),
+    "publish": (
+        "Publish a pack through a GitHub pull request.",
+        "Отправить готовый пак на GitHub через Pull Request.",
+    ),
     "mojilex": (
         "Build, validate, and publish the media-free MojiLex emoji dataset.",
         "Собирайте, проверяйте и публикуйте набор данных эмодзи MojiLex без исходных медиа.",
@@ -109,12 +118,12 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
         "Проверить AI-модель по проверенному эталонному манифесту.",
     ),
     "resume": (
-        "Resume a staged run by its run ID.",
-        "Продолжить сохранённую операцию по её Run ID.",
+        "Resume a saved pack by name or run ID.",
+        "Продолжить сохранённый пак по имени или Run ID.",
     ),
     "review": (
-        "Record a human review decision for an emoji.",
-        "Записать решение ручной проверки эмодзи.",
+        "Browse a pack or optionally record an emoji review.",
+        "Просмотреть пак; при желании записать проверку отдельного эмодзи.",
     ),
     "set-status": (
         "Change an entity availability status.",
@@ -337,6 +346,70 @@ _TEXT: dict[str, tuple[str, str]] = {
 }
 
 _RUSSIAN_MESSAGES = {
+    "Use a pack name or an exact RunID.": "Укажите имя пака или Run ID.",
+    "Run mojilex list to see saved packs.": "Посмотрите сохранённые паки командой mojilex list.",
+    "This pack name matches different source groups or repositories.": (
+        "Имя пака неоднозначно: найдены разные группы паков или репозитории."
+    ),
+    "Choose an exact RunID from mojilex list.": "Выберите Run ID из mojilex list.",
+    "No completed description run is ready to publish for this pack.": (
+        "Для этого пака пока нет завершённого черновика для публикации."
+    ),
+    "Complete mojilex describe for this pack first, or choose an exact RunID.": (
+        "Сначала выполните mojilex describe ИМЯ_ПАКА или выберите нужный Run ID."
+    ),
+    "Some saved run files could not be read.": (
+        "Некоторые сохранённые запуски не удалось прочитать."
+    ),
+    "This saved run contains multiple packs.": "В этом запуске несколько паков.",
+    "The saved staging dataset could not be read; using exact cached results.": (
+        "Черновик сейчас недоступен; показаны сохранённые ответы из кэша."
+    ),
+    "The cache cannot be read without changing it; retry after the running command ends.": (
+        "Кэш занят записью. Повторите просмотр после завершения текущей команды."
+    ),
+    "Some exact cached descriptions are unavailable; saved progress was not changed.": (
+        "Часть сохранённых описаний недоступна. Прогресс запуска не изменён."
+    ),
+    "Unfinished run": "Незавершённый запуск",
+    "Continue unfinished work: mojilex resume NAME": "Продолжить незавершённое: mojilex resume ИМЯ",
+    "Validation passed.": "Проверка пройдена.",
+    "Changed data files": "Изменено файлов данных",
+    "Pack": "Пак",
+    "Descriptions": "Описания",
+    "descriptions": "описаний",
+    "Updated": "Обновлено",
+    "Content rating": "Категория контента",
+    "Content warnings": "Предупреждения о содержимом",
+    "Motion": "Движение",
+    "Usage examples": "Примеры использования",
+    "Tags": "Теги",
+    "Text in emoji": "Текст на эмодзи",
+    "Pending": "Ещё не готовы",
+    "Unavailable": "Недоступны",
+    "Invalid": "Повреждены",
+    "content_types": "Типы содержимого",
+    "styles": "Стили",
+    "suggested_uses": "Назначение",
+    "uncertainties": "Неопределённости",
+    "No saved packs. Start with mojilex import PACK_URL.": (
+        "Сохранённых паков пока нет. Начните с mojilex import ССЫЛКА_НА_ПАК."
+    ),
+    "Open a pack: mojilex show NAME": "Открыть пак: mojilex show ИМЯ",
+    "Optional viewing. Content warnings do not require approval.": (
+        "Добровольный просмотр. Предупреждения о содержимом не требуют одобрения."
+    ),
+    "This run is already complete.": "Этот запуск уже завершён.",
+    "Pack name or run ID.": "Имя пака или Run ID.",
+    "Validate without uploading.": "Проверить без загрузки на GitHub.",
+    "Optional: approve, request-changes, or reject": (
+        "Необязательно: approve, request-changes или reject"
+    ),
+    "The pack analysis is not complete.": "Анализ пака ещё не завершён.",
+    "No saved run matches this pack name.": "Нет сохранённого запуска с таким именем пака.",
+    "Run mojilex list to see saved packs, or pass an exact RunID.": (
+        "Посмотрите сохранённые паки командой mojilex list."
+    ),
     "Could not inspect the configured dataset repository.": (
         "Не удалось проверить настроенный репозиторий данных."
     ),
