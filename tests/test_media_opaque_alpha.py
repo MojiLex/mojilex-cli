@@ -37,6 +37,8 @@ def test_native_alpha_proof_requires_complete_opaque_plane(
             return b"", b""
 
     def popen(command, **kwargs):
+        assert "-vsync" not in command
+        assert command[command.index("-fps_mode") + 1] == "passthrough"
         assert command[command.index("-vf") + 1] == "alphaextract"
         assert "format=rgba" not in command
         assert command[command.index("-c:v") + 1] == "libvpx-vp9"
