@@ -81,6 +81,8 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
 
 
 def _coerce_env(name: str, value: str) -> Any:
+    if name == "MOJILEX_MAX_AI_REQUESTS" and value.strip().lower() == "unlimited":
+        return "unlimited"
     if name == "MOJILEX_LANGUAGES":
         return tuple(part.strip() for part in value.split(",") if part.strip())
     if name in {

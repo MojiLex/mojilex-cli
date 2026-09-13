@@ -177,7 +177,7 @@ def resolve_pack_run(selector: str, *, purpose: _Purpose = "latest") -> RunCheck
 
 def _summary(checkpoint: RunCheckpoint, config: MojiLexConfig) -> dict[str, Any]:
     maximum = checkpoint.safe_parameters.get("max_ai_requests")
-    checkpoint_maximum = type(maximum) is int and maximum >= 0
+    checkpoint_maximum = maximum == "unlimited" or (type(maximum) is int and maximum >= 0)
     return {
         "run_id": checkpoint.run_id,
         "names": list(_names(checkpoint)),
@@ -186,7 +186,9 @@ def _summary(checkpoint: RunCheckpoint, config: MojiLexConfig) -> dict[str, Any]
         "items": len(checkpoint.elements),
         "ai_ready": sum(element.ai_facets_complete for element in checkpoint.elements.values()),
         "requests_used": checkpoint.ai_requests_used,
-        "max_ai_requests": maximum if checkpoint_maximum else config.ai.max_ai_requests,
+        "max_ai_requests": (None if maximum == "unlimited" else maximum)
+        if checkpoint_maximum
+        else config.ai.max_ai_requests,
         "max_ai_requests_source": "checkpoint" if checkpoint_maximum else "config",
     }
 

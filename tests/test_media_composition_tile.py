@@ -4,12 +4,14 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from media_backend_helpers import require_native_media_limits
 from mojilex_cli.media.models import MediaLimits, ProcessedMedia
 from mojilex_cli.media.resume import RetainedMediaStore
 from mojilex_cli.media.sandbox import SafeMediaWorker
 
 
 def _process(tmp_path: Path, *, size: int = 100, repaint: bool = False) -> ProcessedMedia:
+    require_native_media_limits()
     source = tmp_path / "tile.webp"
     with Image.new("RGBA", (size, size), (10, 30, 90, 128)) as image:
         image.putpixel((0, 0), (200, 100, 40, 255))

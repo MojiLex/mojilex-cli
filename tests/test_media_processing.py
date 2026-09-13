@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from media_backend_helpers import require_native_media_limits
 from mojilex_cli.media import (
     ContactSheetInput,
     MediaError,
@@ -359,6 +360,7 @@ async def test_media_processor_runs_blocking_worker_off_event_loop(tmp_path: Pat
 
 
 def test_webp_runs_in_isolated_worker_and_contact_sheet_is_bounded(tmp_path: Path) -> None:
+    require_native_media_limits()
     source = tmp_path / "fixture.bin"
     Image.new("RGBA", (32, 16), (255, 255, 255, 128)).save(source, "WEBP", lossless=True)
     processed = SafeMediaWorker(MediaLimits(frames=4)).process(
@@ -426,6 +428,7 @@ def test_render_only_webp_recreates_frames_without_running_analysis(
     reason="FFmpeg system prerequisite is not installed",
 )
 def test_short_webm_yields_every_deterministic_sample(tmp_path: Path) -> None:
+    require_native_media_limits()
     source = tmp_path / "short.webm"
     environment = {"PATH": os.environ.get("PATH", ""), "LC_ALL": "C"}
     for name in ("SYSTEMROOT", "WINDIR"):

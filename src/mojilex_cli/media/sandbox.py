@@ -376,11 +376,26 @@ def _terminate_worker(
 
 def hard_resource_limits_available() -> bool:
     if os.name != "nt":
+        # Constants alone do not prove enforcement is available: Darwin can
+        # reject a 512 MiB address-space cap even in a fresh interpreter. Probe
+        # the exact bootstrap and all limits without importing any decoder.
         try:
-            import resource
-
-            return hasattr(resource, "RLIMIT_AS") and hasattr(resource, "RLIMIT_CPU")
-        except ImportError:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-P",
+                    str(Path(__file__).with_name("unix_worker.py")),
+                    str(HARD_MAX_WORKER_MEMORY),
+                    "--probe",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=5,
+                check=False,
+                env=_worker_environment(Path.cwd()),
+            )
+            return completed.returncode == 0 and completed.stdout == b"MOJILEX_RESOURCE_LIMITS_OK\n"
+        except (OSError, subprocess.TimeoutExpired):
             return False
     # A real attach is verified during the fixture probe; availability of APIs is a first check.
     try:

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from media_backend_helpers import require_native_media_limits
 from mojilex_cli.analysis import DeterministicMediaAnalysis
 from mojilex_cli.commands import dedupe as command_module
 from mojilex_cli.commands import dedupe_backfill as module
@@ -169,6 +170,7 @@ def test_complete_fingerprint_scan_does_not_need_credentials(tmp_path, monkeypat
 @pytest.fixture(scope="module")
 def verified_media():
     """Real WebP bytes decoded and analyzed by the sandbox, never a fabricated hash."""
+    require_native_media_limits()
     buffer = io.BytesIO()
     with Image.new("RGBA", (32, 32), (240, 30, 60, 255)) as picture:
         picture.save(buffer, format="WEBP", lossless=True)

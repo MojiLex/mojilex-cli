@@ -530,18 +530,18 @@ class RequestBudget:
     def __init__(
         self,
         *,
-        max_requests: int,
+        max_requests: int | None,
         max_cost_usd: Decimal | None = None,
         allow_unknown_cost: bool = False,
-        unknown_cost_authorizer: Callable[[int], bool] | None = None,
+        unknown_cost_authorizer: Callable[[int | None], bool] | None = None,
         reservation_recorder: Callable[[int, Decimal], None] | None = None,
         requests_used: int = 0,
         cost_reserved: Decimal = Decimal("0"),
     ) -> None:
         if (
-            max_requests < 0
+            (max_requests is not None and max_requests < 0)
             or requests_used < 0
-            or requests_used > max_requests
+            or (max_requests is not None and requests_used > max_requests)
             or cost_reserved < 0
             or (max_cost_usd is not None and (max_cost_usd < 0 or cost_reserved > max_cost_usd))
         ):
@@ -561,7 +561,10 @@ class RequestBudget:
 
     async def reserve(self, estimate: CostEstimate) -> None:
         async with self._lock:
-            if self.requests_used + estimate.requests > self.max_requests:
+            if (
+                self.max_requests is not None
+                and self.requests_used + estimate.requests > self.max_requests
+            ):
                 raise BudgetExceededError("AI request limit would be exceeded")
             estimated_cost = estimate.upper_bound_usd
             if estimated_cost is None:
@@ -571,7 +574,11 @@ class RequestBudget:
                     self._unknown_cost_asked = True
                     if self.unknown_cost_authorizer is not None:
                         self._unknown_cost_approved = (
-                            self.unknown_cost_authorizer(self.max_requests - self.requests_used)
+                            self.unknown_cost_authorizer(
+                                None
+                                if self.max_requests is None
+                                else self.max_requests - self.requests_used
+                            )
                             is True
                         )
                 if not self._unknown_cost_approved:

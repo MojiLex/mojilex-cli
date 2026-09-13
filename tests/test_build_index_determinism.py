@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -169,7 +170,12 @@ def _tree_bytes(root: Path, *, include_transaction_lock: bool = True) -> dict[st
         if path.is_file()
         and (
             include_transaction_lock
-            or path.relative_to(root).as_posix() != ".mojilex/locks/dataset-transaction-v1.lock"
+            or re.fullmatch(
+                r"\.mojilex/locks/(?:dataset-transaction-v1|index-[0-9a-f]{64})\.lock",
+                path.relative_to(root).as_posix(),
+            )
+            is None
+            or path.stat().st_size != 0
         )
     }
 
@@ -535,3 +541,23 @@ def test_rebuild_removes_only_empty_directories_from_retired_resources(tmp_path:
     assert not retired_file.exists()
     assert not retired_file.parent.exists()
     _build(dataset, output)
+
+
+def test_source_inventory_excludes_only_empty_runtime_locks(tmp_path):
+    files = {
+        ".mojilex/locks/dataset-transaction-v1.lock": b"",
+        ".mojilex/locks/index-" + "a" * 64 + ".lock": b"",
+        ".mojilex/locks/index-" + "b" * 64 + ".lock": b"unexpected content",
+        ".mojilex/locks/unexpected.lock": b"",
+        ".mojilex/transactions/unexpected.json": b"{}",
+        "data/example.json": b"{}",
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    assert _tree_bytes(tmp_path) == files
+    expected = dict(files)
+    del expected[".mojilex/locks/dataset-transaction-v1.lock"]
+    del expected[".mojilex/locks/index-" + "a" * 64 + ".lock"]
+    assert _tree_bytes(tmp_path, include_transaction_lock=False) == expected

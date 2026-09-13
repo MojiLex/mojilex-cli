@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from media_backend_helpers import require_native_media_limits
 from mojilex_cli.media import MediaDependencyError, MediaLimits, SafeMediaWorker, unix_worker
 from mojilex_cli.media import sandbox as sandbox_module
 
@@ -157,6 +158,7 @@ def test_direct_unix_bootstrap_does_not_shadow_stdlib_inspect(tmp_path: Path) ->
 def test_unix_worker_starts_from_thread_with_parent_larger_than_worker_limit(
     tmp_path: Path,
 ) -> None:
+    require_native_media_limits()
     source = tmp_path / "fixture.webp"
     Image.new("RGB", (2, 2), "red").save(source, "WEBP")
     # Reserve address space without allocating physical pages. Darwin rejects an
@@ -171,3 +173,60 @@ def test_unix_worker_starts_from_thread_with_parent_larger_than_worker_limit(
         ).result(timeout=40)
     assert result.metadata.width == 2
     assert len(result.frame_paths) == 1
+
+
+def test_probe_bootstrap_never_imports_decoder(monkeypatch, capsys):
+    applied = []
+    monkeypatch.setattr(unix_worker, "apply_limits", applied.append)
+    monkeypatch.setitem(
+        sys.modules,
+        "runpy",
+        SimpleNamespace(run_module=lambda *args, **kwargs: pytest.fail("probe imported decoder")),
+    )
+    monkeypatch.setattr(sys, "argv", ["bootstrap", "536870912", "--probe"])
+    unix_worker.main()
+    assert applied == [536870912]
+    assert capsys.readouterr().out == "MOJILEX_RESOURCE_LIMITS_OK\n"
+
+
+@pytest.mark.parametrize("scenario", ["ok", "rejected", "bad_marker", "timeout"])
+def test_capability_requires_actual_bootstrap_success(monkeypatch, scenario):
+    monkeypatch.setattr(sandbox_module, "os", SimpleNamespace(name="posix", environ=os.environ))
+
+    def probe(command, **kwargs):
+        assert command[-2:] == ["536870912", "--probe"]
+        assert kwargs["timeout"] == 5
+        assert "--source" not in command
+        if scenario == "timeout":
+            raise subprocess.TimeoutExpired(command, 5)
+        return SimpleNamespace(
+            returncode=1 if scenario == "rejected" else 0,
+            stdout=b"wrong" if scenario == "bad_marker" else b"MOJILEX_RESOURCE_LIMITS_OK\n",
+        )
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", probe)
+    assert sandbox_module.hard_resource_limits_available() is (scenario == "ok")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix bootstrap enforcement")
+def test_host_rejecting_memory_limit_fails_before_decoding(tmp_path):
+    if sandbox_module.hard_resource_limits_available():
+        pytest.skip("this host successfully enforces the exact hard worker limits")
+    source = tmp_path / "fixture.webp"
+    Image.new("RGBA", (2, 2), "red").save(source, "WEBP", lossless=True)
+    output = tmp_path / "output"
+    with pytest.raises(MediaDependencyError, match="isolated media worker limits unavailable"):
+        SafeMediaWorker().process(source, output, expected_format="webp")
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == [source]
+
+
+def test_doctor_reports_unavailable_without_decoding_when_limits_rejected(monkeypatch):
+    from mojilex_cli.media import doctor
+
+    monkeypatch.setattr(doctor, "hard_resource_limits_available", lambda: False)
+    monkeypatch.setattr(doctor, "SafeMediaWorker", lambda **kwargs: pytest.fail("started decoder"))
+    results = doctor.probe_media_backends()
+    assert len(results) == 3
+    assert all(not result.available and not result.fixture_decoded for result in results)
+    assert all("hard CPU/RAM worker limits are unavailable" in result.detail for result in results)

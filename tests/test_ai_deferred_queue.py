@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mojilex_cli.ai import AIOutputError, BudgetExceededError, RequestBudget
+from mojilex_cli.ai import AIOutputError, BudgetExceededError, CostEstimate, RequestBudget
 from mojilex_cli.ai.base import AIError, AITransientError, UnknownCostError
 from mojilex_cli.cache import CacheStore
 from mojilex_cli.config import AIConfig, MojiLexConfig, ProcessingConfig
@@ -78,9 +78,11 @@ def queue_run(tmp_path, monkeypatch):
                 )
             finally:
                 assert snapshot.to_files() == original_files
-                assert budget.requests_used <= budget.max_requests
+                assert budget.max_requests is None or budget.requests_used <= budget.max_requests
                 assert budget.requests_used == len(provider.calls)
-                assert budget.cost_reserved == Decimal("0.01") * len(provider.calls)
+                assert budget.cost_reserved == getattr(state, "unit_cost", Decimal("0.01")) * len(
+                    provider.calls
+                )
 
     state.run = run
     return state
@@ -139,8 +141,9 @@ async def test_permanent_invalid_item_uses_shared_budget_and_preserves_valid_sib
     assert queue_run.counters[-1].completed == 5
 
 
+@pytest.mark.parametrize("maximum", [20, None])
 async def test_transient_provider_failure_is_deferred_and_successes_are_not_repeated(
-    queue_run, monkeypatch
+    queue_run, monkeypatch, maximum
 ):
     original_sleep = asyncio.sleep
 
@@ -150,7 +153,7 @@ async def test_transient_provider_failure_is_deferred_and_successes_are_not_repe
     monkeypatch.setattr(asyncio, "sleep", no_wait)
     bad = queue_run.items[0].native_id
     provider = RecoveringProvider(bad, AITransientError)
-    result, _ = await queue_run.run(provider, RequestBudget(max_requests=20), batch_size=1)
+    result, _ = await queue_run.run(provider, RequestBudget(max_requests=maximum), batch_size=1)
     assert set(result) == {item.native_id for item in queue_run.items}
     assert provider.calls == [(bad,)] * 3 + [(item.native_id,) for item in queue_run.items[1:]] + [
         (bad,)
@@ -171,6 +174,44 @@ async def test_cancellation_does_not_start_another_round(queue_run):
         await queue_run.run(provider, RequestBudget(max_requests=20), batch_size=1)
     assert provider.calls == [(queue_run.items[0].native_id,)]
     assert not queue_run.saved
+
+
+@pytest.mark.parametrize("error_type, attempts", [(AIOutputError, 8), (AITransientError, 12)])
+async def test_unlimited_permanent_failures_stop_without_repeating_saved_siblings(
+    queue_run, monkeypatch, error_type, attempts
+):
+    real_sleep = asyncio.sleep
+
+    async def no_wait(_):
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    bad = queue_run.items[0].native_id
+    queue_run.unit_cost = Decimal("0")
+
+    class PermanentlyFailingProvider(_RecoveryProvider):
+        def estimate(self, request):
+            return CostEstimate(upper_bound_usd=Decimal("0"), note="zero-cost fixture")
+
+        async def describe(self, request):
+            ids = tuple(image.data.removeprefix(_PREFIX).decode() for image in request.images)
+            if ids == (bad,):
+                self.calls.append(ids)
+                raise error_type("permanent synthetic failure")
+            return await super().describe(request)
+
+    provider = PermanentlyFailingProvider([], None)
+    # A monetary limit cannot terminate zero-cost retries. The retry guard must.
+    budget = RequestBudget(max_requests=None, max_cost_usd=Decimal("1"))
+    with pytest.raises(error_type, match="permanent synthetic failure"):
+        await asyncio.wait_for(queue_run.run(provider, budget, batch_size=1), timeout=5)
+    good = {item.native_id for item in queue_run.items} - {bad}
+    assert set(queue_run.saved) == good
+    counts = Counter(call[0] for call in provider.calls)
+    assert counts[bad] == attempts
+    assert all(counts[native_id] == 1 for native_id in good)
+    assert budget.cost_reserved == 0
+    assert queue_run.counters[-1].queue_stopped
 
 
 @pytest.mark.parametrize("failure_type", [AIError, UnknownCostError, BudgetExceededError])

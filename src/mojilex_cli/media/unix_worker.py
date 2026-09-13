@@ -48,6 +48,9 @@ def main() -> None:
     except (ImportError, IndexError, OSError, RuntimeError, ValueError) as exc:
         sys.stderr.write(f"isolated media worker limits unavailable: {exc}")
         raise SystemExit(1) from None
+    if sys.argv[2:] == ["--probe"]:
+        sys.stdout.write("MOJILEX_RESOURCE_LIMITS_OK\n")
+        return
     # Import only after all limits succeeded. No untrusted media is read earlier.
     import runpy
 

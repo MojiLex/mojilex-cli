@@ -13,6 +13,14 @@ Use the terminal menu with arrow keys. No repository cloning, IDE or internal ru
 [Install](#quick-start) · [First pack](#your-first-pack) ·
 [Commands](#everyday-commands) · [Help](#questions-and-troubleshooting)
 
+## Native media platform support
+
+Windows and Linux support isolated media processing when `mojilex doctor` succeeds.
+On macOS versions that reject the exact hard worker memory cap, media processing
+is unavailable; `doctor` reports this and decoding fails before producing output.
+The limit is never raised or disabled automatically. Dataset commands remain
+available. See [platform limits and CI coverage](docs/native-media-platforms.md).
+
 ## Quick start
 
 ### 1. Install the prerequisites
@@ -199,6 +207,21 @@ Two decoders run by default; downloads can continue while waiting for a decoder
 without consuming its timeout. Increase decoder concurrency gradually: too many
 processes can make processing slower. Overlapping stages reduces idle time, but
 the speedup depends on CPU capacity, network speed and provider quotas.
+
+The **AI request limit for the whole operation** is shared by every pack in the
+input file, including retries, model escalation and puzzle checks. It defaults
+to 100. In **Settings**, enter `unlimited` to disable this count limit; `0` allows
+no AI requests. This does not disable the cost limit or provider quotas.
+TOML uses `max_ai_requests = "unlimited"` in `[ai]`; the environment equivalent is
+`MOJILEX_MAX_AI_REQUESTS=unlimited`. An existing run keeps its saved budget until
+you explicitly change it, for example:
+
+```console
+mojilex resume RUN_ID --max-ai-requests unlimited
+```
+
+`add` and `describe` accept the same option. A numeric override is the total run
+budget, including requests already used, rather than an additional allowance.
 
 ## Everyday commands
 

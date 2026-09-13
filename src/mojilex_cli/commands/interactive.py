@@ -292,8 +292,10 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
             )
             + f"GitHub: {state['github']}\n"
             + label(
-                f"Запросы ИИ этого результата: {pack['requests_used']}/{pack['max_ai_requests']}",
-                f"AI requests for this result: {pack['requests_used']}/{pack['max_ai_requests']}",
+                f"Запросы ИИ этого результата: {pack['requests_used']}/"
+                + _setting_value(pack["max_ai_requests"], key="max_ai_requests"),
+                f"AI requests for this result: {pack['requests_used']}/"
+                + _setting_value(pack["max_ai_requests"], key="max_ai_requests"),
             )
         )
         if saved.get("compositions"):
@@ -400,7 +402,9 @@ def _history(state: dict[str, Any]) -> None:
         run = state["history"][index]
         _notice(
             label("Сведения о запуске\n", "Run details\n")
-            + f"{run['run_id']}\n{run['requests_used']}/{run['max_ai_requests']} "
+            + f"{run['run_id']}\n{run['requests_used']}/"
+            + _setting_value(run["max_ai_requests"], key="max_ai_requests")
+            + " "
             + label("запросов ИИ", "AI requests")
         )
 
@@ -438,7 +442,10 @@ def _settings(dispatch: Dispatch) -> None:
     while True:
         settings = settings_command().result
         entries = settings["settings"]
-        options = [f"{entry['label']}: {_setting_value(entry['value'])}" for entry in entries]
+        options = [
+            f"{entry['label']}: {_setting_value(entry['value'], key=entry['key'])}"
+            for entry in entries
+        ]
         options.extend(
             [
                 label("Первоначальная настройка", "Initial setup"),
@@ -486,7 +493,11 @@ def _settings(dispatch: Dispatch) -> None:
                     value = str(
                         typer.prompt(
                             label("Новое значение", "New value"),
-                            default=str(entry["value"]),
+                            default=(
+                                "unlimited"
+                                if entry["key"] == "max_ai_requests" and entry["value"] is None
+                                else str(entry["value"])
+                            ),
                         )
                     )
                     changed = update_setting_command(entry["key"], value).result
@@ -508,8 +519,11 @@ def _settings(dispatch: Dispatch) -> None:
                     break
                 except (KeyboardInterrupt, EOFError, typer.Abort):
                     break
-                message = f"{changed['label']}: {_setting_value(changed['value'])}\n" + changed.get(
-                    "note", ""
+                message = (
+                    f"{changed['label']}: "
+                    + _setting_value(changed["value"], key=entry["key"])
+                    + "\n"
+                    + changed.get("note", "")
                 )
                 if entry["key"] == "ui_language":
                     message += label(
@@ -520,7 +534,9 @@ def _settings(dispatch: Dispatch) -> None:
                 break
 
 
-def _setting_value(value: object) -> str:
+def _setting_value(value: object, *, key: str | None = None) -> str:
+    if key == "max_ai_requests" and value in {None, "unlimited"}:
+        return label("Без лимита", "Unlimited")
     if value is None:
         return label("не задан", "not set")
     if value == "":

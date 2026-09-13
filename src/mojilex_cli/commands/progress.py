@@ -34,7 +34,7 @@ class BatchProgress:
         *,
         interval: float = 5.0,
         batch_total: int | None = None,
-        request_budget: Callable[[], tuple[int, int]] | None = None,
+        request_budget: Callable[[], tuple[int, int | None]] | None = None,
     ) -> None:
         self.label = label
         self.total = total
@@ -180,7 +180,8 @@ class BatchProgress:
             rows.append(("Осталось с ошибкой" if ru else "Unresolved failures", str(self.failed)))
         if self.request_budget is not None:
             used, limit = self.request_budget()
-            rows.append(("Запросы к ИИ" if ru else "AI requests", f"{used} / {limit}"))
+            maximum = str(limit) if limit is not None else ("без лимита" if ru else "unlimited")
+            rows.append(("Запросы к ИИ" if ru else "AI requests", f"{used} / {maximum}"))
         rows.append(("Прошло" if ru else "Elapsed", f"{elapsed // 60:02d}:{elapsed % 60:02d}"))
         for label, value in rows:
             table.add_row(Text(label), Text(value))

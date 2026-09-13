@@ -704,7 +704,12 @@ def _config_toml(config: MojiLexConfig) -> str:
             "languages = ["
             + ", ".join(_quoted(language) for language in config.ai.languages)
             + "]",
-            f"max_ai_requests = {config.ai.max_ai_requests}",
+            "max_ai_requests = "
+            + (
+                _quoted("unlimited")
+                if config.ai.max_ai_requests is None
+                else str(config.ai.max_ai_requests)
+            ),
         ]
     )
     if config.ai.max_cost_usd is not None:

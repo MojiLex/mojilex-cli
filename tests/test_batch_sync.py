@@ -161,6 +161,9 @@ def test_sync_git(tmp_path, monkeypatch):
     write_fixture(root)
     shutil.copytree(Path(schemas.__file__).parent / "v1", root / "schemas" / "v1")
     (root / ".gitattributes").write_text("* text eol=lf\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".mojilex/\n", encoding="utf-8")
+    # POSIX file locks persist after release; exercise that artifact on Windows too.
+    (root / ".mojilex" / "locks" / "dataset-transaction-v1.lock").touch()
     _git(root, "init", "--initial-branch=main")
     _git(root, "add", ".")
     _git(

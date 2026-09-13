@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from media_backend_helpers import require_native_media_limits
 from mojilex_cli.analysis import decoder_backend_fingerprint
 from mojilex_cli.domain import Media
 from mojilex_cli.media import MediaError, MediaLimitError, MediaLimits, SafeMediaWorker, worker
@@ -23,6 +24,7 @@ def test_static_telegram_png_preserves_original_format_hash_and_alpha(
     source = tmp_path / "telegram-static.webp"
     original = _png(source)
     if isolated:
+        require_native_media_limits()
         media = SafeMediaWorker().process(source, tmp_path / "out", expected_format="webp")
         metadata = media.dataset_metadata()
         analysis = media.analysis

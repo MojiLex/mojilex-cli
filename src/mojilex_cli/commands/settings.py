@@ -50,30 +50,20 @@ class Setting:
 
 
 SETTINGS: dict[str, Setting] = {
+    "ui_language": Setting(
+        ("ui_language",),
+        "Interface language",
+        "Language used by menus and messages.",
+        "MOJILEX_UI_LANGUAGE",
+        choices=("ru", "en"),
+    ),
     "official_pack_policy": Setting(
         ("processing", "official_pack_policy"),
-        "Packs already in the official repository",
+        "Packs already published in MojiLex",
+        "Checks the shared MojiLex database on GitHub, not your local cache. "
         "ask: one confirmation, Enter means No; skip: omit silently; allow: do not check.",
         "MOJILEX_OFFICIAL_PACK_POLICY",
         choices=("ask", "skip", "allow"),
-    ),
-    "pack_concurrency": Setting(
-        ("processing", "pack_concurrency"),
-        "Parallel packs",
-        "Maximum active packs. Downloads, decoders and AI share the run's global limits.",
-        "MOJILEX_PACK_CONCURRENCY",
-        "integer",
-        1,
-        8,
-    ),
-    "render_concurrency": Setting(
-        ("processing", "render_concurrency"),
-        "Parallel media decoders",
-        "Shared by all active packs. Too many CPU-heavy decoders can cause timeouts.",
-        "MOJILEX_RENDER_CONCURRENCY",
-        "integer",
-        1,
-        8,
     ),
     "provider": Setting(
         ("ai", "provider"),
@@ -88,19 +78,11 @@ SETTINGS: dict[str, Setting] = {
         "Exact model ID; no model is chosen automatically.",
         "MOJILEX_MODEL",
     ),
-    "ai_concurrency": Setting(
-        ("ai", "ai_concurrency"),
-        "Parallel AI requests",
-        "Shared by all active packs, within provider rate limits and the saved run budget.",
-        "MOJILEX_AI_CONCURRENCY",
-        "integer",
-        1,
-        16,
-    ),
     "max_ai_requests": Setting(
         ("ai", "max_ai_requests"),
-        "AI request limit per run",
-        "Includes retries and model escalation. Saved runs retain their existing budget.",
+        "AI request limit for the whole operation",
+        "Shared by all packs, including every pack in a file, retries and puzzle checks. "
+        "Enter unlimited to disable; 0 prevents requests. Saved runs keep their budget.",
         "MOJILEX_MAX_AI_REQUESTS",
         "integer",
         0,
@@ -113,6 +95,15 @@ SETTINGS: dict[str, Setting] = {
         "decimal",
         0,
     ),
+    "pack_concurrency": Setting(
+        ("processing", "pack_concurrency"),
+        "Parallel packs",
+        "Maximum active packs. Downloads, decoders and AI share the run's global limits.",
+        "MOJILEX_PACK_CONCURRENCY",
+        "integer",
+        1,
+        8,
+    ),
     "download_concurrency": Setting(
         ("telegram", "download_concurrency"),
         "Parallel media downloads",
@@ -121,6 +112,24 @@ SETTINGS: dict[str, Setting] = {
         "integer",
         1,
         32,
+    ),
+    "render_concurrency": Setting(
+        ("processing", "render_concurrency"),
+        "Parallel media decoders",
+        "Shared by all active packs. Too many CPU-heavy decoders can cause timeouts.",
+        "MOJILEX_RENDER_CONCURRENCY",
+        "integer",
+        1,
+        8,
+    ),
+    "ai_concurrency": Setting(
+        ("ai", "ai_concurrency"),
+        "Parallel AI requests",
+        "Shared by all active packs, within provider rate limits and the saved run budget.",
+        "MOJILEX_AI_CONCURRENCY",
+        "integer",
+        1,
+        16,
     ),
     "download_attempts": Setting(
         ("telegram", "max_attempts"),
@@ -139,18 +148,12 @@ SETTINGS: dict[str, Setting] = {
         0,
         120,
     ),
-    "ui_language": Setting(
-        ("ui_language",),
-        "Interface language",
-        "Language used by menus and messages.",
-        "MOJILEX_UI_LANGUAGE",
-        choices=("ru", "en"),
-    ),
 }
 
 _RUSSIAN: dict[str, tuple[str, str]] = {
     "official_pack_policy": (
-        "Паки из официального репозитория",
+        "Паки, уже опубликованные в MojiLex",
+        "Проверка общей базы MojiLex на GitHub, а не локального кэша. "
         "ask — спросить один раз, Enter означает Нет; skip — пропускать; allow — не проверять.",
     ),
     "pack_concurrency": (
@@ -168,8 +171,9 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
         "Общий предел для всех активных паков, с учётом квот сервиса и бюджета запуска.",
     ),
     "max_ai_requests": (
-        "Лимит запросов на запуск",
-        "Включает повторы и переход на другую модель. У сохранённых запусков остаётся свой лимит.",
+        "Лимит запросов ИИ на всю операцию",
+        "Общий для всех паков, в том числе всех паков файла, повторов и проверок пазлов. "
+        "unlimited — без лимита; 0 — запрет запросов. У сохранённых запусков свой бюджет.",
     ),
     "max_cost_usd": (
         "Лимит стоимости (USD)",
@@ -293,6 +297,11 @@ def _parse_value(setting: Setting, raw: str) -> Any:
     value = raw.strip()
     if setting.path == ("ai", "max_cost_usd") and value.lower() in {"", "none"}:
         return None
+    if setting.path == ("ai", "max_ai_requests") and value.lower() in {
+        "unlimited",
+        "без лимита",
+    }:
+        return "unlimited"
     try:
         if setting.kind == "integer":
             parsed: Any = int(value)

@@ -374,6 +374,8 @@ _TEXT: dict[str, tuple[str, str]] = {
 }
 
 _RUSSIAN_MESSAGES = {
+    "Whole-run request limit or unlimited.": "Лимит запросов на всю операцию или unlimited.",
+    "Use a non-negative integer or unlimited.": "Введите целое число от 0 или unlimited.",
     "ask, skip, or allow official packs.": (
         "Паки из официальной базы: ask — спросить, skip — пропустить, allow — не проверять."
     ),
@@ -536,6 +538,14 @@ _RUSSIAN_MESSAGES = {
     ),
     "estimated AI cost limit would be exceeded": "Будет превышен лимит расчётной стоимости AI.",
     "AI request limit would be exceeded": "Будет превышен лимит AI-запросов.",
+    "The requested budget is below the usage already saved for this run.": (
+        "Новый лимит меньше расхода, уже сохранённого для этого запуска."
+    ),
+    "Choose limits at least as high as recorded usage. "
+    "unlimited disables only the request count.": (
+        "Укажите лимиты не ниже уже учтённого расхода. "
+        "unlimited отключает только ограничение числа запросов."
+    ),
     "The model response failed validation. Saved results are retained; "
     "resume with the same run ID. If it repeats, report the validation code and field path.": (
         "Ответ модели не прошёл проверку. Сохранённые результаты остаются; "
@@ -609,6 +619,12 @@ _RUSSIAN_MESSAGES = {
 
 _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     (
+        r"Authorize AI requests without a request-count limit for this run, including retries\? "
+        r"The USD cost is unknown\. This is a one-time approval for this invocation\.",
+        "Разрешить AI-запросы без ограничения количества для этого запуска, включая повторы? "
+        "Стоимость в USD неизвестна. Разрешение действует только для текущего вызова команды.",
+    ),
+    (
         r"eligible emoji (?P<emoji_id>\S+) has incomplete concept mapping; "
         r"complete concept mapping before building a release snapshot",
         "У эмодзи {emoji_id} не завершена привязка понятий. "
@@ -657,10 +673,22 @@ _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     (
         r"AI plan: (?P<count>\d+) item\(s\), (?P<batches>\d+) candidate batch\(es\), "
         r"provider=(?P<provider>[^,]+), model=(?P<model>.+)\. Exact cache hits can reduce "
-        r"requests; retries and escalation share the (?P<limit>\d+)-request limit\.",
+        r"requests; retries, escalation and puzzle checks share the run budget\. "
+        r"Request limit: (?P<limit>\d+)\.",
         "План AI: эмодзи — {count}, возможных пачек — {batches}; провайдер — {provider}, "
         "модель — {model}. Совпадения в кеше могут уменьшить число запросов; "
-        "повторы и переход на более сильную модель входят в общий лимит {limit} запросов.",
+        "повторы, переход на другую модель и проверки пазлов входят в общий бюджет запуска. "
+        "Лимит запросов: {limit}.",
+    ),
+    (
+        r"AI plan: (?P<count>\d+) item\(s\), (?P<batches>\d+) candidate batch\(es\), "
+        r"provider=(?P<provider>[^,]+), model=(?P<model>.+)\. Exact cache hits can reduce "
+        r"requests; retries, escalation and puzzle checks share the run budget\. "
+        r"Request count is unlimited\.",
+        "План AI: эмодзи — {count}, возможных пачек — {batches}; провайдер — {provider}, "
+        "модель — {model}. Совпадения в кеше могут уменьшить число запросов; "
+        "повторы, переход на другую модель и проверки пазлов входят в общий бюджет запуска. "
+        "Количество запросов: без лимита.",
     ),
     (
         r"Derived contact-sheet PNG images will be sent to provider=(?P<provider>[^,]+), "

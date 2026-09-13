@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Sequence
 from decimal import Decimal
 from pathlib import Path
-from typing import TextIO, TypedDict, cast
+from typing import Literal, TextIO, TypedDict, cast
 
 from mojilex_cli.cache import CacheStore
 from mojilex_cli.config import load_config
@@ -29,6 +29,7 @@ _MAX_SOURCE_FILE_BYTES = 1024 * 1024
 class _ResumeOverrides(TypedDict, total=False):
     ai_concurrency: int
     download_concurrency: int
+    max_ai_requests: int | Literal["unlimited"]
     official_pack_policy: str
     official_confirmation: Callable[[str], bool]
 
@@ -127,7 +128,7 @@ def add_command(
     new_identity: bool,
     same_identity: bool,
     max_items: int | None,
-    max_ai_requests: int | None,
+    max_ai_requests: int | Literal["unlimited"] | None,
     max_cost_usd: Decimal | None,
     allow_unknown_cost: bool,
     ai_concurrency: int | None,
@@ -141,7 +142,7 @@ def add_command(
     check_media: bool,
     fail_fast: bool,
     confirmation: Callable[[str], bool] | None = None,
-    unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
@@ -236,11 +237,11 @@ def describe_command(
     *,
     provider: str | None,
     model: str | None,
-    max_ai_requests: int | None,
+    max_ai_requests: int | Literal["unlimited"] | None,
     max_cost_usd: Decimal | None,
     allow_unknown_cost: bool,
     ai_concurrency: int | None = None,
-    unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
@@ -308,7 +309,9 @@ def describe_command(
             provider=config.ai.provider,
             model=config.ai.model,
             ai_concurrency=config.ai.ai_concurrency,
-            max_ai_requests=config.ai.max_ai_requests,
+            max_ai_requests=(
+                config.ai.max_ai_requests if config.ai.max_ai_requests is not None else "unlimited"
+            ),
             max_cost_usd=config.ai.max_cost_usd,
             allow_unknown_cost=config.ai.allow_unknown_cost,
             unknown_cost_confirmation=unknown_cost_confirmation,
@@ -406,8 +409,9 @@ def resume_command(
     *,
     ai_concurrency: int | None = None,
     download_concurrency: int | None = None,
+    max_ai_requests: int | Literal["unlimited"] | None = None,
     confirmation: Callable[[str], bool] | None = None,
-    unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
@@ -427,6 +431,8 @@ def resume_command(
             },
         )
     overrides: _ResumeOverrides = {}
+    if max_ai_requests is not None:
+        overrides["max_ai_requests"] = max_ai_requests
     if ai_concurrency is not None:
         overrides["ai_concurrency"] = ai_concurrency
     if download_concurrency is not None:

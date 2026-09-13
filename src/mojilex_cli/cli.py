@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated, Any, NoReturn, cast
+from typing import Annotated, Any, Literal, NoReturn, cast
 
 import typer
 
@@ -184,12 +184,14 @@ def _confirmation_callback(
 
 def _unknown_cost_callback(
     *, yes: bool, non_interactive: bool, json_output: bool
-) -> Callable[[int], bool]:
-    def confirm(requests: int) -> bool:
+) -> Callable[[int | None], bool]:
+    def confirm(requests: int | None) -> bool:
         message = (
-            f"Authorize up to {requests} additional AI requests for this run, including retries? "
-            "The USD cost is unknown. This is a one-time approval for this invocation."
-        )
+            "Authorize AI requests without a request-count limit for this run, including retries? "
+            if requests is None
+            else f"Authorize up to {requests} additional AI requests for this run, "
+            "including retries? "
+        ) + "The USD cost is unknown. This is a one-time approval for this invocation."
         try:
             require_confirmation(
                 message,
@@ -400,7 +402,9 @@ def add(
     new_identity: Annotated[bool, typer.Option("--new-identity")] = False,
     same_identity: Annotated[bool, typer.Option("--same-identity")] = False,
     max_items: Annotated[int | None, typer.Option("--max-items", min=1)] = None,
-    max_ai_requests: Annotated[int | None, typer.Option("--max-ai-requests", min=0)] = None,
+    max_ai_requests: Annotated[
+        str | None, typer.Option("--max-ai-requests", help="Whole-run request limit or unlimited.")
+    ] = None,
     max_cost_usd: Annotated[str | None, typer.Option("--max-cost-usd")] = None,
     allow_unknown_cost: Annotated[bool, typer.Option("--allow-unknown-cost")] = False,
     ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1)] = None,
@@ -431,6 +435,8 @@ def add(
 
     from mojilex_cli.commands.workflow import add_command, collect_sources
 
+    request_limit = _request_limit(max_ai_requests)
+
     def action():  # type: ignore[no-untyped-def]
         selected = collect_sources(
             sources or [], from_file=from_file, use_stdin=stdin, stream=sys.stdin
@@ -454,7 +460,7 @@ def add(
             new_identity=new_identity,
             same_identity=same_identity,
             max_items=max_items,
-            max_ai_requests=max_ai_requests,
+            max_ai_requests=request_limit,
             max_cost_usd=_decimal(max_cost_usd),
             allow_unknown_cost=allow_unknown_cost,
             ai_concurrency=ai_concurrency,
@@ -572,7 +578,9 @@ def describe(
     ] = None,
     provider: Annotated[str | None, typer.Option("--provider")] = None,
     model: Annotated[str | None, typer.Option("--model")] = None,
-    max_ai_requests: Annotated[int | None, typer.Option("--max-ai-requests", min=0)] = None,
+    max_ai_requests: Annotated[
+        str | None, typer.Option("--max-ai-requests", help="Whole-run request limit or unlimited.")
+    ] = None,
     max_cost_usd: Annotated[str | None, typer.Option("--max-cost-usd")] = None,
     allow_unknown_cost: Annotated[bool, typer.Option("--allow-unknown-cost")] = False,
     ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
@@ -585,6 +593,8 @@ def describe(
     """Generate AI metadata for a staged run without publishing it."""
 
     from mojilex_cli.commands.workflow import describe_command
+
+    request_limit = _request_limit(max_ai_requests)
 
     execute(
         "describe",
@@ -599,7 +609,7 @@ def describe(
                     provider=provider,
                     model=model,
                     ai_concurrency=ai_concurrency,
-                    max_ai_requests=max_ai_requests,
+                    max_ai_requests=request_limit,
                     max_cost_usd=_decimal(max_cost_usd),
                     allow_unknown_cost=allow_unknown_cost,
                     unknown_cost_confirmation=_unknown_cost_callback(
@@ -1065,6 +1075,9 @@ def dedupe_review(
 @app.command("resume")
 def resume(
     run_id: Annotated[str, typer.Argument()],
+    max_ai_requests: Annotated[
+        str | None, typer.Option("--max-ai-requests", help="Whole-run request limit or unlimited.")
+    ] = None,
     official_packs: Annotated[
         str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
     ] = None,
@@ -1079,6 +1092,8 @@ def resume(
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
     from mojilex_cli.commands.workflow import resume_command
+
+    request_limit = _request_limit(max_ai_requests)
 
     def action():  # type: ignore[no-untyped-def]
         from mojilex_cli.commands.packs import resolve_pack_run
@@ -1098,6 +1113,7 @@ def resume(
         return _with_runtime_secrets(
             lambda: resume_command(
                 selected_run_id,
+                max_ai_requests=request_limit,
                 official_pack_policy=official_packs,
                 official_confirmation=_official_confirmation_callback(
                     non_interactive=non_interactive, json_output=json_output, quiet=quiet
@@ -1463,6 +1479,22 @@ def cache_prune(
         return cache_prune_command(older_than_days)
 
     execute("cache prune", action, json_output=json_output, quiet=quiet, debug=debug)
+
+
+def _request_limit(value: str | None) -> int | Literal["unlimited"] | None:
+    if value is None:
+        return None
+    if value.strip().lower() == "unlimited":
+        return "unlimited"
+    try:
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError("negative request budget")
+        return parsed
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "Use a non-negative integer or unlimited.", param_hint="--max-ai-requests"
+        ) from exc
 
 
 def _decimal(value: str | None) -> Decimal | None:

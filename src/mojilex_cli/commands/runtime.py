@@ -755,7 +755,10 @@ def _render_pack_result(console: Console, command: str, result: Mapping[str, Any
             value = setting["value"]
             display = str(value)
             if value is None:
-                display = "не задан" if ru else "not set"
+                if setting.get("key") == "max_ai_requests":
+                    display = "Без лимита" if ru else "Unlimited"
+                else:
+                    display = "не задан" if ru else "not set"
             elif value == "":
                 display = "не настроено" if ru else "not configured"
             table.add_row(
@@ -768,7 +771,10 @@ def _render_pack_result(console: Console, command: str, result: Mapping[str, Any
             console.print(Text(str(note)))
         return True
     if result.get("view") == "setting_updated":
-        console.print(Text(f"{result['label']}: {result['value']}"))
+        value = result["value"]
+        if result.get("key") == "max_ai_requests" and value is None:
+            value = "Без лимита" if ru else "Unlimited"
+        console.print(Text(f"{result['label']}: {value}"))
         console.print(Text("Настройка сохранена." if ru else "Setting saved."))
         return True
     if "gallery_path" in result:

@@ -204,7 +204,7 @@ class PipelineOptions:
     new_identity: bool = False
     same_identity: bool = False
     max_items: int | None = None
-    max_ai_requests: int | None = None
+    max_ai_requests: int | Literal["unlimited"] | None = None
     max_cost_usd: Decimal | None = None
     allow_unknown_cost: bool = False
     ai_concurrency: int | None = None
@@ -225,7 +225,7 @@ class PipelineOptions:
         default=None, repr=False, compare=False
     )
     confirmation: Callable[[str], bool] | None = field(default=None, repr=False, compare=False)
-    unknown_cost_confirmation: Callable[[int], bool] | None = field(
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -390,8 +390,9 @@ def run_resume_sync(
     *,
     ai_concurrency: int | None = None,
     download_concurrency: int | None = None,
+    max_ai_requests: int | Literal["unlimited"] | None = None,
     confirmation: Callable[[str], bool] | None = None,
-    unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
@@ -403,6 +404,7 @@ def run_resume_sync(
                 run_id,
                 ai_concurrency=ai_concurrency,
                 download_concurrency=download_concurrency,
+                max_ai_requests=max_ai_requests,
                 confirmation=confirmation,
                 unknown_cost_confirmation=unknown_cost_confirmation,
                 official_pack_policy=official_pack_policy,
@@ -465,6 +467,7 @@ async def _run_add(
     all_sources = tuple(sources)
     config = _resolved_config(options)
     _validate_options(options, config)
+    _validate_saved_budget(config, resume_checkpoint)
     _validate_sources_for_platform(all_sources, options.platform)
     credentials = load_credentials()
     if not credentials.telegram_bot_token and (
@@ -1132,9 +1135,13 @@ async def _run_add(
                         **totals,
                         "sources_checked": len(source_collections),
                         **preview_ai,
-                        "ai_requests_estimated_upper_bound": min(
-                            config.ai.max_ai_requests,
-                            preview_ai["ai_requests_estimated_upper_bound"],
+                        "ai_requests_estimated_upper_bound": (
+                            preview_ai["ai_requests_estimated_upper_bound"]
+                            if config.ai.max_ai_requests is None
+                            else min(
+                                config.ai.max_ai_requests,
+                                preview_ai["ai_requests_estimated_upper_bound"],
+                            )
                         ),
                         "ai_plan_basis": "verified-media"
                         if options.check_media
@@ -1408,6 +1415,7 @@ async def _run_import(
         )
     config = _resolved_config(options)
     _validate_options(options, config)
+    _validate_saved_budget(config, resume_checkpoint)
     _validate_sources_for_platform(sources, options.platform)
     credentials = load_credentials()
     if not credentials.telegram_bot_token:
@@ -1455,6 +1463,8 @@ async def _run_import(
         )
         safe_parameters = dict(checkpoint.safe_parameters)
         safe_parameters["staging_repository"] = str(staging)
+        if options.max_ai_requests is not None:
+            safe_parameters["max_ai_requests"] = options.max_ai_requests
         safe_parameters.setdefault("source_memberships", {})
         checkpoint = checkpoint.model_copy(update={"safe_parameters": safe_parameters})
         store.save(checkpoint)
@@ -1764,8 +1774,9 @@ async def run_resume(
     *,
     ai_concurrency: int | None = None,
     download_concurrency: int | None = None,
+    max_ai_requests: int | Literal["unlimited"] | None = None,
     confirmation: Callable[[str], bool] | None = None,
-    unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
@@ -1782,6 +1793,9 @@ async def run_resume(
         options,
         repository=staging_value if use_staging else checkpoint.target_repository,
         ai_concurrency=ai_concurrency if ai_concurrency is not None else options.ai_concurrency,
+        max_ai_requests=(
+            max_ai_requests if max_ai_requests is not None else options.max_ai_requests
+        ),
         download_concurrency=(
             download_concurrency
             if download_concurrency is not None
@@ -2185,6 +2199,28 @@ def _resolved_config(options: PipelineOptions) -> MojiLexConfig:
         },
     }
     return load_config(cli=layer)
+
+
+def _validate_saved_budget(config: MojiLexConfig, checkpoint: RunCheckpoint | None) -> None:
+    if checkpoint is None:
+        return
+    if (
+        config.ai.max_ai_requests is not None
+        and config.ai.max_ai_requests < checkpoint.ai_requests_used
+    ) or (
+        config.ai.max_cost_usd is not None
+        and config.ai.max_cost_usd < checkpoint.ai_cost_reserved_usd
+    ):
+        # Reject before saving overrides, otherwise the next plain resume would
+        # inherit a budget that cannot represent the already recorded usage.
+        raise CommandError(
+            "CONFIG_INVALID",
+            "The requested budget is below the usage already saved for this run.",
+            hint=(
+                "Choose limits at least as high as recorded usage. "
+                "unlimited disables only the request count."
+            ),
+        )
 
 
 def _validate_options(options: PipelineOptions, config: MojiLexConfig) -> None:
@@ -3349,7 +3385,12 @@ async def _descriptions_for_collection(
     report_progress(
         f"AI plan: {len(candidates)} item(s), {len(chunks)} candidate batch(es), "
         f"provider={config.ai.provider}, model={config.ai.model}. Exact cache hits can reduce "
-        f"requests; retries and escalation share the {budget.max_requests}-request limit."
+        "requests; retries, escalation and puzzle checks share the run budget. "
+        + (
+            "Request count is unlimited."
+            if budget.max_requests is None
+            else f"Request limit: {budget.max_requests}."
+        )
     )
     taxonomy_version = str(snapshot.manifest["taxonomy_version"])
 
@@ -3384,7 +3425,12 @@ async def _descriptions_for_collection(
 
             def request_progress(event: str) -> None:
                 progress.phase(key, event)
-                request_count = f"{budget.requests_used}/{budget.max_requests}"
+                maximum = (
+                    str(budget.max_requests)
+                    if budget.max_requests is not None
+                    else ("без лимита" if ru else "unlimited")
+                )
+                request_count = f"{budget.requests_used}/{maximum}"
                 messages = {
                     "transport_retry": "соединение прервано; повторное подключение"
                     if ru
@@ -3520,6 +3566,7 @@ async def _descriptions_for_collection(
 
     async with progress:
         pending_chunks: Sequence[Sequence[SourceEmoji]] = chunks
+        deferred_rounds = 0
         while pending_chunks:
             requests_before = budget.requests_used
             completed_before = progress.completed
@@ -3540,7 +3587,7 @@ async def _descriptions_for_collection(
             pending = [item for item in candidates if item.native_id not in outcomes_by_native]
             if not pending:
                 break
-            if budget.requests_used >= budget.max_requests:
+            if budget.max_requests is not None and budget.requests_used >= budget.max_requests:
                 progress.stop_queue()
                 raise BudgetExceededError(
                     "AI request limit reached; validated results are saved. "
@@ -3552,6 +3599,14 @@ async def _descriptions_for_collection(
                 progress.stop_queue()
                 assert last_deferred is not None
                 raise last_deferred
+            # Disabling the total request cap must not turn a permanently invalid
+            # emoji or provider outage into an endless paid retry loop. Each round
+            # already includes bounded transport and per-item recovery attempts.
+            if budget.max_requests is None and deferred_rounds >= 3:
+                progress.stop_queue()
+                assert last_deferred is not None
+                raise last_deferred
+            deferred_rounds += 1
             report_progress(
                 f"Повтор отложенных эмодзи: {len(pending)}; готовые описания сохранены."
                 if current_ui_language() == "ru"
@@ -6220,7 +6275,9 @@ def _materialized_options(
         languages=tuple(config.ai.languages),
         publish=config.repository.publish,
         base=config.repository.base_branch,
-        max_ai_requests=config.ai.max_ai_requests,
+        max_ai_requests=(
+            config.ai.max_ai_requests if config.ai.max_ai_requests is not None else "unlimited"
+        ),
         max_cost_usd=config.ai.max_cost_usd,
         allow_unknown_cost=config.ai.allow_unknown_cost,
         ai_concurrency=config.ai.ai_concurrency,
@@ -6249,7 +6306,11 @@ def _options_from_safe(value: Mapping[str, object]) -> PipelineOptions:
         new_identity=bool(value.get("new_identity", False)),
         same_identity=bool(value.get("same_identity", False)),
         max_items=_optional_int(value.get("max_items")),
-        max_ai_requests=_optional_int(value.get("max_ai_requests")),
+        max_ai_requests=(
+            "unlimited"
+            if value.get("max_ai_requests") == "unlimited"
+            else _optional_int(value.get("max_ai_requests"))
+        ),
         max_cost_usd=Decimal(str(amount)) if amount else None,
         allow_unknown_cost=bool(value.get("allow_unknown_cost", False)),
         ai_concurrency=_optional_int(value.get("ai_concurrency")),

@@ -50,12 +50,19 @@ class AIConfig(BaseModel):
     provider: str = "gemini"
     model: str = ""
     languages: tuple[str, ...] = ("ru", "en")
-    max_ai_requests: int = Field(default=100, ge=0)
+    max_ai_requests: int | None = Field(default=100, ge=0)
     max_cost_usd: Decimal | None = Field(default=None, ge=0)
     ai_concurrency: int = Field(default=1, ge=1, le=16)
     allow_unknown_cost: bool = False
     model_routing: Literal["off", "rules"] = "off"
     escalation_model: str = ""
+
+    @field_validator("max_ai_requests", mode="before")
+    @classmethod
+    def unlimited_request_budget(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() == "unlimited":
+            return None
+        return value
 
     @field_validator("languages")
     @classmethod

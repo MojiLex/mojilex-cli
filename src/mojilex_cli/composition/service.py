@@ -150,7 +150,7 @@ class CompositionQueue:
                 ]
                 if any(not _preserves_layout(old, proposal) for old in overlapping):
                     continue
-                if budget.requests_used >= budget.max_requests:
+                if budget.max_requests is not None and budget.requests_used >= budget.max_requests:
                     break
                 try:
                     approved = True
