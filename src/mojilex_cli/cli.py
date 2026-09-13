@@ -1187,7 +1187,8 @@ def doctor(
                 )
         if not authorized:
             return result
-        return install_media_dependencies_command(cast(dict[str, Any], result.result["checks"]))
+        with suspend_progress():
+            return install_media_dependencies_command(cast(dict[str, Any], result.result["checks"]))
 
     execute("doctor", action, json_output=json_output, quiet=quiet, debug=debug)
 

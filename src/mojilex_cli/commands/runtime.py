@@ -155,7 +155,7 @@ def suspend_progress() -> Iterator[None]:
 def _command_activity(command: str) -> str:
     ru = current_ui_language() == "ru"
     labels = {
-        "publish": ("Публикация на GitHub", "Publishing to GitHub"),
+        "publish": ("Подготовка публикации", "Preparing publication"),
         "submit": ("Подготовка и отправка данных", "Preparing and submitting data"),
         "import": ("Загрузка пака", "Importing pack"),
         "describe": ("Подготовка анализа", "Preparing analysis"),

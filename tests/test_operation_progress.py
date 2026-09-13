@@ -123,3 +123,20 @@ def test_generic_command_spinner_closes_after_failure(terminal):
         runtime.execute("publish", fail, json_output=False)
     assert captured[0].operation_live is None and not captured[0].operations
     assert runtime._COMMAND_CONTEXT.get() is outer_context
+
+
+def test_doctor_installer_owns_terminal_until_it_returns(terminal, monkeypatch):
+    contexts = []
+    result = runtime.CommandResult(result={"install_commands": ["installer"], "checks": {}})
+    monkeypatch.setattr(cli, "doctor_command", lambda: result)
+
+    def installer(checks):
+        context = runtime._COMMAND_CONTEXT.get()
+        assert context is not None
+        assert context.operation_live is None and context.prompt_depth == 1
+        contexts.append(context)
+        return result
+
+    monkeypatch.setattr(cli, "install_media_dependencies_command", installer)
+    cli.doctor(install=True, non_interactive=False, json_output=False, quiet=False, debug=False)
+    assert len(contexts) == 1 and contexts[0].operation_live is None
