@@ -1,5 +1,12 @@
 # Architecture
 
+Text references generated for light/dark PNG views are bound deterministically to
+the single primary source media when building a dataset record. Those views are not
+separate source files. Only supplied backgrounds with no variant ID can be bound;
+alternate media, invented variants, and unavailable views remain invalid. The raw AI
+cache and prompt provenance remain unchanged. Duplicate references to the same source
+are collapsed without removing text or changing its recognition status.
+
 MojiLex is split into two repositories. `mojilex-cli` contains executable Python code;
 `MojiLex/mojilex` is the canonical, media-free data repository.
 

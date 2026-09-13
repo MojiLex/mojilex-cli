@@ -11,9 +11,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, get_args
 
 import typer
+from pydantic import BaseModel, ValidationError
+from pydantic_core.core_schema import ErrorType
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -159,6 +161,8 @@ def require_local_repository(value: str | Path) -> Path:
 def structured_exception(exc: BaseException, *, debug: bool = False) -> StructuredError:
     if isinstance(exc, CommandError):
         return exc.error
+    if isinstance(exc, ValidationError):
+        return _safe_model_validation_error(exc, debug=debug)
     if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError, typer.Abort)):
         return StructuredError(
             code="INTERRUPTED",
@@ -203,6 +207,69 @@ def structured_exception(exc: BaseException, *, debug: bool = False) -> Structur
         retryable=retryable,
         hint=hints.get(code, "Correct the reported condition and retry."),
         details=details,
+    )
+
+
+def _safe_model_validation_error(exc: ValidationError, *, debug: bool) -> StructuredError:
+    """Pydantic messages, inputs, mapping keys, and custom error codes are untrusted."""
+    from mojilex_cli.config import models as config_models
+    from mojilex_cli.domain import models as domain_models
+
+    schema: dict[str, Any] = {}
+    code = "VALIDATION_FAILED"
+    for module in (domain_models, config_models):
+        model = getattr(module, exc.title, None)
+        if (
+            isinstance(model, type)
+            and issubclass(model, BaseModel)
+            and model.__module__ == module.__name__
+        ):
+            schema = model.model_json_schema()
+            if module is config_models:
+                code = "CONFIG_INVALID"
+            break
+    known_codes = frozenset(get_args(ErrorType))
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    summaries = []
+    for error in errors[:4]:
+        node = schema
+        path = "$"
+        for part in error["loc"]:
+            if "$ref" in node:
+                node = schema.get("$defs", {}).get(node["$ref"].rsplit("/", 1)[-1], {})
+            alternatives = [entry for entry in node.get("anyOf", []) if entry.get("type") != "null"]
+            if len(alternatives) == 1:
+                node = alternatives[0]
+                if "$ref" in node:
+                    node = schema.get("$defs", {}).get(node["$ref"].rsplit("/", 1)[-1], {})
+            if type(part) is int and "items" in node:
+                node = node["items"]
+                path += "[]"
+            elif isinstance(part, str) and part in node.get("properties", {}):
+                node = node["properties"][part]
+                path += "." + part
+            else:
+                path += ".<unknown-field>"
+                break
+        error_code = error["type"] if error["type"] in known_codes else "schema_error"
+        summary = f"{path} ({error_code})"
+        if summary not in summaries:
+            summaries.append(summary)
+    if len(errors) > 4:
+        summaries.append("additional errors omitted")
+    return StructuredError(
+        code=code,
+        message="Model validation failed: " + "; ".join(summaries),
+        retryable=False,
+        hint=(
+            "Check the command options and non-secret configuration."
+            if code == "CONFIG_INVALID"
+            else (
+                "Report the validation code and field path with the run ID; "
+                "saved results are retained."
+            )
+        ),
+        details={"exception_type": "ValidationError"} if debug else None,
     )
 
 
@@ -274,7 +341,16 @@ def execute(
         )
     except BaseException as exc:  # commands must always preserve the output contract
         if debug and not effective_json:
-            formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            if isinstance(exc, ValidationError):
+                # Even format_exception's final line contains the complete input.
+                # Keep frame locations without source snippets, locals, or causes.
+                locations = (
+                    f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n'
+                    for frame in traceback.extract_tb(exc.__traceback__)
+                )
+                formatted = "Traceback (validation input omitted):\n" + "".join(locations)
+            else:
+                formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             sanitized = str(redact(formatted))
             typer.echo(sanitized, err=True, nl=not sanitized.endswith("\n"))
         error = structured_exception(exc, debug=debug)

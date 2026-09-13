@@ -42,6 +42,7 @@ from mojilex_cli.ai import (
     LocalizedDescription as AILocalizedDescription,
 )
 from mojilex_cli.ai.concepts import ConceptContext, load_concept_context
+from mojilex_cli.ai.media_refs import bind_primary_media_references
 from mojilex_cli.ai.prompts import (
     current_prompt_version,
     gemini_request_parameters_sha256,
@@ -1392,15 +1393,68 @@ async def _run_describe(
     store = RunStore(cast(Path, config.runs_dir))
     checkpoint = store.load_for_resume(run_id, schema_version=SCHEMA_VERSION)
     report_run_id(checkpoint.run_id)
-    if checkpoint.command not in {"import", "describe"}:
+    if checkpoint.command not in {"import", "describe", "add"}:
         raise CommandError(
             "CONFIG_INVALID",
             "The selected run cannot be described.",
-            hint="Pass a run ID created by `mojilex import`.",
+            hint="Pass an import run ID or an add run without a publication checkpoint.",
         )
     sources = _string_sequence(checkpoint.safe_parameters.get("sources"))
-    staging = _staging_path_from_checkpoint(checkpoint)
     options = _options_from_safe(checkpoint.safe_parameters)
+    if checkpoint.command == "add":
+        if checkpoint.publication is not None:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "An add run with a publication checkpoint cannot become a local draft.",
+                hint="Resume the original publication run using its saved mode.",
+            )
+        if not sources:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "The saved add run has no sources to describe.",
+                hint="Use a run ID with a valid saved source plan.",
+            )
+        _validate_sources_for_platform(sources, options.platform)
+        base_branch = options.base or config.repository.base_branch
+        with repository_workspace(checkpoint.target_repository, base_branch) as workspace:
+            if str(workspace.target) != checkpoint.target_repository:
+                raise CommandError(
+                    "GIT_CONFLICT",
+                    "The add run target differs from the resolved repository.",
+                    hint="Restore the original target repository before describing this run.",
+                )
+            validate_dataset(workspace.root, strict=True).raise_for_errors()
+            if GitRunner(workspace.root).current_sha() != checkpoint.base_revision:
+                raise CommandError(
+                    "SOURCE_CHANGED_DURING_RUN",
+                    "The add run base no longer matches the target checkout.",
+                    hint="Restore the original base revision before describing this run.",
+                )
+            staging = prepare_staging_workspace(
+                workspace.root,
+                target=workspace.target,
+                runs_dir=cast(Path, config.runs_dir),
+                run_id=checkpoint.run_id,
+                base_branch=base_branch,
+                base_revision=checkpoint.base_revision,
+            )
+        # Persist the explicit local-draft intent before any further processing.
+        # An interruption must resume this staging workspace, not publication.
+        checkpoint = checkpoint.model_copy(
+            update={
+                "command": "describe",
+                "safe_parameters": {
+                    **checkpoint.safe_parameters,
+                    "staging_repository": str(staging),
+                    "repository": str(staging),
+                    "publish": "local",
+                    "direct_push": False,
+                },
+            }
+        )
+        store.save(checkpoint)
+    else:
+        staging = _staging_path_from_checkpoint(checkpoint)
     if overrides is not None:
         options = replace(
             options,
@@ -3572,6 +3626,9 @@ async def _load_or_describe_primary_batch(
         config.ai.provider,
         config.ai.model,
         require_single=False,
+        contexts={
+            request_identity.label_for(item.native_id): contexts[item.native_id] for item in items
+        },
     )
     by_label = {described.label: described for described in response.batch.items}
     generated_at = _utc_text()
@@ -4335,7 +4392,7 @@ async def _load_or_describe_single(
         temporary=temporary,
         prepared_request=prepared,
     )
-    _validate_actual_result(result, config.ai.provider, model)
+    _validate_actual_result(result, config.ai.provider, model, contexts={"E001": context})
     storage_key = _cache_key(
         source,
         processed,
@@ -4430,6 +4487,12 @@ def _load_cached_description(
             raise AIOutputError(
                 "AI cache entry does not match the current media, prompt, or policy context"
             )
+        try:
+            _validate_actual_result(cached, config.ai.provider, model, contexts={"E001": context})
+        except AIOutputError:
+            # Preserve old raw rows, but an unbound reference is not a usable
+            # completion. A fresh request can recover this item in the AI queue.
+            continue
         return entry
     return None
 
@@ -4475,11 +4538,18 @@ def _validate_actual_result(
     expected_model: str,
     *,
     require_single: bool = True,
+    contexts: Mapping[str, VisionContext] | None = None,
 ) -> None:
     if result.provider != expected_provider or result.model != expected_model:
         raise AIOutputError("AI provider returned a result for a different provider or model")
     if require_single and len(result.batch.items) != 1:
         raise AIOutputError("per-item semantic result must contain exactly one full object")
+    if contexts is not None:
+        for item in result.batch.items:
+            context = contexts.get(item.label)
+            if context is None:
+                raise AIOutputError("AI text media context does not match the result label")
+            bind_primary_media_references(item, background_variants=context.background_variants)
     inputs = _GENERATION_INPUTS.get()
     if inputs is not None:
         for item in result.batch.items:

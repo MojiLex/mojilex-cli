@@ -151,6 +151,12 @@ Generate AI metadata in the same staged run, still without publishing:
 mojilex describe mlxrun_YOUR_ID
 ```
 
+`describe` also accepts an `add` run whose publication has not started. It creates
+a persistent local draft at the recorded base, preserving the Run ID, completed
+descriptions, and consumed budget. Results requiring human review can therefore
+finish analysis before publication. An existing publication checkpoint cannot be
+converted to another workflow.
+
 Validate and preview the result without uploading it:
 
 ```console

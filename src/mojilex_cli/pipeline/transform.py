@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from mojilex_cli import __version__
 from mojilex_cli.ai import DescriptionItem
+from mojilex_cli.ai.media_refs import bind_primary_media_references
 from mojilex_cli.ai.prompts import PROMPT_VERSION as PROMPT_VERSION
 from mojilex_cli.dataset import (
     DatasetSnapshot,
@@ -341,6 +342,10 @@ def _emoji(
         epoch,
     )
     media = Media.model_validate(processed.dataset_metadata())
+    description = bind_primary_media_references(
+        description,
+        background_variants=("light", "dark") if processed.semantic_has_dark_render else ("light",),
+    )
     expected_profiles = {
         "color_profile": analysis.rendering.profile,
         "color_profile_sha256": analysis.color_profile_sha256,
