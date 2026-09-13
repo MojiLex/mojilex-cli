@@ -147,6 +147,13 @@ from mojilex_cli.runs import (
     new_checkpoint,
     new_run_id,
 )
+from mojilex_cli.runs.pack_scope import (
+    initialize_source_states,
+    overall_status,
+    record_source_state,
+    selected_source_entries,
+    source_state,
+)
 from mojilex_cli.sources import (
     SourceCollection,
     SourceEmoji,
@@ -219,6 +226,7 @@ class PipelineOptions:
     fail_fast: bool = False
     explicit_verification: bool = False
     official_pack_policy: str | None = None
+    selected_sources: tuple[str, ...] = ()
     official_approved_sources: tuple[str, ...] = ()
     official_excluded_sources: tuple[str, ...] = ()
     official_confirmation: Callable[[str], bool] | None = field(
@@ -395,6 +403,7 @@ def run_resume_sync(
     unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
+    selected_sources: tuple[str, ...] = (),
 ) -> CommandResult:
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
@@ -409,6 +418,7 @@ def run_resume_sync(
                 unknown_cost_confirmation=unknown_cost_confirmation,
                 official_pack_policy=official_pack_policy,
                 official_confirmation=official_confirmation,
+                selected_sources=selected_sources,
             )
         )
 
@@ -465,6 +475,19 @@ async def _run_add(
             hint="Pass an addemoji URL, --from-file, or --stdin.",
         )
     all_sources = tuple(sources)
+    selected_source_entries(all_sources, options.selected_sources)
+    if (
+        options.selected_sources
+        and resume_checkpoint is not None
+        and resume_checkpoint.publication is not None
+    ):
+        raise CommandError(
+            "CONFIG_INVALID",
+            "A saved publication must resume with its original source plan.",
+            hint="Resume the exact RunID to reconcile its existing publication.",
+        )
+    if resume_checkpoint is not None:
+        resume_checkpoint = initialize_source_states(resume_checkpoint)
     config = _resolved_config(options)
     _validate_options(options, config)
     _validate_saved_budget(config, resume_checkpoint)
@@ -543,6 +566,10 @@ async def _run_add(
             completed_source_indexes,
             excluded_sources=options.official_excluded_sources,
         )
+        if options.selected_sources:
+            source_entries = tuple(
+                entry for entry in source_entries if entry[1] in options.selected_sources
+            )
         sources = tuple(source for _, source in source_entries)
         checkpoint = None
         if not options.dry_run:
@@ -587,15 +614,24 @@ async def _run_add(
                 )
             run_store.save(checkpoint)
             if not source_entries:
+                for source_index in completed_source_indexes:
+                    checkpoint = record_source_state(
+                        checkpoint, all_sources[source_index], "describe", "succeeded"
+                    )
                 checkpoint = _finish_checkpoint(
                     checkpoint,
-                    "succeeded",
+                    overall_status(checkpoint, "describe", "succeeded"),
                     checkpoint.ai_requests_used,
                     checkpoint.ai_cost_reserved_usd,
                 )
                 run_store.save(checkpoint)
                 publication_checkpoint = checkpoint.publication
-                assert publication_checkpoint is not None
+                if publication_checkpoint is None:
+                    return CommandResult(
+                        run_id=run_identifier,
+                        status=RunStatus.NOOP,
+                        result={"sources_processed": 0, "changed_paths": []},
+                    )
                 return CommandResult(
                     run_id=run_identifier,
                     status=RunStatus.SUCCEEDED,
@@ -765,6 +801,11 @@ async def _run_add(
                     collection_lock: Any | None = None
                     lock_entered = False
                     try:
+                        if checkpoint is not None:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "describe", "running"
+                            )
+                            run_store.save(checkpoint)
                         reference = adapter.canonicalize(source_text)
                         report_progress(
                             f"Checking source {source_index + 1}/{len(all_sources)}: "
@@ -833,6 +874,22 @@ async def _run_add(
                                 ),
                             ),
                         )
+                        if checkpoint is not None:
+                            memberships = _membership_map(
+                                checkpoint.safe_parameters.get("source_memberships")
+                            )
+                            memberships[source.native_id] = current_members
+                            checkpoint = checkpoint.model_copy(
+                                update={
+                                    "safe_parameters": {
+                                        **checkpoint.safe_parameters,
+                                        "source_memberships": {
+                                            name: list(ids) for name, ids in memberships.items()
+                                        },
+                                    }
+                                }
+                            )
+                            run_store.save(checkpoint)
                         if not options.dry_run:
                             collection_lock = run_store.collection_lock(
                                 reference.platform, reference.native_id
@@ -1083,6 +1140,9 @@ async def _run_add(
                         errors.append(error)
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
                         if checkpoint is not None:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "describe", "failed"
+                            )
                             checkpoint = _checkpoint_budget(checkpoint, budget)
                             checkpoint = _checkpoint_issue(
                                 checkpoint,
@@ -1352,9 +1412,14 @@ async def _run_add(
             if errors:
                 status = RunStatus.PARTIAL if changed_paths else RunStatus.FAILED
             if checkpoint is not None:
+                for source_index in completed_source_indexes | successful_source_indexes:
+                    checkpoint = record_source_state(
+                        checkpoint, all_sources[source_index], "describe", "succeeded"
+                    )
+                parent_status = overall_status(checkpoint, "describe", status.value)
                 checkpoint = _finish_checkpoint(
                     checkpoint,
-                    status.value,
+                    parent_status,
                     budget.requests_used,
                     budget.cost_reserved,
                 )
@@ -1413,6 +1478,9 @@ async def _run_import(
             "At least one source is required.",
             hint="Pass one or more public Telegram addemoji URLs.",
         )
+    source_entries = selected_source_entries(sources, options.selected_sources)
+    if resume_checkpoint is not None:
+        resume_checkpoint = initialize_source_states(resume_checkpoint)
     config = _resolved_config(options)
     _validate_options(options, config)
     _validate_saved_budget(config, resume_checkpoint)
@@ -1496,6 +1564,10 @@ async def _run_import(
                     nonlocal checkpoint, imported
                     position, source_text = entry
                     try:
+                        checkpoint = record_source_state(
+                            checkpoint, source_text, "import", "running"
+                        )
+                        store.save(checkpoint)
                         source = await adapter.fetch_collection(adapter.canonicalize(source_text))
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
@@ -1568,11 +1640,17 @@ async def _run_import(
                             )
                             _cache_deterministic_analyses(cache, source, processed)
                         checkpoint = _checkpoint_media(checkpoint, source, processed)
+                        checkpoint = record_source_state(
+                            checkpoint, source_text, "import", "succeeded"
+                        )
                         store.save(checkpoint)
                         imported += 1
                     except Exception as exc:
                         error = structured_exception(exc)
                         failures.append(error)
+                        checkpoint = record_source_state(
+                            checkpoint, source_text, "import", "failed"
+                        )
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
                         checkpoint = _checkpoint_issue(
                             checkpoint,
@@ -1597,12 +1675,18 @@ async def _run_import(
                     max_temp_bytes=config.processing.max_temp_bytes,
                 ):
                     await bounded_map(
-                        enumerate(sources),
+                        ((position, source) for position, (_, source) in enumerate(source_entries)),
                         import_source,
                         concurrency=config.processing.pack_concurrency,
                     )
             status = "succeeded" if not failures else "partial" if imported else "failed"
-            checkpoint = _finish_checkpoint(checkpoint, status, 0, Decimal("0"))
+            parent_phase = "describe" if checkpoint.command == "describe" else "import"
+            checkpoint = _finish_checkpoint(
+                checkpoint,
+                overall_status(checkpoint, parent_phase, status),
+                checkpoint.ai_requests_used,
+                checkpoint.ai_cost_reserved_usd,
+            )
             store.save(checkpoint)
             return CommandResult(
                 run_id=checkpoint.run_id,
@@ -1633,8 +1717,11 @@ async def _run_describe(
             "The selected run cannot be described.",
             hint="Pass an import run ID or an add run without a publication checkpoint.",
         )
+    checkpoint = initialize_source_states(checkpoint)
     sources = _string_sequence(checkpoint.safe_parameters.get("sources"))
     options = _options_from_safe(checkpoint.safe_parameters)
+    options = replace(options, selected_sources=overrides.selected_sources if overrides else ())
+    selected_source_entries(sources, options.selected_sources)
     if checkpoint.command == "add":
         if checkpoint.publication is not None:
             raise CommandError(
@@ -1692,7 +1779,7 @@ async def _run_describe(
     from mojilex_cli.commands.official_packs import select_sources
 
     selection = select_sources(
-        sources,
+        tuple(source for _, source in selected_source_entries(sources, options.selected_sources)),
         platform=options.platform,
         policy=(
             overrides.official_pack_policy
@@ -1704,15 +1791,26 @@ async def _run_describe(
     )
     options = replace(
         options,
-        official_approved_sources=selection.approved_sources,
-        official_excluded_sources=selection.skipped,
+        official_approved_sources=tuple(
+            dict.fromkeys((*options.official_approved_sources, *selection.approved_sources))
+        ),
+        official_excluded_sources=tuple(
+            source
+            for source in sources
+            if (
+                source in selection.skipped
+                or (
+                    source in options.official_excluded_sources and source not in selection.selected
+                )
+            )
+        ),
     )
     checkpoint = checkpoint.model_copy(
         update={
             "safe_parameters": {
                 **checkpoint.safe_parameters,
-                "official_approved_sources": list(selection.approved_sources),
-                "official_excluded_sources": list(selection.skipped),
+                "official_approved_sources": list(options.official_approved_sources),
+                "official_excluded_sources": list(options.official_excluded_sources),
             }
         }
     )
@@ -1779,18 +1877,25 @@ async def run_resume(
     unknown_cost_confirmation: Callable[[int | None], bool] | None = None,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
+    selected_sources: tuple[str, ...] = (),
 ) -> CommandResult:
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
     checkpoint = store.load_for_resume(run_id, schema_version=SCHEMA_VERSION)
     report_run_id(checkpoint.run_id)
+    checkpoint = initialize_source_states(checkpoint)
     parameters = checkpoint.safe_parameters
     sources = _string_sequence(parameters.get("sources"))
     options = _options_from_safe(parameters)
+    selected_source_entries(sources, selected_sources)
+    selected_import = bool(selected_sources) and all(
+        source_state(checkpoint, source)["phase"] == "import" for source in selected_sources
+    )
     staging_value = _optional_string(parameters.get("staging_repository"))
     use_staging = checkpoint.command in {"import", "describe"} and staging_value is not None
     options = replace(
         options,
+        selected_sources=selected_sources,
         repository=staging_value if use_staging else checkpoint.target_repository,
         ai_concurrency=ai_concurrency if ai_concurrency is not None else options.ai_concurrency,
         max_ai_requests=(
@@ -1813,6 +1918,7 @@ async def run_resume(
     memberships = _membership_map(parameters.get("source_memberships"))
     if (
         checkpoint.command in {"describe", "add"}
+        and not selected_import
         and getattr(checkpoint, "publication", None) is None
         and sources
         and ("official_excluded_sources" not in parameters or official_pack_policy is not None)
@@ -1823,7 +1929,7 @@ async def run_resume(
         from mojilex_cli.commands.official_packs import select_sources
 
         selection = select_sources(
-            sources,
+            tuple(source for _, source in selected_source_entries(sources, selected_sources)),
             platform=options.platform,
             policy=(
                 official_pack_policy
@@ -1835,15 +1941,27 @@ async def run_resume(
         )
         options = replace(
             options,
-            official_approved_sources=selection.approved_sources,
-            official_excluded_sources=selection.skipped,
+            official_approved_sources=tuple(
+                dict.fromkeys((*options.official_approved_sources, *selection.approved_sources))
+            ),
+            official_excluded_sources=tuple(
+                source
+                for source in sources
+                if (
+                    source in selection.skipped
+                    or (
+                        source in options.official_excluded_sources
+                        and source not in selection.selected
+                    )
+                )
+            ),
         )
         checkpoint = checkpoint.model_copy(
             update={
                 "safe_parameters": {
                     **checkpoint.safe_parameters,
-                    "official_approved_sources": list(selection.approved_sources),
-                    "official_excluded_sources": list(selection.skipped),
+                    "official_approved_sources": list(options.official_approved_sources),
+                    "official_excluded_sources": list(options.official_excluded_sources),
                 }
             }
         )
@@ -1852,7 +1970,7 @@ async def run_resume(
             result = selection.empty_result()
             result.run_id = run_id
             return result
-    if checkpoint.command == "import":
+    if checkpoint.command == "import" or selected_import:
         return await _run_import(
             sources,
             options,

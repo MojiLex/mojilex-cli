@@ -39,6 +39,13 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(batch, "load_config", lambda: config)
     monkeypatch.setattr(batch, "_runs", lambda _: (checkpoints, 0))
     monkeypatch.setattr(
+        batch.RunStore,
+        "load",
+        lambda _, run_id: next(
+            item for item in checkpoints if getattr(item, "run_id", None) == run_id
+        ),
+    )
+    monkeypatch.setattr(
         batch,
         "repository_workspace",
         lambda *a, **kw: nullcontext(SimpleNamespace(root=tmp_path, target="owner/repo")),

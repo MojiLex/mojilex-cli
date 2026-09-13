@@ -278,9 +278,9 @@ def _progress_prompt(label: str, **options: Any) -> str:
 def _pack_action(action: Callable[[], CommandResult], selectors: Sequence[str]) -> CommandResult:
     """Attach a usable next-step name without changing execution or saved data."""
     result = action()
-    from mojilex_cli.commands.packs import _names, _source_name, resolve_pack_run
+    from mojilex_cli.commands.packs import _names, _selector_name, resolve_pack_run
 
-    names = [name for selector in selectors if (name := _source_name(selector))]
+    names = [name for selector in selectors if (name := _selector_name(selector))]
     if not names and result.run_id:
         try:
             names = list(_names(resolve_pack_run(result.run_id, purpose="view")))
@@ -1096,12 +1096,13 @@ def resume(
     request_limit = _request_limit(max_ai_requests)
 
     def action():  # type: ignore[no-untyped-def]
-        from mojilex_cli.commands.packs import resolve_pack_run
+        from mojilex_cli.commands.packs import _pack_phase_status, _selector_name, resolve_pack_run
 
         checkpoint = resolve_pack_run(run_id, purpose="resume")
         selected_run_id = checkpoint.run_id
-        if checkpoint.status in {"succeeded", "noop"}:
-            next_command = "describe" if checkpoint.command == "import" else "show"
+        phase, status = _pack_phase_status(checkpoint, _selector_name(run_id))
+        if status in {"succeeded", "noop"}:
+            next_command = "describe" if phase == "import" else "show"
             return CommandResult(
                 run_id=selected_run_id,
                 status="noop",  # type: ignore[arg-type]
@@ -1112,7 +1113,7 @@ def resume(
             )
         return _with_runtime_secrets(
             lambda: resume_command(
-                selected_run_id,
+                run_id,
                 max_ai_requests=request_limit,
                 official_pack_policy=official_packs,
                 official_confirmation=_official_confirmation_callback(
@@ -1133,7 +1134,7 @@ def resume(
             ),
             names=(
                 ("TELEGRAM_BOT_TOKEN",)
-                if checkpoint.command == "import"
+                if phase == "import"
                 else ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY")
             ),
             prompt=_secret_prompt(

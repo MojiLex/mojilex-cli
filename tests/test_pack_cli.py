@@ -16,7 +16,12 @@ RUN = "mlxrun_" + "a" * 32
 
 @pytest.fixture
 def saved(monkeypatch):
-    checkpoint = SimpleNamespace(run_id=RUN, command="describe", status="succeeded")
+    checkpoint = SimpleNamespace(
+        run_id=RUN,
+        command="describe",
+        status="succeeded",
+        safe_parameters={"sources": ["https://t.me/addemoji/NewsEmoji"]},
+    )
     monkeypatch.setattr(packs, "resolve_pack_run", lambda selector, **kwargs: checkpoint)
     return checkpoint
 

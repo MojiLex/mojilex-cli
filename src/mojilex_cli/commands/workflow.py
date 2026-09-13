@@ -27,6 +27,7 @@ _MAX_SOURCE_FILE_BYTES = 1024 * 1024
 
 
 class _ResumeOverrides(TypedDict, total=False):
+    selected_sources: tuple[str, ...]
     ai_concurrency: int
     download_concurrency: int
     max_ai_requests: int | Literal["unlimited"]
@@ -245,17 +246,21 @@ def describe_command(
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
+    selected_sources: tuple[str, ...] = ()
     saved_run = selectors[0] if len(selectors) == 1 and selectors[0].startswith("mlxrun_") else None
-    if (
-        len(selectors) == 1
-        and saved_run is None
-        and "://" not in selectors[0]
-        and not selectors[0].startswith(("mxe_", "mxc_"))
-    ):
-        from .packs import resolve_pack_run
+    if saved_run is not None and ":" in saved_run:
+        from .packs import resolve_pack_run, selected_pack_sources
+
+        checkpoint = resolve_pack_run(saved_run, purpose="describe")
+        selected_sources = selected_pack_sources(checkpoint, saved_run)
+        saved_run = checkpoint.run_id
+    if len(selectors) == 1 and saved_run is None and not selectors[0].startswith(("mxe_", "mxc_")):
+        from .packs import resolve_pack_run, selected_pack_sources
 
         try:
-            saved_run = resolve_pack_run(selectors[0], purpose="describe").run_id
+            checkpoint = resolve_pack_run(selectors[0], purpose="describe")
+            saved_run = checkpoint.run_id
+            selected_sources = selected_pack_sources(checkpoint, selectors[0])
         except CommandError as exc:
             if exc.error.code != "CONFIG_MISSING":
                 raise
@@ -264,6 +269,7 @@ def describe_command(
             saved_run,
             PipelineOptions(
                 provider=provider,
+                selected_sources=selected_sources,
                 model=model,
                 ai_concurrency=ai_concurrency,
                 max_ai_requests=max_ai_requests,
@@ -415,13 +421,15 @@ def resume_command(
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
-    from .packs import resolve_pack_run
+    from .packs import _pack_phase_status, _selector_name, resolve_pack_run, selected_pack_sources
 
     selector = run_id
     checkpoint = resolve_pack_run(selector, purpose="resume")
     run_id = checkpoint.run_id
-    if checkpoint.status in {"succeeded", "noop"}:
-        next_command = "describe" if checkpoint.command == "import" else "show"
+    selected_sources = selected_pack_sources(checkpoint, selector)
+    phase, status = _pack_phase_status(checkpoint, _selector_name(selector))
+    if status in {"succeeded", "noop"}:
+        next_command = "describe" if phase == "import" else "show"
         return CommandResult(
             run_id=run_id,
             status="noop",  # type: ignore[arg-type]
@@ -431,6 +439,8 @@ def resume_command(
             },
         )
     overrides: _ResumeOverrides = {}
+    if selected_sources:
+        overrides["selected_sources"] = selected_sources
     if max_ai_requests is not None:
         overrides["max_ai_requests"] = max_ai_requests
     if ai_concurrency is not None:
@@ -456,7 +466,7 @@ def publish_pack_command(
     direct_push: bool = False,
     confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
-    from .packs import resolve_pack_run
+    from .packs import _selector_name, resolve_pack_run, selected_pack_sources
 
     if local and direct_push:
         raise CommandError(
@@ -465,6 +475,12 @@ def publish_pack_command(
             hint="Use mojilex publish PACK for a GitHub pull request.",
         )
     checkpoint = resolve_pack_run(selector, purpose="publish")
+    if selected_pack_sources(checkpoint, selector):
+        from mojilex_cli.pipeline.pack_publication import prepare_pack_publication
+
+        checkpoint = prepare_pack_publication(
+            checkpoint, cast(str, _selector_name(selector)), load_config()
+        )
     if checkpoint.command != "describe" or checkpoint.status not in {"succeeded", "noop"}:
         raise CommandError(
             "CONFIG_INVALID",

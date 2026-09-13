@@ -13,7 +13,19 @@ from rich.text import Text
 from mojilex_cli.config import load_config
 from mojilex_cli.i18n import confirm, current_ui_language, use_ui_language
 
-from .packs import _group, _resolve, _runs, _summary, list_packs_command, show_pack_command
+from .packs import (
+    _group,
+    _names,
+    _pack_phase_status,
+    _resolve,
+    _runs,
+    _selector_name,
+    _source_name,
+    _sources,
+    _summary,
+    list_packs_command,
+    show_pack_command,
+)
 from .runtime import CommandError, CommandResult, is_usage_error
 
 Dispatch = Callable[[list[str]], bool]
@@ -247,8 +259,26 @@ def _pack_state(selector: str) -> dict[str, Any]:
     config = load_config()
     checkpoint = _resolve(selector, config, purpose="view")
     runs, _ = _runs(config)
-    history = [run for run in runs if _group(run) == _group(checkpoint)]
-    unfinished = next((run for run in history if run.status not in {"succeeded", "noop"}), None)
+    selected_name = _selector_name(selector)
+    history = [
+        run
+        for run in runs
+        if run.target_repository == checkpoint.target_repository
+        and (
+            selected_name.casefold() in {name.casefold() for name in _names(run)}
+            if selected_name
+            else _group(run) == _group(checkpoint)
+        )
+    ]
+    unfinished = next(
+        (
+            run
+            for run in history
+            if _pack_phase_status(run, selected_name)[1] not in {"succeeded", "noop"}
+        ),
+        None,
+    )
+    phase, status = _pack_phase_status(checkpoint, selected_name)
     saved = show_pack_command(selector)
     publication = checkpoint.publication
     # Absence of a receipt is not evidence that the pack was never published.
@@ -261,17 +291,32 @@ def _pack_state(selector: str) -> dict[str, Any]:
         github += publication.phase
     return {
         "saved": saved,
-        "history": [_summary(run, config) | {"command": run.command} for run in history],
-        "unfinished": _summary(unfinished, config) if unfinished else None,
+        "history": [
+            (_summary(run, config, selected_name) if selected_name else _summary(run, config))
+            | {"command": _pack_phase_status(run, selected_name)[0]}
+            for run in history
+        ],
+        "unfinished": (
+            _summary(unfinished, config, selected_name)
+            if selected_name
+            else _summary(unfinished, config)
+        )
+        if unfinished
+        else None,
         "github": github,
         "target": checkpoint.target_repository,
-        "publishable": checkpoint.command == "describe"
-        and checkpoint.status in {"succeeded", "noop"},
-        "analyzable": checkpoint.command == "import"
-        and checkpoint.status in {"succeeded", "noop"}
-        and bool(checkpoint.elements),
+        "publishable": phase == "describe" and status in {"succeeded", "noop"},
+        "analyzable": phase == "import"
+        and status in {"succeeded", "noop"}
+        and bool(saved.result["pack"]["items"] if selected_name else checkpoint.elements),
         "run_id": checkpoint.run_id,
-        "sources": checkpoint.safe_parameters.get("sources", []),
+        "selector": selector,
+        "sources": [
+            source
+            for source in _sources(checkpoint)
+            if selected_name is None
+            or (_source_name(source) or "").casefold() == selected_name.casefold()
+        ],
     }
 
 
@@ -292,9 +337,19 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
             )
             + f"GitHub: {state['github']}\n"
             + label(
-                f"Запросы ИИ этого результата: {pack['requests_used']}/"
+                (
+                    "Запросы ИИ всей массовой операции: "
+                    if pack.get("budget_scope") == "batch"
+                    else "Запросы ИИ этого результата: "
+                )
+                + f"{pack['requests_used']}/"
                 + _setting_value(pack["max_ai_requests"], key="max_ai_requests"),
-                f"AI requests for this result: {pack['requests_used']}/"
+                (
+                    "AI requests for the whole batch: "
+                    if pack.get("budget_scope") == "batch"
+                    else "AI requests for this result: "
+                )
+                + f"{pack['requests_used']}/"
                 + _setting_value(pack["max_ai_requests"], key="max_ai_requests"),
             )
         )
@@ -354,7 +409,7 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
         elif action == "history":
             _history(state)
         elif action == "check":
-            _invoke(dispatch, ["publish", state["run_id"], "--local"])
+            _invoke(dispatch, ["publish", state.get("selector", state["run_id"]), "--local"])
         elif action == "publish":
             if confirm(
                 label(
@@ -363,13 +418,13 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                 ),
                 default=True,
             ):
-                _invoke(dispatch, ["publish", state["run_id"], "--yes"])
+                _invoke(dispatch, ["publish", state.get("selector", state["run_id"]), "--yes"])
         elif action == "resume":
-            _invoke(dispatch, ["resume", active["run_id"]])
-            selector = active["run_id"]
+            selector = active.get("selector", active["run_id"])
+            _invoke(dispatch, ["resume", selector])
         elif action == "describe":
             # The describe command owns the single batch-wide AI approval.
-            _invoke(dispatch, ["describe", state["run_id"]])
+            _invoke(dispatch, ["describe", state.get("selector", state["run_id"])])
             return
         elif action == "refresh":
             sources = state["sources"]
@@ -585,7 +640,7 @@ def run_menu(dispatch: Dispatch) -> None:
                     ],
                 )
                 if index is not None:
-                    _pack_page(rows[index]["run_id"], dispatch)
+                    _pack_page(rows[index].get("selector", rows[index]["run_id"]), dispatch)
             elif choice == 1:
                 source = str(
                     typer.prompt(

@@ -62,6 +62,73 @@ def _group(checkpoint: RunCheckpoint) -> tuple[tuple[str, ...], str]:
     return tuple(name.casefold() for name in _names(checkpoint)), checkpoint.target_repository
 
 
+def _selector_name(selector: str) -> str | None:
+    if selector.startswith("mlxrun_"):
+        run_id, separator, name = selector.partition(":")
+        if separator and _RUN_ID.fullmatch(run_id) and _PACK_NAME.fullmatch(name):
+            return name
+        return None
+    return _source_name(selector)
+
+
+def _pack_selector(checkpoint: RunCheckpoint, name: str) -> str:
+    return f"{checkpoint.run_id}:{name}"
+
+
+def _sources(checkpoint: RunCheckpoint) -> tuple[str, ...]:
+    sources = checkpoint.safe_parameters.get("sources", ())
+    return (
+        tuple(value for value in sources if isinstance(value, str))
+        if isinstance(sources, (list, tuple))
+        else ()
+    )
+
+
+def selected_pack_sources(checkpoint: RunCheckpoint, selector: str) -> tuple[str, ...]:
+    """An exact RunID keeps batch semantics; a named pack always selects one source."""
+    name = _selector_name(selector)
+    if name is None or len(_names(checkpoint)) <= 1:
+        return ()
+    return tuple(
+        source
+        for source in _sources(checkpoint)
+        if isinstance(source, str) and (_source_name(source) or "").casefold() == name.casefold()
+    )
+
+
+def _pack_elements(checkpoint: RunCheckpoint, name: str | None) -> dict[str, Any]:
+    if name is None or len(_names(checkpoint)) == 1:
+        return checkpoint.elements
+    memberships = checkpoint.safe_parameters.get("source_memberships", {})
+    members: Any = (
+        next(
+            (values for key, values in memberships.items() if key.casefold() == name.casefold()),
+            [],
+        )
+        if isinstance(memberships, dict)
+        else []
+    )
+    return (
+        {
+            identifier: checkpoint.elements[identifier]
+            for identifier in members
+            if isinstance(identifier, str) and identifier in checkpoint.elements
+        }
+        if isinstance(members, list)
+        else {}
+    )
+
+
+def _pack_phase_status(checkpoint: RunCheckpoint, name: str | None) -> tuple[str, str]:
+    if name is None or len(_names(checkpoint)) == 1:
+        return checkpoint.command, checkpoint.status
+    from mojilex_cli.runs.pack_scope import source_state
+
+    sources = selected_pack_sources(checkpoint, name)
+    state = source_state(checkpoint, sources[0]) if sources else {}
+    return state.get("phase", "import"), state.get("status", "pending")
+
+
 def _runs(config: MojiLexConfig) -> tuple[list[RunCheckpoint], int]:
     if config.runs_dir is None:
         return [], 0
@@ -84,20 +151,28 @@ def _runs(config: MojiLexConfig) -> tuple[list[RunCheckpoint], int]:
         except (RunStoreError, OSError, ValueError):
             skipped += 1
             continue
-        if _names(checkpoint):
+        if _names(checkpoint) and not checkpoint.safe_parameters.get("publication_source_run"):
             checkpoints.append(checkpoint)
     checkpoints.sort(key=lambda run: (run.updated_at, run.run_id), reverse=True)
     return checkpoints, skipped
 
 
-def _select(matches: list[RunCheckpoint], purpose: _Purpose) -> RunCheckpoint:
+def _select(
+    matches: list[RunCheckpoint], purpose: _Purpose, name: str | None = None
+) -> RunCheckpoint:
     if purpose in {"latest", "describe"}:
         return matches[0]
     if purpose == "resume":
-        return next((run for run in matches if run.status not in _COMPLETE), matches[0])
+        return next(
+            (run for run in matches if _pack_phase_status(run, name)[1] not in _COMPLETE),
+            matches[0],
+        )
     if purpose == "publish":
         completed = [
-            run for run in matches if run.command == "describe" and run.status in _COMPLETE
+            run
+            for run in matches
+            if _pack_phase_status(run, name)[0] == "describe"
+            and _pack_phase_status(run, name)[1] in _COMPLETE
         ]
         if not completed:
             raise CommandError(
@@ -110,9 +185,9 @@ def _select(matches: list[RunCheckpoint], purpose: _Purpose) -> RunCheckpoint:
         ready = [
             run
             for run in matches
-            if any(element.ai_facets_complete for element in run.elements.values())
+            if any(element.ai_facets_complete for element in _pack_elements(run, name).values())
         ]
-        completed = [run for run in ready if run.status in _COMPLETE]
+        completed = [run for run in ready if _pack_phase_status(run, name)[1] in _COMPLETE]
         if completed:
             return completed[0]
         if ready:
@@ -134,7 +209,18 @@ def _resolve(
     if selector.startswith("mlxrun_"):
         if config.runs_dir is None:
             raise RunStoreError("run storage is not configured")
-        return RunStore(config.runs_dir, write_enabled=False).load(selector)
+        run_id, separator, scoped_name = selector.partition(":")
+        checkpoint = RunStore(config.runs_dir, write_enabled=False).load(run_id)
+        if separator and (
+            not _PACK_NAME.fullmatch(scoped_name)
+            or scoped_name.casefold() not in {value.casefold() for value in _names(checkpoint)}
+        ):
+            raise CommandError(
+                "CONFIG_INVALID",
+                "The selected pack is not part of this saved run.",
+                hint="Choose an existing pack from mojilex list.",
+            )
+        return checkpoint
     name = _source_name(selector)
     if name is None:
         raise CommandError(
@@ -150,24 +236,14 @@ def _resolve(
             "No saved run matches this pack name.",
             hint="Run mojilex list to see saved packs, or pass an exact RunID.",
         )
-    if len({_group(run) for run in matches}) != 1:
+    if len({run.target_repository for run in matches}) != 1:
         raise CommandError(
             "CONFIG_INVALID",
-            "This pack name matches different source groups or repositories.",
+            "This pack name matches different repositories.",
             hint="Choose an exact RunID from mojilex list.",
             details={"runs": [run.run_id for run in matches]},
         )
-    selected = _select(matches, purpose)
-    if purpose in {"describe", "resume", "publish"} and len(_names(selected)) > 1:
-        raise CommandError(
-            "CONFIG_INVALID",
-            "This saved run contains multiple packs.",
-            hint=(
-                f"Use mojilex {purpose} {selected.run_id} "
-                "to explicitly select all packs in this run."
-            ),
-        )
-    return selected
+    return _select(matches, purpose, name)
 
 
 def resolve_pack_run(selector: str, *, purpose: _Purpose = "latest") -> RunCheckpoint:
@@ -175,16 +251,38 @@ def resolve_pack_run(selector: str, *, purpose: _Purpose = "latest") -> RunCheck
     return _resolve(selector, load_config(), purpose=purpose)
 
 
-def _summary(checkpoint: RunCheckpoint, config: MojiLexConfig) -> dict[str, Any]:
+def _summary(
+    checkpoint: RunCheckpoint, config: MojiLexConfig, name: str | None = None
+) -> dict[str, Any]:
     maximum = checkpoint.safe_parameters.get("max_ai_requests")
     checkpoint_maximum = maximum == "unlimited" or (type(maximum) is int and maximum >= 0)
+    elements = _pack_elements(checkpoint, name)
+    phase, status = _pack_phase_status(checkpoint, name)
+    members = checkpoint.safe_parameters.get("source_memberships", {})
+    member_count = (
+        next(
+            (
+                len(values)
+                for key, values in members.items()
+                if name is not None
+                and key.casefold() == name.casefold()
+                and isinstance(values, list)
+            ),
+            len(elements),
+        )
+        if isinstance(members, dict)
+        else len(elements)
+    )
     return {
         "run_id": checkpoint.run_id,
-        "names": list(_names(checkpoint)),
-        "status": checkpoint.status,
+        "selector": _pack_selector(checkpoint, name) if name else checkpoint.run_id,
+        "names": [name] if name else list(_names(checkpoint)),
+        "status": status,
+        "phase": phase,
+        "budget_scope": "batch" if len(_names(checkpoint)) > 1 else "pack",
         "updated_at": checkpoint.updated_at.isoformat(),
-        "items": len(checkpoint.elements),
-        "ai_ready": sum(element.ai_facets_complete for element in checkpoint.elements.values()),
+        "items": member_count,
+        "ai_ready": sum(element.ai_facets_complete for element in elements.values()),
         "requests_used": checkpoint.ai_requests_used,
         "max_ai_requests": (None if maximum == "unlimited" else maximum)
         if checkpoint_maximum
@@ -196,16 +294,20 @@ def _summary(checkpoint: RunCheckpoint, config: MojiLexConfig) -> dict[str, Any]
 def list_packs_command() -> CommandResult:
     config = load_config()
     runs, skipped = _runs(config)
-    groups: dict[tuple[tuple[str, ...], str], list[RunCheckpoint]] = {}
+    groups: dict[tuple[str, str], list[RunCheckpoint]] = {}
     for run in runs:
-        groups.setdefault(_group(run), []).append(run)
+        for name in _names(run):
+            groups.setdefault((name.casefold(), run.target_repository), []).append(run)
     rows = []
-    for group in groups.values():
-        visible = _select(group, "view")
-        row = _summary(visible, config)
-        unfinished = next((run for run in group if run.status not in _COMPLETE), None)
+    for (name_key, _), group in groups.items():
+        visible = _select(group, "view", name_key)
+        name = next(value for value in _names(visible) if value.casefold() == name_key)
+        row = _summary(visible, config, name)
+        unfinished = next(
+            (run for run in group if _pack_phase_status(run, name)[1] not in _COMPLETE), None
+        )
         if unfinished is not None and unfinished.run_id != visible.run_id:
-            row["latest_unfinished"] = _summary(unfinished, config)
+            row["latest_unfinished"] = _summary(unfinished, config, name)
         rows.append(row)
     return CommandResult(
         result={
@@ -343,7 +445,7 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
     config = load_config()
     checkpoint = _resolve(selector, config, purpose="view")
     all_names = _names(checkpoint)
-    selected_name = None if _RUN_ID.fullmatch(selector) else _source_name(selector)
+    selected_name = _selector_name(selector)
     names = tuple(
         name
         for name in all_names
@@ -359,12 +461,6 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
                 native_ids.update(member for member in members if isinstance(member, str))
     if selected_name is None or len(all_names) == 1:
         native_ids.update(checkpoint.elements)
-    elif not native_ids and not staging:
-        raise CommandError(
-            "CONFIG_INVALID",
-            "This multi-pack run has no saved membership for the selected pack.",
-            hint="Use its exact RunID to browse all saved items.",
-        )
     native_ids.update(staging)
     counts = {"ready": 0, "pending": 0, "missing": 0, "invalid": 0}
     items = []
@@ -420,7 +516,7 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
         warnings.append(
             "Some exact cached descriptions are unavailable; saved progress was not changed."
         )
-    summary = _summary(checkpoint, config)
+    summary = _summary(checkpoint, config, selected_name)
     summary.update(
         {
             "names": list(names),

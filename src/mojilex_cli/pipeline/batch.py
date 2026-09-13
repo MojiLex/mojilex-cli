@@ -18,7 +18,9 @@ from mojilex_cli.github import RepositoryRef
 from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.output import RunStatus
 from mojilex_cli.runs import RunStore
+from mojilex_cli.runs.store import RunLockedError
 
+from .pack_publication import ready_source_names, scoped_candidate
 from .runner import (
     _apply_with_rollback,
     _changed_paths,
@@ -86,7 +88,8 @@ def sync_packs_command(
         run
         for run in checkpoints
         if run.command == "describe"
-        and run.status in {"succeeded", "noop"}
+        and not getattr(run, "safe_parameters", {}).get("publication_source_run")
+        and (run.status in {"succeeded", "noop"} or ready_source_names(run))
         and run.target_repository.casefold() == target.casefold()
     ]
     warnings: list[dict[str, Any] | str] = (
@@ -107,22 +110,43 @@ def sync_packs_command(
         added: list[str] = []
         skipped: set[str] = set()
         selected_runs: list[str] = []
+        store = RunStore(cast(Path, config.runs_dir))
         # _runs sorts newest first: duplicates in older runs cannot overwrite them.
         for checkpoint in ready:
             try:
-                staging = _staging_path_from_checkpoint(checkpoint)
+                with store.execution_lock(checkpoint.run_id):
+                    checkpoint = store.load(checkpoint.run_id)
+                    staging = _staging_path_from_checkpoint(checkpoint)
+                    validate_dataset(staging, strict=True).raise_for_errors()
+                    candidate = load_dataset(staging)
+                    mark_saved_fragments(candidate, checkpoint)
+                    with snapshot_at_revision(staging, checkpoint.base_revision) as base_root:
+                        base_snapshot = load_dataset(base_root)
+                        # Completion belongs to a source, not to the entire batch.
+                        if (
+                            getattr(checkpoint, "safe_parameters", {}).get("source_states")
+                            is not None
+                        ):
+                            completed_names = ready_source_names(checkpoint)
+                            if not completed_names:
+                                continue
+                            candidate = scoped_candidate(base_snapshot, candidate, completed_names)
+                        elif checkpoint.command != "describe" or checkpoint.status not in {
+                            "succeeded",
+                            "noop",
+                        }:
+                            continue
+                        merged, additions, omissions = _add_missing_packs(
+                            merged, base_snapshot, candidate
+                        )
+            except RunLockedError:
+                warnings.append("Skipped a saved run that is currently being processed.")
+                continue
             except CommandError:
                 warnings.append(
                     "Skipped a saved run whose staging workspace is unavailable or unsafe."
                 )
                 continue
-            validate_dataset(staging, strict=True).raise_for_errors()
-            candidate = load_dataset(staging)
-            mark_saved_fragments(candidate, checkpoint)
-            with snapshot_at_revision(staging, checkpoint.base_revision) as base_root:
-                merged, additions, omissions = _add_missing_packs(
-                    merged, load_dataset(base_root), candidate
-                )
             added.extend(additions)
             skipped.update(omissions)
             if additions:

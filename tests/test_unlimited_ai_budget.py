@@ -146,6 +146,7 @@ def test_pack_summary_reports_saved_unlimited_even_with_current_finite_config():
             "max_ai_requests": "unlimited",
         },
         run_id="mlxrun_test",
+        command="describe",
         status="interrupted",
         updated_at=datetime.now(UTC),
         elements={},

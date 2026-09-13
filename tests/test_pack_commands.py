@@ -96,12 +96,15 @@ def test_same_name_different_group_or_repository_is_ambiguous(
         names=("NewsEmoji", "OtherPack") if other == "source_group" else ("NewsEmoji",),
         repository="Other/Repository" if other == "target" else "MojiLex/mojilex",
     )
-    with pytest.raises(CommandError) as error:
-        packs.resolve_pack_run("NewsEmoji")
-    assert error.value.error.code == "CONFIG_INVALID"
+    if other == "target":
+        with pytest.raises(CommandError) as error:
+            packs.resolve_pack_run("NewsEmoji")
+        assert error.value.error.code == "CONFIG_INVALID"
+        assert second.run_id in error.value.error.details["runs"]
+    else:
+        assert packs.resolve_pack_run("NewsEmoji").run_id == second.run_id
     assert packs.resolve_pack_run(first.run_id).run_id == first.run_id
     assert len(packs.list_packs_command().result["packs"]) == 2
-    assert second.run_id in error.value.error.details["runs"]
 
 
 def test_missing_name_has_fallback_code_and_list_does_not_create_storage(
@@ -224,7 +227,10 @@ def test_selected_pack_in_multi_pack_run_uses_saved_membership(config: MojiLexCo
     whole = packs.show_pack_command(checkpoint.run_id).result
     assert whole["pack"]["names"] == ["NewsEmoji", "OtherPack"]
     assert whole["pack"]["items"] == 2
-    assert packs.list_packs_command().result["packs"][0]["items"] == 2
+    rows = packs.list_packs_command().result["packs"]
+    assert len(rows) == 2
+    assert all(row["items"] == 1 for row in rows)
+    assert all(len(row["names"]) == 1 for row in rows)
 
 
 def test_corrupt_run_is_skipped_without_modifying_it(config: MojiLexConfig, tmp_path: Path) -> None:
@@ -373,12 +379,11 @@ def test_named_mutation_never_expands_to_other_packs_in_same_run(
     )
     assert config.runs_dir is not None
     RunStore(config.runs_dir).save(checkpoint)
-    with pytest.raises(CommandError) as error:
-        packs.resolve_pack_run("NewsEmoji", purpose=purpose)
-    assert error.value.error.code == "CONFIG_INVALID"
-    assert "multiple packs" in error.value.error.message
-    assert checkpoint.run_id in error.value.error.hint
-    assert "all packs" in error.value.error.hint
+    selected = packs.resolve_pack_run("NewsEmoji", purpose=purpose)
+    assert packs.selected_pack_sources(selected, "NewsEmoji") == (
+        "https://t.me/addemoji/NewsEmoji",
+    )
+    assert packs.selected_pack_sources(selected, checkpoint.run_id) == ()
     assert packs.resolve_pack_run(checkpoint.run_id, purpose=purpose).run_id == checkpoint.run_id
     assert packs.resolve_pack_run("NewsEmoji", purpose="view").run_id == checkpoint.run_id
 

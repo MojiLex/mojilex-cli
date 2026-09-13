@@ -145,6 +145,15 @@ All URLs share one import and analysis run, with one AI cost approval rather tha
 one per URL. The configured AI request limit still applies to the entire run.
 AI cost and publication confirmations default to **Yes**; Enter accepts it.
 
+**My packs** shows each URL as a separate pack with its own progress, descriptions,
+and history. Its card resumes, analyzes, or publishes only that pack. Existing
+file imports are supported without deleting or importing them again. The request
+counter on a batch pack card belongs to the entire operation; selecting one pack
+does not reset spending. `describe PACK`, `resume PACK`, and `publish PACK` select
+one pack. An exact `RUN_ID` still selects the entire batch; `RUN_ID:PACK` selects
+one pack within that saved run. A completed pack can be published while siblings
+are still unfinished.
+
 The **Packs already in the official repository** setting (`mojilex settings`)
 applies to individual links and lists. The official `MojiLex/mojilex` main branch
 is checked once per operation; local drafts and pending PRs do not count.
