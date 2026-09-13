@@ -625,6 +625,14 @@ async def _run_add(
                 resume_checkpoint.ai_cost_reserved_usd if resume_checkpoint else Decimal("0")
             ),
         )
+        from mojilex_cli.composition.publication import (
+            defer_fragment_overflow_for_legacy_schema,
+            mark_verified_fragments,
+            strip_legacy_fragment_tags,
+        )
+        from mojilex_cli.composition.service import CompositionQueue
+
+        composition_queue = CompositionQueue(model=config.ai.model)
         ai_state = _AIState()
         current = initial
         warnings: list[dict[str, Any] | str] = []
@@ -871,6 +879,27 @@ async def _run_add(
                             )
                             analyses = _bind_deterministic_analyses(processed)
                             if checkpoint is not None:
+                                evidence = checkpoint.safe_parameters.get(
+                                    "composition_evidence", {}
+                                )
+                                evidence = dict(evidence) if isinstance(evidence, dict) else {}
+                                groups = await composition_queue.prepare(
+                                    source.native_id,
+                                    source,
+                                    processed,
+                                    previous=evidence.get(source.native_id),
+                                )
+                                evidence[source.native_id] = [
+                                    group.model_dump(mode="json") for group in groups
+                                ]
+                                checkpoint = checkpoint.model_copy(
+                                    update={
+                                        "safe_parameters": {
+                                            **checkpoint.safe_parameters,
+                                            "composition_evidence": evidence,
+                                        }
+                                    }
+                                )
                                 checkpoint = _checkpoint_ai_keys(
                                     checkpoint,
                                     source,
@@ -1028,6 +1057,67 @@ async def _run_add(
                     errors=errors,
                 )
 
+            if checkpoint is not None:
+                verified_groups = await composition_queue.verify(
+                    api_key=credentials.gemini_api_key, budget=budget
+                )
+                evidence = checkpoint.safe_parameters.get("composition_evidence", {})
+                evidence = dict(evidence) if isinstance(evidence, dict) else {}
+                evidence.update(
+                    {
+                        key: [group.model_dump(mode="json") for group in groups]
+                        for key, groups in verified_groups.items()
+                    }
+                )
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "safe_parameters": {
+                            **checkpoint.safe_parameters,
+                            "composition_evidence": evidence,
+                        }
+                    }
+                )
+                checkpoint = _checkpoint_budget(checkpoint, budget)
+                run_store.save(checkpoint)
+
+                unchanged_ids = {
+                    identifier
+                    for identifier, emoji in current.emojis.items()
+                    if identifier in initial.emojis
+                    and emoji.as_dict() == initial.emojis[identifier].as_dict()
+                }
+                before_tags = {
+                    identifier: tuple(emoji.semantic_tags)
+                    for identifier, emoji in current.emojis.items()
+                }
+                before_reviews = {
+                    identifier: emoji.review.model_copy(deep=True)
+                    for identifier, emoji in current.emojis.items()
+                    if len(emoji.semantic_tags) == 12 and "fragment" not in emoji.semantic_tags
+                }
+                strip_legacy_fragment_tags(current, checkpoint)
+                mark_verified_fragments(current, verified_groups, source_collections)
+                deferred_fragments = defer_fragment_overflow_for_legacy_schema(current)
+                for identifier in deferred_fragments & before_reviews.keys():
+                    current.emojis[identifier].review = before_reviews[identifier]
+                totals["fragments_deferred_to_publication"] = len(deferred_fragments)
+                marker_changes = {
+                    identifier
+                    for identifier, emoji in current.emojis.items()
+                    if tuple(emoji.semantic_tags) != before_tags[identifier]
+                }
+                totals["fragments_marked"] = sum(
+                    "fragment" in current.emojis[identifier].semantic_tags
+                    for identifier in marker_changes
+                )
+                totals["legacy_fragment_tags_removed"] = (
+                    len(marker_changes) - totals["fragments_marked"]
+                )
+                dedupe_emoji_ids.update(marker_changes)
+                newly_updated = len(marker_changes & unchanged_ids)
+                totals["items_updated"] += newly_updated
+                totals["items_unchanged"] = max(0, totals["items_unchanged"] - newly_updated)
+
             if isolated_publication:
                 git.fetch("origin", config.repository.base_branch)
                 publication_base = git.current_sha(
@@ -1173,6 +1263,15 @@ async def _run_add(
                     budget.requests_used,
                     budget.cost_reserved,
                 )
+                if status in {RunStatus.SUCCEEDED, RunStatus.NOOP}:
+                    checkpoint = checkpoint.model_copy(
+                        update={
+                            "safe_parameters": {
+                                **checkpoint.safe_parameters,
+                                "public_fragment_marker_version": 1,
+                            }
+                        }
+                    )
                 run_store.save(checkpoint)
             return CommandResult(
                 run_id=run_identifier,
@@ -1575,12 +1674,16 @@ async def _run_submit(
     confirmation: Callable[[str], bool] | None,
     batch_identifier: str | None = None,
 ) -> CommandResult:
+    from mojilex_cli.composition.publication import mark_saved_fragments
+
     configured = load_config()
     credentials = load_credentials()
     run_identifier = batch_identifier or new_run_id()
     report_run_id(run_identifier)
     checkpoint: RunCheckpoint | None = None
     staged_repository: Path | None = None
+    projected_candidate: DatasetSnapshot | None = None
+    fragment_updates: set[str] = set()
     review_routing: ReviewRoutingReport | None = None
     if target and target.startswith("mlxrun_"):
         checkpoint = RunStore(cast(Path, configured.runs_dir)).load_for_resume(
@@ -1622,12 +1725,13 @@ async def _run_submit(
             staged_report = validate_dataset(staged_repository, strict=True)
             staged_report.raise_for_errors()
             staged_snapshot = load_dataset(staged_repository)
+            assert checkpoint is not None
+            fragment_updates = mark_saved_fragments(staged_snapshot, checkpoint)
+            projected_candidate = staged_snapshot
             review_routing = official_submission_report(staged_snapshot)
         if config.repository.publish == "local" and not direct_push:
-            with snapshot_at_revision(
-                staged_repository, cast(RunCheckpoint, checkpoint).base_revision
-            ) as base_root:
-                changed = _changed_paths(load_dataset(base_root), load_dataset(staged_repository))
+            with snapshot_at_revision(staged_repository, checkpoint.base_revision) as base_root:
+                changed = _changed_paths(load_dataset(base_root), staged_snapshot)
             return CommandResult(
                 run_id=run_identifier,
                 status=RunStatus.NOOP if not changed else RunStatus.SUCCEEDED,
@@ -1635,6 +1739,8 @@ async def _run_submit(
                     "changed_paths": [str(path) for path in changed],
                     "validated": True,
                     "review_routing": review_routing.as_dict(),
+                    "fragment_markers_projected": len(fragment_updates),
+                    "projection_persisted": False,
                 },
                 publication={"mode": "staging", "path": str(staged_repository)},
             )
@@ -1654,7 +1760,8 @@ async def _run_submit(
                 latest_report = validate_dataset(workspace.root, strict=True)
                 latest_report.raise_for_errors()
                 latest = load_dataset(workspace.root)
-                candidate_snapshot = load_dataset(staged_repository)
+                assert projected_candidate is not None
+                candidate_snapshot = projected_candidate
                 assert checkpoint is not None
                 with snapshot_at_revision(staged_repository, checkpoint.base_revision) as base_root:
                     imported_base = load_dataset(base_root)
@@ -5112,7 +5219,7 @@ def _description_from_existing(emoji: Emoji) -> DescriptionItem:
                 "uncertainties": [value.value for value in emoji.facets.uncertainties],
             }
         ),
-        semantic_tags=tuple(emoji.semantic_tags),
+        semantic_tags=tuple(tag for tag in emoji.semantic_tags if tag != "fragment"),
         content=ContentClassification(
             rating=cast(Any, emoji.content.rating.value),
             warnings=tuple(cast(Any, item.value) for item in emoji.content.warnings),
@@ -5843,6 +5950,7 @@ def _looks_like_local_repository_path(value: str) -> bool:
 
 def _safe_parameters(sources: Sequence[str], options: PipelineOptions) -> dict[str, object]:
     return {
+        "public_fragment_marker_version": 1,
         "sources": list(sources),
         "repository": options.repository or "",
         "platform": options.platform,

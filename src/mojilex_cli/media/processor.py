@@ -132,5 +132,10 @@ class MediaProcessor:
             except BaseException:
                 pass
             raise
-        self.run.account_outputs((*processed.frame_paths, *processed.dark_frame_paths))
+        tile_paths = (
+            (processed.composition_tile_path,)
+            if processed.composition_tile_path is not None
+            else ()
+        )
+        self.run.account_outputs((*processed.frame_paths, *processed.dark_frame_paths, *tile_paths))
         return processed

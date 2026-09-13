@@ -9,6 +9,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from mojilex_cli.cache import CacheError, CacheStore
+from mojilex_cli.composition.detector import Composition
 from mojilex_cli.config import MojiLexConfig, load_config
 from mojilex_cli.dataset import DatasetLoadError
 from mojilex_cli.dataset.layout import assert_no_link_or_reparse
@@ -291,6 +292,50 @@ def _staging_items(
     return result
 
 
+def _saved_compositions(checkpoint: RunCheckpoint, names: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Expose only current, verified and non-overlapping local composition evidence."""
+    evidence = checkpoint.safe_parameters.get("composition_evidence")
+    memberships = checkpoint.safe_parameters.get("source_memberships")
+    if not isinstance(evidence, dict) or not isinstance(memberships, dict):
+        return []
+    selected = {name.casefold() for name in names}
+    groups: list[Composition] = []
+    occurrences: dict[str, int] = {}
+    for name, values in evidence.items():
+        if not isinstance(name, str) or name.casefold() not in selected:
+            continue
+        members = memberships.get(name)
+        if not isinstance(members, list) or not isinstance(values, list) or len(values) > 64:
+            continue
+        allowed = {member for member in members if isinstance(member, str)}
+        for raw in values:
+            try:
+                group = Composition.model_validate(raw, strict=True)
+            except (ValueError, TypeError):
+                continue
+            ids = {member.native_id for member in group.members}
+            if (
+                not group.verified
+                or len(group.members) != group.columns * group.rows
+                or len(ids) != len(group.members)
+                or not ids <= allowed
+                or any(
+                    (element := checkpoint.elements.get(member.native_id)) is None
+                    or element.media_sha256 != (member.media_sha256,)
+                    for member in group.members
+                )
+            ):
+                continue
+            groups.append(group)
+            for native_id in ids:
+                occurrences[native_id] = occurrences.get(native_id, 0) + 1
+    return [
+        group.model_dump(mode="json")
+        for group in groups
+        if all(occurrences[member.native_id] == 1 for member in group.members)
+    ]
+
+
 def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
     """Browse saved text only. Review mode never approves or changes an item."""
     config = load_config()
@@ -392,6 +437,7 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
             "items": items,
             "counts": counts,
             "review": review,
+            "compositions": _saved_compositions(checkpoint, names),
         },
         warnings=list(warnings),
     )

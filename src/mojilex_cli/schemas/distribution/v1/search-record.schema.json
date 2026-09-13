@@ -69,9 +69,13 @@
           "items": {"$ref": "mlx://schemas/distribution/v1/distribution-common.schema.json#/$defs/conceptId"}
         },
         "semantic_tags": {
+          "description": "Preserves canonical semantic tags, including the optional reserved fragment marker for a verified part of a multi-emoji composition. Absence of fragment does not guarantee a standalone image.",
           "type": "array",
           "minItems": 1,
-          "maxItems": 12,
+          "maxItems": 13,
+          "if": {"contains": {"const": "fragment"}},
+          "then": {"minItems": 2},
+          "else": {"maxItems": 12},
           "uniqueItems": true,
           "items": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 48}
         }

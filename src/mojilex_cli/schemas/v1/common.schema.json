@@ -382,9 +382,19 @@
       }
     },
     "semanticTags": {
+      "description": "One to 12 concrete semantic tags, with optional reserved fragment marker for a verified part of a multi-emoji composition. Absence of fragment does not guarantee a standalone image. Composition membership and layout are not exported.",
       "type": "array",
       "minItems": 1,
-      "maxItems": 12,
+      "maxItems": 13,
+      "if": {
+        "contains": {"const": "fragment"}
+      },
+      "then": {
+        "minItems": 2
+      },
+      "else": {
+        "maxItems": 12
+      },
       "uniqueItems": true,
       "items": {
         "type": "string",

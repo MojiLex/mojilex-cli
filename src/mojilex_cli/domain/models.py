@@ -1060,7 +1060,7 @@ class Emoji(StrictModel):
     facets: Facets
     concept_ids: Annotated[list[ConceptId], Field(max_length=16)]
     concept_mapping_status: ConceptMappingStatus
-    semantic_tags: Annotated[list[SemanticTag], Field(min_length=1, max_length=12)]
+    semantic_tags: Annotated[list[SemanticTag], Field(min_length=1, max_length=13)]
     content: Content
     provenance: Provenance
     review: Review
@@ -1080,6 +1080,8 @@ class Emoji(StrictModel):
 
     @model_validator(mode="after")
     def validate_description_and_media(self) -> Emoji:
+        if not 1 <= len(set(self.semantic_tags) - {"fragment"}) <= 12:
+            raise ValueError("semantic_tags requires 1-12 concrete tags plus optional fragment")
         if self.concept_ids != sorted(self.concept_ids):
             raise ValueError("concept_ids must be bytewise sorted")
         if self.concept_mapping_status is ConceptMappingStatus.PENDING and self.concept_ids:

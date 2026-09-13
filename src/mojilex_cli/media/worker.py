@@ -104,6 +104,7 @@ def process(
             ffmpeg,
             codec=codec_value,
             preserve_alpha=has_alpha_value,
+            ffprobe=ffprobe,
         )
         analysis = (
             None
@@ -121,6 +122,11 @@ def process(
     else:
         raise ValueError("unsupported media format")
 
+    composition_tile = None
+    if expected_format == "webp" and not needs_repainting and max(rgba_frames[0].size) <= 256:
+        tile_path = output_dir / "composition-tile.png"
+        rgba_frames[0].save(tile_path, format="PNG", optimize=False)
+        composition_tile = {"path": str(tile_path), "sha256": _sha256(tile_path)}
     light_paths: list[str] = []
     dark_paths: list[str] = []
     decoded_alpha = any(_has_transparency(frame) for frame in rgba_frames)
@@ -175,6 +181,7 @@ def process(
         "analysis": analysis.model_dump(mode="json") if analysis is not None else None,
         "frame_paths": light_paths,
         "dark_frame_paths": dark_paths,
+        "composition_tile": composition_tile,
     }
 
 
@@ -377,6 +384,7 @@ def _render_webm(
     codec: str,
     preserve_alpha: bool,
     filename_prefix: str = "decoded",
+    ffprobe: str = "ffprobe",
 ) -> list[Image.Image]:
     if not executable or shutil.which(executable) is None:
         raise RuntimeError("ffmpeg is required for WebM")
@@ -410,6 +418,39 @@ def _render_webm(
                 codec=codec,
                 preserve_alpha=preserve_alpha,
             )
+        if completed.returncode == 0 and not rendered.is_file():
+            # Some legal WebM emoji hold one frame for the full duration. Seeking
+            # past its timestamp yields no PNG even within that frame's duration.
+            # Only a bounded, fully enumerated SINGLE-frame timeline permits us
+            # to repeat a frame; ordinary animations retain midpoint sampling.
+            durations = _webm_frame_durations(
+                source,
+                ffprobe=ffprobe,
+                duration_ms=duration_ms,
+                timeout=limits.worker_timeout_seconds,
+            )
+            if len(durations) == 1:
+                completed = _decode_webm_frame(
+                    source,
+                    rendered,
+                    0.0,
+                    limits,
+                    executable,
+                    codec=codec,
+                    preserve_alpha=preserve_alpha,
+                )
+                if completed.returncode == 0 and rendered.is_file():
+                    try:
+                        only = _load_rgba(rendered)
+                        try:
+                            repeated = [only.copy() for _ in range(limits.frames)]
+                        finally:
+                            only.close()
+                    finally:
+                        rendered.unlink(missing_ok=True)
+                    for previous in frames:
+                        previous.close()
+                    return repeated
         if completed.returncode != 0 or not rendered.is_file():
             raise RuntimeError("ffmpeg failed to decode a deterministic WebM frame")
         try:

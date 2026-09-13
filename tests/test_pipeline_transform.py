@@ -9,6 +9,7 @@ from mojilex_cli.ai import (
     SemanticFacets,
 )
 from mojilex_cli.ai import LocalizedDescription as AILocalizedDescription
+from mojilex_cli.dataset.validation import validate_snapshot
 from mojilex_cli.domain import (
     DeterministicEmojiAnalysis,
     RenderingFacets,
@@ -137,6 +138,58 @@ def test_unchanged_collection_plan_is_byte_identical_and_requires_no_update(tmp_
     assert plan.updated == 0
     assert plan.removed_memberships == 0
     assert plan.snapshot.to_files() == snapshot.to_files()
+
+
+@pytest.mark.parametrize(
+    "reserved", ["nature", "neon", "counter", "cultural-reference", "fragment"]
+)
+def test_cached_ai_global_facet_tags_are_removed_without_changing_descriptions(
+    tmp_path,
+    reserved: str,
+) -> None:
+    snapshot = make_snapshot(tmp_path.resolve())
+    source = _source(snapshot)
+    native_id = source.items[0].native_id
+    original = _description(snapshot)
+    payload = original.model_dump(mode="json")
+    payload["semantic_tags"].append(reserved)
+    # The old provider/cache contract accepts an unselected controlled value.
+    cached = DescriptionItem.model_validate(payload)
+    plan = plan_collection_merge(
+        snapshot,
+        source,
+        {native_id: _processed(snapshot, tmp_path)},
+        {native_id: cached},
+        {native_id: _analysis(snapshot)},
+        {native_id: _generation()},
+        timestamp="2026-09-11T18:00:00Z",
+    )
+    emoji = next(iter(plan.snapshot.emojis.values()))
+    assert emoji.semantic_tags == list(original.semantic_tags)
+    assert reserved in cached.semantic_tags
+    assert emoji.descriptions == next(iter(snapshot.emojis.values())).descriptions
+    assert not any(
+        issue.code == "FACET_TAG_DUPLICATE" for issue in validate_snapshot(plan.snapshot).issues
+    )
+
+
+def test_only_reserved_ai_tags_do_not_get_an_invented_fallback(tmp_path) -> None:
+    snapshot = make_snapshot(tmp_path.resolve())
+    source = _source(snapshot)
+    native_id = source.items[0].native_id
+    payload = _description(snapshot).model_dump(mode="json")
+    payload["semantic_tags"] = ["nature"]
+    cached = DescriptionItem.model_validate(payload)
+    with pytest.raises(ValueError, match="no concrete tags"):
+        plan_collection_merge(
+            snapshot,
+            source,
+            {native_id: _processed(snapshot, tmp_path)},
+            {native_id: cached},
+            {native_id: _analysis(snapshot)},
+            {native_id: _generation()},
+            timestamp="2026-09-11T18:00:00Z",
+        )
 
 
 def test_disjoint_collection_requires_explicit_identity_decision(tmp_path) -> None:

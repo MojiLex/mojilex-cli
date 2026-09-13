@@ -72,6 +72,17 @@ def _sticker_set() -> dict[str, object]:
     }
 
 
+def test_multiline_telegram_title_is_normalized_without_accepting_controls() -> None:
+    payload = _sticker_set()
+    payload["title"] = "Lake\nmermaid\r\npack\tname"
+    assert TelegramBotAPI._parse_sticker_set(payload).title == "Lake mermaid pack name"
+    payload["title"] = "  Lake \n  cafe\u0301\u00a0 pack  "
+    assert TelegramBotAPI._parse_sticker_set(payload).title == "Lake caf\u00e9 pack"
+    payload["title"] = "Lake\x01mermaid"
+    with pytest.raises(TelegramProtocolError):
+        TelegramBotAPI._parse_sticker_set(payload)
+
+
 @pytest.mark.asyncio
 async def test_adapter_normalizes_collection_without_persisting_file_id() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

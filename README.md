@@ -145,6 +145,51 @@ You can also use `mojilex import "C:\path\packs.txt"` or
 
 ## Everyday commands
 
+After description, an optional check looks for related image fragments within a
+pack. Static, non-repainting square tiles may form grids or strips, including
+2×1 and 1×2, with up to 8 tiles per axis and 24 per assembly. Two-scale seam
+search uses connected layouts, including noisy or partly transparent boundaries.
+Three complementary AI checks must agree on continuity, absence of standalone
+icons, and correct layout. Any veto rejects that proposal. Existing strips can
+also join along multiple corresponding seams, such as a tree's crown and trunk.
+Verified groups are replaced only after the extension passes all checks and
+preserves every old tile and its relative position; a veto preserves the old groups.
+At most three proposals per tile mean at most nine AI calls within one pack, with a batch-wide cap of ten
+calls per `native_id` when packs share an emoji. Accepted groups within each pack
+never overlap. Checks use the
+remaining shared budget after all packs' descriptions, without another approval.
+Uncertainty, errors or insufficient budget leave the group unmarked.
+
+Verified groups appear separately in the gallery and as `compositions` in
+`show --json`. Confirmed members receive the reserved public `semantic_tags` marker `fragment`,
+including in GitHub submissions and search exports. Applications can show
+"Fragment of a larger picture; may not be a standalone emoji."
+The marker requires all three checks; an ordinary single-image AI response cannot add it. Completeness is not
+claimed; ambiguous outer tiles may be omitted. Older retained previews without
+raw RGBA tiles are skipped, and changed media invalidates prior verification.
+This conservative check does not guarantee zero false positives.
+
+Local checkpoints store groups under `safe_parameters.composition_evidence[pack]`.
+The group records `detector: "composition-v3"`, `verified: true`,
+`verification_passes: 3`, and `verifier_model`. Existing v2 confirmations can be
+retained with matching model, hashes and three successful checks. `columns` and `rows` define the
+grid; `members` lists tiles left to right, top to bottom, each with `native_id`,
+`media_sha256` (original media) and `tile_sha256` (RGBA tile). Puzzle membership is
+represented publicly by `fragment`; full group relationships and tile coordinates
+remain local. Absence of the marker does not prove an emoji is standalone.
+Records retain 1–12 concrete tags plus the optional `fragment` marker (up to 13
+total); consumers enforcing the old 12-tag ceiling must update their schemas.
+Previously verified saved packs gain the marker on submission/synchronization
+without new AI calls. Synchronization still skips packs already in the repository
+and preserves existing shared emoji records. An existing marker is retained when
+the original media is unchanged; changed media requires fresh evidence. Adding
+a marker invalidates earlier manual approval of that exact payload; records with
+a negative manual review are not automatically changed.
+For legacy drafts, an AI-generated free-form word `fragment` is not composition
+evidence: the old run's own results are normalized using retained confirmations.
+If an old staging schema cannot hold a thirteenth tag, analysis keeps all concrete
+tags and defers the marker to publication against the updated repository schema.
+
 Replace `NewsEmoji` with your pack's name. These address **your locally saved packs**,
 not every pack on Telegram or GitHub.
 

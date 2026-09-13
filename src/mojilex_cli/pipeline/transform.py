@@ -22,6 +22,7 @@ from mojilex_cli.domain import (
     Availability,
     Collection,
     Content,
+    ContentType,
     DeterministicEmojiAnalysis,
     Emoji,
     Facets,
@@ -30,7 +31,10 @@ from mojilex_cli.domain import (
     Membership,
     Provenance,
     Review,
+    Style,
+    SuggestedUse,
     ToolProvenance,
+    Uncertainty,
     collection_id,
     emoji_id,
     media_digest,
@@ -173,6 +177,12 @@ def plan_collection_merge(
             created += 1
             merged_emoji = incoming
         else:
+            # Published fragment evidence remains valid for the same original media,
+            # even when this run cannot afford another optional composition check.
+            if "fragment" in existing_emoji.semantic_tags and media_digest(
+                existing_emoji.media
+            ) == media_digest(incoming.media):
+                incoming.semantic_tags = sorted({*incoming.semantic_tags, "fragment"})
             merged_emoji = merge_emoji(
                 existing_emoji,
                 incoming,
@@ -399,6 +409,21 @@ def _emoji(
             **description.facets.model_dump(mode="json"),
         }
     )
+    # Older cached AI responses rejected only tags matching selected facets.
+    # The dataset reserves the entire controlled vocabulary, even values absent
+    # from this emoji's facets. Remove redundant vocabulary deterministically;
+    # retain exact concrete tags and avoid another paid description request.
+    controlled_tags = {
+        *(item.value for item in ContentType),
+        *(item.value for item in Style),
+        *(item.value for item in SuggestedUse),
+        *(item.value for item in Uncertainty),
+    }
+    # The reserved structural marker requires whole-composition verification;
+    # a single-image AI response (including an old cached response) is not evidence.
+    semantic_tags = sorted(set(description.semantic_tags) - controlled_tags - {"fragment"})
+    if not semantic_tags:
+        raise ValueError("AI semantic tags contain no concrete tags outside controlled facets")
     return Emoji(
         schema_version=SCHEMA_VERSION,
         entity_type="emoji",
@@ -415,7 +440,7 @@ def _emoji(
         facets=facets,
         concept_ids=list(description.concept_ids),
         concept_mapping_status="complete" if description.concept_ids else "pending",
-        semantic_tags=sorted(description.semantic_tags),
+        semantic_tags=semantic_tags,
         content=Content(
             rating=description.content.rating,
             warnings=sorted(description.content.warnings),

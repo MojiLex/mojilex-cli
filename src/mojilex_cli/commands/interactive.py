@@ -293,6 +293,12 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                 f"AI requests for this result: {pack['requests_used']}/{pack['max_ai_requests']}",
             )
         )
+        if saved.get("compositions"):
+            count = len(saved["compositions"])
+            detail += label(
+                f"\nСвязанные группы фрагментов: {count}. Сборки — в галерее.",
+                f"\nRelated fragment groups: {count}. Open gallery to view assemblies.",
+            )
         active = state["unfinished"]
         if active:
             detail += label(

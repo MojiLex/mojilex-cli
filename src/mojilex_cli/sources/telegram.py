@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import random
 import re
+import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import PurePosixPath
 from tempfile import SpooledTemporaryFile
@@ -37,7 +38,7 @@ MAX_API_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_RETRY_AFTER_SECONDS = 120.0
 _SHORT_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
 _BOT_TOKEN = re.compile(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,}\Z")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _RETRIABLE_STATUS = frozenset({408, 425, 500, 502, 503, 504})
 _RETRIABLE_TRANSPORT_ERRORS = (
     httpx.TimeoutException,
@@ -526,6 +527,9 @@ class TelegramBotAPI(SourceAdapter):
             raise TelegramProtocolError("Telegram returned an invalid StickerSet")
         name = value.get("name")
         title = value.get("title")
+        if isinstance(title, str):
+            # Telegram permits multiline display titles; canonical titles are one line.
+            title = re.sub(r"[\r\n\t]+", " ", title).strip()
         sticker_type = value.get("sticker_type")
         stickers = value.get("stickers")
         if (
@@ -539,6 +543,7 @@ class TelegramBotAPI(SourceAdapter):
             if sticker_type not in {None, "custom_emoji"}:
                 raise UnsupportedSourceError("Telegram set is not a custom emoji set")
             raise TelegramProtocolError("Telegram StickerSet fields are invalid")
+        title = " ".join(unicodedata.normalize("NFC", title).split())
         items = tuple(
             TelegramBotAPI._parse_sticker(item, index) for index, item in enumerate(stickers)
         )

@@ -79,6 +79,21 @@ def _fingerprint(value: ProcessedMedia) -> str:
     ).hexdigest()
 
 
+def _composition_png(data: bytes, size: tuple[int, int]) -> None:
+    """Accept only small unscaled RGBA tiles produced by the isolated decoder."""
+    if len(data) > 512 * 1024 or not all(1 <= side <= 256 for side in size):
+        raise ValueError("composition tile exceeds its safe limit")
+    with Image.open(io.BytesIO(data)) as image:
+        if (
+            image.format != "PNG"
+            or image.size != size
+            or image.mode != "RGBA"
+            or getattr(image, "is_animated", False)
+        ):
+            raise ValueError("composition tile must be a native-size static RGBA PNG")
+        image.verify()
+
+
 class RetainedMediaStore:
     """Retain only verified generated frames; corruption is an ordinary cache miss.
 
@@ -153,7 +168,11 @@ class RetainedMediaStore:
             manifest = json.loads(_read(entry / "manifest.json", _MANIFEST_LIMIT))
             if (
                 not isinstance(manifest, dict)
-                or set(manifest) != {"version", "fingerprint", "frames"}
+                or set(manifest)
+                not in (
+                    {"version", "fingerprint", "frames"},
+                    {"version", "fingerprint", "frames", "composition_tile"},
+                )
                 or type(manifest["version"]) is not int
                 or manifest["version"] != 1
                 or manifest["fingerprint"] != _fingerprint(expected)
@@ -184,6 +203,25 @@ class RetainedMediaStore:
                     return None
                 _png(data)
                 paths.append(path)
+            tile_path = None
+            tile_sha256 = None
+            tile = manifest.get("composition_tile")
+            if tile is not None:
+                if (
+                    expected.metadata.kind != "static"
+                    or not isinstance(tile, dict)
+                    or set(tile) != {"name", "bytes", "sha256"}
+                    or tile["name"] != "composition-tile.png"
+                    or type(tile["bytes"]) is not int
+                    or not 1 <= tile["bytes"] <= 512 * 1024
+                ):
+                    return None
+                tile_path = entry / "composition-tile.png"
+                data = _read(tile_path, tile["bytes"])
+                tile_sha256 = hashlib.sha256(data).hexdigest()
+                if tile_sha256 != tile["sha256"]:
+                    return None
+                _composition_png(data, (expected.metadata.width, expected.metadata.height))
             return ProcessedMedia(
                 metadata=expected.metadata,
                 analysis=expected.analysis,
@@ -191,6 +229,8 @@ class RetainedMediaStore:
                 dark_frame_paths=tuple(paths[count:]),
                 rendered_frame_count=count,
                 has_dark_render=expected.semantic_has_dark_render,
+                composition_tile_path=tile_path,
+                composition_tile_sha256=tile_sha256,
             )
         except (
             OSError,
@@ -244,12 +284,23 @@ class RetainedMediaStore:
                         }
                     )
                     sources.append(path)
+            manifest_data: dict[str, Any] = {
+                "version": 1,
+                "fingerprint": _fingerprint(value),
+                "frames": list(records),
+            }
+            if value.composition_tile_path is not None:
+                data = _read(value.composition_tile_path, 512 * 1024)
+                _composition_png(data, (value.metadata.width, value.metadata.height))
+                digest = hashlib.sha256(data).hexdigest()
+                if digest != value.composition_tile_sha256:
+                    return False
+                tile_record = {"name": "composition-tile.png", "bytes": len(data), "sha256": digest}
+                manifest_data["composition_tile"] = tile_record
+                records.append(tile_record)
+                sources.append(value.composition_tile_path)
             manifest = json.dumps(
-                {
-                    "version": 1,
-                    "fingerprint": _fingerprint(value),
-                    "frames": records,
-                },
+                manifest_data,
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode()

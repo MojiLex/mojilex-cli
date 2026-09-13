@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from mojilex_cli.commands.packs import _runs
 from mojilex_cli.commands.runtime import CommandError, CommandResult
+from mojilex_cli.composition.publication import mark_saved_fragments
 from mojilex_cli.config import load_config
 from mojilex_cli.dataset import DatasetSnapshot, load_dataset, validate_dataset
 from mojilex_cli.git import GitRunner
@@ -117,6 +118,7 @@ def sync_packs_command(
                 continue
             validate_dataset(staging, strict=True).raise_for_errors()
             candidate = load_dataset(staging)
+            mark_saved_fragments(candidate, checkpoint)
             with snapshot_at_revision(staging, checkpoint.base_revision) as base_root:
                 merged, additions, omissions = _add_missing_packs(
                     merged, load_dataset(base_root), candidate

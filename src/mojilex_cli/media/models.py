@@ -107,9 +107,17 @@ class ProcessedMedia(BaseModel):
         default=None, ge=1, le=HARD_MAX_FRAMES, exclude=True, repr=False
     )
     has_dark_render: bool | None = Field(default=None, exclude=True, repr=False)
+    composition_tile_path: Path | None = Field(default=None, exclude=True, repr=False)
+    composition_tile_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude=True, repr=False
+    )
 
     @model_validator(mode="after")
     def validate_transient_render_context(self) -> ProcessedMedia:
+        if (self.composition_tile_path is None) != (self.composition_tile_sha256 is None):
+            raise ValueError("composition tile requires both a path and checksum")
+        if self.composition_tile_path is not None and self.metadata.kind != "static":
+            raise ValueError("composition tile is only supported for static media")
         if self.frame_paths and self.rendered_frame_count not in {None, len(self.frame_paths)}:
             raise ValueError("rendered frame count differs from transient frame paths")
         if self.dark_frame_paths and len(self.dark_frame_paths) != len(self.frame_paths):

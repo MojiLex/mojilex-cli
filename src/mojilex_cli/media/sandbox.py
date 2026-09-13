@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -23,6 +24,7 @@ from .models import (
     MediaRenderError,
     ProcessedMedia,
 )
+from .resume import _composition_png, _read
 
 _MAX_WORKER_OUTPUT = 1024 * 1024
 
@@ -155,6 +157,25 @@ class SafeMediaWorker:
                 analysis = cached_analysis
             frames = _validated_paths(payload["frame_paths"], output_dir)
             dark_frames = _validated_paths(payload["dark_frame_paths"], output_dir)
+            tile_path = None
+            tile_sha256 = None
+            tile = payload.get("composition_tile")
+            if tile is not None:
+                if (
+                    expected_format != "webp"
+                    or needs_repainting
+                    or not isinstance(tile, dict)
+                    or set(tile) != {"path", "sha256"}
+                ):
+                    raise ValueError("unexpected composition tile")
+                tile_path = _validated_paths([tile["path"]], output_dir)[0]
+                if tile_path.name != "composition-tile.png":
+                    raise ValueError("unexpected composition tile name")
+                data = _read(Path(tile["path"]), 512 * 1024)
+                _composition_png(data, (metadata.width, metadata.height))
+                tile_sha256 = hashlib.sha256(data).hexdigest()
+                if tile_sha256 != tile["sha256"]:
+                    raise ValueError("composition tile checksum mismatch")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise MediaRenderError("media worker returned an invalid manifest") from exc
         expected_count = 1 if expected_format == "webp" else self.limits.frames
@@ -169,6 +190,8 @@ class SafeMediaWorker:
             dark_frame_paths=dark_frames,
             rendered_frame_count=len(frames),
             has_dark_render=bool(dark_frames),
+            composition_tile_path=tile_path,
+            composition_tile_sha256=tile_sha256,
         )
 
 

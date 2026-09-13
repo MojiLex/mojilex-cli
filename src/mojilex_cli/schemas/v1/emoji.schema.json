@@ -95,6 +95,7 @@
       ]
     },
     "semantic_tags": {
+      "description": "Includes the reserved fragment marker only when this emoji is a verified part of a multi-emoji composition; it may not be a standalone image.",
       "$ref": "https://schemas.mojilex.org/v1/common.schema.json#/$defs/semanticTags"
     },
     "content": {

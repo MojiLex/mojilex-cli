@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from typing import Any
 from PIL import Image
 
 from mojilex_cli.config import load_config
-from mojilex_cli.media.resume import _png, _read
+from mojilex_cli.media.resume import _composition_png, _png, _read
 
 from .packs import resolve_pack_run, show_pack_command
 from .runtime import CommandResult
@@ -139,6 +140,106 @@ def _previews(run_id: str, native_ids: set[str]) -> dict[str, bytes]:
     return result
 
 
+def _composition_tiles(run_id: str, groups: list[dict[str, Any]]) -> dict[str, bytes]:
+    """Read retained native RGBA tiles, never padded ordinary gallery previews."""
+    checkpoint = resolve_pack_run(run_id, purpose="view")
+    config = load_config()
+    if config.cache_dir is None:
+        return {}
+    root = config.cache_dir / "resume-media" / hashlib.sha256(run_id.encode()).hexdigest()
+    result: dict[str, bytes] = {}
+    total = 0
+    for group in groups:
+        current: dict[str, bytes] = {}
+        size = None
+        try:
+            for member in group["members"]:
+                native_id = member["native_id"]
+                element = checkpoint.elements.get(native_id)
+                if (
+                    element is None
+                    or element.media_sha256 != (member["media_sha256"],)
+                    or element.source_descriptor_sha256 is None
+                    or not _HASH.fullmatch(element.source_descriptor_sha256)
+                ):
+                    raise ValueError("composition member changed")
+                entry = root / element.source_descriptor_sha256
+                manifest = json.loads(_read(entry / "manifest.json", 32 * 1024))
+                tile = manifest.get("composition_tile")
+                if (
+                    manifest.get("version") != 1
+                    or not isinstance(tile, dict)
+                    or tile.get("name") != "composition-tile.png"
+                    or type(tile.get("bytes")) is not int
+                    or not 1 <= tile["bytes"] <= 512 * 1024
+                    or tile.get("sha256") != member["tile_sha256"]
+                ):
+                    raise ValueError("composition tile unavailable")
+                data = _read(entry / "composition-tile.png", tile["bytes"])
+                if hashlib.sha256(data).hexdigest() != member["tile_sha256"]:
+                    raise ValueError("composition tile changed")
+                with Image.open(io.BytesIO(data)) as image:
+                    dimensions = image.size
+                _composition_png(data, dimensions)
+                if dimensions[0] != dimensions[1] or (size and dimensions != size):
+                    raise ValueError("composition tile dimensions differ")
+                size = dimensions
+                current[native_id] = data
+            added = sum(len(data) for data in current.values())
+            if total + added <= _MAX_GALLERY_PREVIEW_BYTES:
+                result.update(current)
+                total += added
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            RecursionError,
+            SyntaxError,
+            struct.error,
+            zlib.error,
+            Image.DecompressionBombError,
+        ):
+            continue
+    return result
+
+
+def _composition_section(groups: list[dict[str, Any]], tiles: dict[str, bytes]) -> str:
+    assemblies = []
+    for group in groups:
+        members = group["members"]
+        if not all(member["native_id"] in tiles for member in members):
+            continue
+        images = "".join(
+            '<img style="display:block;width:100%;height:auto" alt="'
+            + _escape(f"Часть {index}")
+            + '" src="data:image/png;base64,'
+            + base64.b64encode(tiles[member["native_id"]]).decode("ascii")
+            + '">'
+            for index, member in enumerate(members, 1)
+        )
+        assemblies.append(
+            '<div style="margin-bottom:24px"><p>'
+            + _escape(f"Композиция {group['columns']} × {group['rows']}")  # noqa: RUF001
+            + '</p><div style="display:grid;gap:0;max-width:'
+            + str(min(640, int(group["columns"]) * 100))
+            + "px;grid-template-columns:repeat("
+            + str(int(group["columns"]))
+            + ',1fr)">'
+            + images
+            + "</div></div>"
+        )
+    if not assemblies:
+        return ""
+    return (
+        '<section style="max-width:1120px;margin:auto;padding:24px">'
+        '<h2>Связанные фрагменты изображения</h2><p class="muted">Локальные результаты '
+        "проверки стыков; полнота сборки не подтверждена. "
+        "Описания и теги отдельных эмодзи сохранены.</p>" + "".join(assemblies) + "</section>"
+    )
+
+
 def _description(value: dict[str, Any]) -> str:
     parts = [f"<p>{_escape(value.get('text', 'Описание отсутствует'))}</p>"]
     if value.get("motion"):
@@ -205,7 +306,11 @@ def _card(item: dict[str, Any], number: int, preview: bytes | None) -> str:
     )
 
 
-def render_gallery(result: CommandResult, previews: dict[str, bytes]) -> str:
+def render_gallery(
+    result: CommandResult,
+    previews: dict[str, bytes],
+    composition_tiles: dict[str, bytes] | None = None,
+) -> str:
     """Render trusted markup around escaped saved data; no executable data payloads."""
     pack = result.result["pack"]
     items = result.result["items"]
@@ -215,6 +320,9 @@ def render_gallery(result: CommandResult, previews: dict[str, bytes]) -> str:
     )
     script_hash = base64.b64encode(hashlib.sha256(_SCRIPT.encode()).digest()).decode("ascii")
     notices = "".join(f'<p class="notice">{_escape(warning)}</p>' for warning in result.warnings)
+    compositions = _composition_section(
+        result.result.get("compositions", []), composition_tiles or {}
+    )
     return (
         '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -230,7 +338,7 @@ def render_gallery(result: CommandResult, previews: dict[str, bytes]) -> str:
         '<input id="search" type="search" placeholder="Например: взрыв, радость, сердце" '
         'autocomplete="off"><p class="muted" aria-live="polite">Найдено: '
         f'<span id="visible-count">{len(items)}</span></p></div></header>'
-        f'<main class="grid">{cards}</main><footer>Локальная копия результата. '
+        f'{compositions}<main class="grid">{cards}</main><footer>Локальная копия результата. '
         "Страница работает без интернета и не изменяет сохранённый анализ. "
         f"Превью: {len(previews)} из {len(items)}. Для обновления откройте галерею снова."
         f"</footer><script>{_SCRIPT}</script></body></html>"
@@ -245,7 +353,12 @@ def gallery_command(selector: str, *, open_browser: bool = True) -> CommandResul
         if saved.run_id is not None
         else {}
     )
-    document = render_gallery(saved, previews)
+    composition_tiles = (
+        _composition_tiles(saved.run_id, saved.result.get("compositions", []))
+        if saved.run_id is not None and saved.result.get("compositions")
+        else {}
+    )
+    document = render_gallery(saved, previews, composition_tiles)
     descriptor, filename = tempfile.mkstemp(prefix="mojilex-gallery-", suffix=".html")
     path = Path(filename).absolute()
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
