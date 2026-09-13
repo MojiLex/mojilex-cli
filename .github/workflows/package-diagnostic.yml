@@ -110,17 +110,21 @@ jobs:
 
           report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           media = report["result"]["checks"]["media"]
+          print(json.dumps({"exit_code": int(sys.argv[2]), "status": report["status"], "ready": report["result"]["ready"], "media": media}))
           assert {item["name"] for item in media} == {"webp", "tgs/rlottie-rgba", "webm/ffmpeg"}
           from mojilex_cli.media.sandbox import hard_resource_limits_available
 
           if hard_resource_limits_available():
               assert int(sys.argv[2]) == 0
+              assert report["status"] == "succeeded"
+              assert report["result"]["ready"] is True
               assert all(item["available"] and item["fixture_decoded"] for item in media), media
           else:
               # A platform unable to enforce the exact memory cap must report
               # unavailable and refuse decoding, never silently run without it.
               assert sys.platform == "darwin", "Required Linux worker limits are unavailable"
-              assert int(sys.argv[2]) == 13
+              assert int(sys.argv[2]) == 0
+              assert report["status"] == "partial"
               assert report["result"]["ready"] is False
               assert all(not item["available"] and not item["fixture_decoded"] for item in media)
               assert all("hard CPU/RAM worker limits are unavailable" in item["detail"] for item in media)
