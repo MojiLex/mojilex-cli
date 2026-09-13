@@ -95,6 +95,8 @@ class SafeMediaWorker:
         if os.name != "nt":
             command = [
                 sys.executable,
+                # Do not prepend media/: its inspect.py shadows the stdlib module.
+                "-P",
                 str(Path(__file__).with_name("unix_worker.py")),
                 str(self.limits.worker_memory_bytes),
                 *command[3:],

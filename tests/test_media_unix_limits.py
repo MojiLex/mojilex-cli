@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mmap
 import os
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -102,9 +103,10 @@ def test_unix_worker_launch_uses_fresh_bootstrap_without_preexec(
     monkeypatch.setattr(sandbox_module, "os", SimpleNamespace(name="posix", environ=os.environ))
 
     def launch(command: list[str], **kwargs: object) -> None:
-        assert Path(command[1]).name == "unix_worker.py"
-        assert command[2] == str(MediaLimits().worker_memory_bytes)
-        assert command[3:5] == ["--source", str(source.resolve())]
+        assert command[1] == "-P"
+        assert Path(command[2]).name == "unix_worker.py"
+        assert command[3] == str(MediaLimits().worker_memory_bytes)
+        assert command[4:6] == ["--source", str(source.resolve())]
         assert "preexec_fn" not in kwargs
         assert kwargs["start_new_session"] is True
         raise OSError("synthetic launch stop")
@@ -112,6 +114,43 @@ def test_unix_worker_launch_uses_fresh_bootstrap_without_preexec(
     monkeypatch.setattr(sandbox_module.subprocess, "Popen", launch)
     with pytest.raises(MediaDependencyError, match="cannot start"):
         SafeMediaWorker().process(source, tmp_path / "output", expected_format="webp")
+
+
+def test_direct_unix_bootstrap_does_not_shadow_stdlib_inspect(tmp_path: Path) -> None:
+    # This launches the actual entrypoint even on Windows. Only resource is a
+    # test substitute: no untrusted image is decoded, and all five configured
+    # limits must be requested before the real decoder dependency stack imports.
+    (tmp_path / "resource.py").write_text(
+        "import sys\n"
+        "RLIMIT_AS='as'; RLIMIT_DATA='data'; RLIMIT_CPU='cpu'\n"
+        "RLIMIT_FSIZE='files'; RLIMIT_NOFILE='descriptors'; RLIM_INFINITY=-1\n"
+        "expected={'as':536870912,'data':536870912,'cpu':30,'files':67108864,'descriptors':64}\n"
+        "def getrlimit(kind): return (-1,-1)\n"
+        "def setrlimit(kind,limits):\n"
+        " assert not any(name.startswith(('PIL','mojilex_cli')) for name in sys.modules)\n"
+        " assert limits == (expected.pop(kind),)*2\n"
+        " if not expected: print('ALL_LIMITS_APPLIED')\n",
+        encoding="utf-8",
+    )
+    environment = sandbox_module._worker_environment(tmp_path)
+    environment["PYTHONPATH"] = os.pathsep.join((str(tmp_path), environment["PYTHONPATH"]))
+    result = subprocess.run(
+        [sys.executable, "-P", str(Path(unix_worker.__file__)), "536870912"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    # Reaching the actual worker argument validator proves its imports worked;
+    # deliberately omit image arguments so this portability test decodes nothing.
+    assert result.returncode == 2, result.stderr
+    assert "ALL_LIMITS_APPLIED" in result.stdout
+    assert (
+        "the following arguments are required: --source, --output, --format, --limits"
+        in result.stderr
+    )
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix process resource limit regression")
