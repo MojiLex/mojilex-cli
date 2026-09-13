@@ -1158,19 +1158,8 @@ async def _run_add(
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)
 
-                # Operations which ask about a sensitive change or refresh a
-                # canonical entity before planning retain their serial semantics.
-                pack_concurrency = (
-                    1
-                    if options.dry_run
-                    or options.explicit_verification
-                    or options.overwrite_reviewed
-                    or options.new_identity
-                    or options.same_identity
-                    else config.processing.pack_concurrency
-                )
                 report_progress(
-                    f"Pack pipeline: up to {pack_concurrency} active packs; shared limits: "
+                    "Pack pipeline: one pack at a time; parallel media and AI limits: "
                     f"downloads={config.telegram.download_concurrency}, "
                     f"decoders={config.processing.render_concurrency}, "
                     f"AI={config.ai.ai_concurrency}."
@@ -1181,9 +1170,15 @@ async def _run_add(
                     ai=config.ai.ai_concurrency,
                     max_temp_bytes=config.processing.max_temp_bytes,
                 ):
-                    await bounded_map(
-                        enumerate(source_entries), process_source, concurrency=pack_concurrency
-                    )
+                    for entry in enumerate(source_entries):
+                        await process_source(entry)
+                        if errors:
+                            report_progress(
+                                "Очередь остановлена: исправьте ошибку пака и продолжите."
+                                if current_ui_language() == "ru"
+                                else "Queue stopped: resolve the pack error and resume."
+                            )
+                            break
             if options.dry_run:
                 status = RunStatus.DRY_RUN
                 if errors:
@@ -1664,8 +1659,8 @@ async def _run_import(
                         dependencies.finish(position)
 
                 report_progress(
-                    f"Pack pipeline: up to {config.processing.pack_concurrency} active packs; "
-                    f"shared limits: downloads={config.telegram.download_concurrency}, "
+                    "Pack pipeline: one pack at a time; parallel media limits: "
+                    f"downloads={config.telegram.download_concurrency}, "
                     f"decoders={config.processing.render_concurrency}, AI=0."
                 )
                 with batch_limits(
@@ -1674,11 +1669,15 @@ async def _run_import(
                     ai=config.ai.ai_concurrency,
                     max_temp_bytes=config.processing.max_temp_bytes,
                 ):
-                    await bounded_map(
-                        ((position, source) for position, (_, source) in enumerate(source_entries)),
-                        import_source,
-                        concurrency=config.processing.pack_concurrency,
-                    )
+                    for position, (_, source) in enumerate(source_entries):
+                        await import_source((position, source))
+                        if failures:
+                            report_progress(
+                                "Очередь остановлена: исправьте ошибку пака и продолжите."
+                                if current_ui_language() == "ru"
+                                else "Queue stopped: resolve the pack error and resume."
+                            )
+                            break
             status = "succeeded" if not failures else "partial" if imported else "failed"
             parent_phase = "describe" if checkpoint.command == "describe" else "import"
             checkpoint = _finish_checkpoint(
@@ -2583,6 +2582,7 @@ async def _prepare_collection_media(
         resume_analysis=cached_analysis,
         resume_ready=ready,
         on_item_completed=record_unguarded,
+        max_attempts=config.telegram.max_attempts if config is not None else 3,
     )
     collection, processed = await _reconcile_cross_collection_media(
         adapter,
@@ -2594,6 +2594,7 @@ async def _prepare_collection_media(
         force_direct_ids=force_direct_ids,
         expected_hashes=expected_hashes,
         on_item_completed=on_item_completed,
+        max_attempts=config.telegram.max_attempts if config is not None else 3,
     )
     collection = _canonicalize_guarded_source_items(collection, guarded, processed)
     _verify_expected_media_hashes(processed, expected_hashes)
@@ -3126,7 +3127,10 @@ async def _process_media(
     resume_analysis: Mapping[str, ProcessedMedia] | None = None,
     resume_ready: Mapping[str, ProcessedMedia] | None = None,
     on_item_completed: _MediaCompletion | None = None,
+    max_attempts: int = 1,
 ) -> dict[str, ProcessedMedia]:
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 8:
+        raise ValueError("media attempts must be between 1 and 8")
     semaphore = asyncio.Semaphore(concurrency)
     progress = BatchProgress(
         f"{'Медиа' if current_ui_language() == 'ru' else 'Media'} {collection.native_id}",
@@ -3146,7 +3150,7 @@ async def _process_media(
             yield chunk
         progress.phase(item.native_id, "render")
 
-    async def process_one(item: SourceEmoji) -> tuple[str, ProcessedMedia]:
+    async def process_one(item: SourceEmoji) -> tuple[str, ProcessedMedia] | BaseException:
         nonlocal first_failure
         expected = expected_hashes.get(item.native_id) if expected_hashes else None
         if defer_expected_ids is not None and item.native_id in defer_expected_ids:
@@ -3156,7 +3160,7 @@ async def _process_media(
                 isinstance(first_failure, asyncio.CancelledError)
                 or structured_exception(first_failure).code in _TERMINAL_ERROR_CODES
             ):
-                raise first_failure
+                return first_failure
             try:
                 return await process_item(item, expected)
             except BaseException as exc:
@@ -3172,11 +3176,44 @@ async def _process_media(
                         report_progress(
                             f"{structured_exception(exc).code}: {structured_exception(exc).message}"
                         )
-                raise
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return exc
 
     async def process_item(
         item: SourceEmoji, expected: tuple[str, ...] | None
     ) -> tuple[str, ProcessedMedia]:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                value = await load_item(item, expected)
+                break
+            except Exception as exc:
+                error = structured_exception(exc)
+                # Telegram already honors Retry-After inside the adapter. An
+                # exhausted or long rate limit must remain resumable, never be
+                # bypassed by a fresh outer attempt after our short backoff.
+                retryable = error.code != "RATE_LIMITED" and (
+                    error.retryable or error.code == "MEDIA_RENDER_FAILED"
+                )
+                if attempt == max_attempts or not retryable or error.code in _TERMINAL_ERROR_CODES:
+                    raise
+                progress.phase(item.native_id, "media_retry")
+                report_progress(
+                    f"{collection.native_id}: {error.code}; "
+                    + (
+                        f"повтор загрузки/обработки {attempt + 1}/{max_attempts}."
+                        if current_ui_language() == "ru"
+                        else f"retrying download/processing {attempt + 1}/{max_attempts}."
+                    )
+                )
+                await asyncio.sleep(min(2 ** (attempt - 1), 8))
+        if on_item_completed is not None:
+            progress.phase(item.native_id, "save")
+            await on_item_completed(item, value)
+        progress.finish(item.native_id)
+        return item.native_id, value
+
+    async def load_item(item: SourceEmoji, expected: tuple[str, ...] | None) -> ProcessedMedia:
         cached = resume_cached.get(item.native_id) if resume_cached is not None else None
         analysis = resume_analysis.get(item.native_id) if resume_analysis is not None else None
         if cached is not None:
@@ -3206,16 +3243,13 @@ async def _process_media(
                 expected_sha256=expected[0] if expected and len(expected) == 1 else None,
                 needs_repainting=item.needs_repainting,
             )
-        if on_item_completed is not None:
-            progress.phase(item.native_id, "save")
-            await on_item_completed(item, value)
-        progress.finish(item.native_id)
-        return item.native_id, value
+        return value
 
     async with progress:
-        outcomes = await asyncio.gather(
-            *(process_one(item) for item in collection.items if item.native_id not in ready),
-            return_exceptions=True,
+        outcomes = await bounded_map(
+            (item for item in collection.items if item.native_id not in ready),
+            process_one,
+            concurrency=concurrency,
         )
     if first_failure is not None:
         raise first_failure
@@ -3271,6 +3305,7 @@ async def _reconcile_cross_collection_media(
     force_direct_ids: set[str] | None = None,
     expected_hashes: Mapping[str, tuple[str, ...]] | None = None,
     on_item_completed: _MediaCompletion | None = None,
+    max_attempts: int = 1,
 ) -> tuple[SourceCollection, dict[str, ProcessedMedia]]:
     originals = {item.native_id: item for item in collection.items}
     conflicts = tuple(
@@ -3344,6 +3379,7 @@ async def _reconcile_cross_collection_media(
         processor,
         concurrency=concurrency,
         on_item_completed=record_direct,
+        max_attempts=max_attempts,
     )
     for native_id in conflicts:
         direct_hashes = _processed_media_hashes(direct_processed[native_id])
@@ -3682,6 +3718,17 @@ async def _descriptions_for_collection(
             progress.finish(key, count=len(chunk) - len(saved_items))
             return generated
 
+    async def collect_chunk(
+        entry: tuple[int, Sequence[SourceEmoji]],
+    ) -> dict[str, _SemanticOutcome] | Exception:
+        index, chunk = entry
+        try:
+            return await describe_chunk(index, chunk)
+        except Exception as exc:
+            # Let already paid sibling requests finish, while cancellation still
+            # drains all workers before the media/cache resources are released.
+            return exc
+
     async with progress:
         pending_chunks: Sequence[Sequence[SourceEmoji]] = chunks
         deferred_rounds = 0
@@ -3689,12 +3736,10 @@ async def _descriptions_for_collection(
             requests_before = budget.requests_used
             completed_before = progress.completed
             batch_offset = progress.completed_batches
-            outcomes = await asyncio.gather(
-                *(
-                    describe_chunk(batch_offset + index, chunk)
-                    for index, chunk in enumerate(pending_chunks, start=1)
-                ),
-                return_exceptions=True,
+            outcomes = await bounded_map(
+                enumerate(pending_chunks, start=batch_offset + 1),
+                collect_chunk,
+                concurrency=config.ai.ai_concurrency,
             )
             if first_failure is not None:
                 raise first_failure

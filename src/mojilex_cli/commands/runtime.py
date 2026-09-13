@@ -18,8 +18,9 @@ from typing import Any, TypeVar, get_args
 import typer
 from pydantic import BaseModel, ValidationError
 from pydantic_core.core_schema import ErrorType
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
+from rich.segment import Segment
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
@@ -60,6 +61,41 @@ class _CommandContext:
     operation_live: Live | None = None
     operation_spinner: Spinner = field(default_factory=lambda: Spinner("dots"))
     prompt_depth: int = 0
+    pending_progress: list[RenderableType] = field(default_factory=list)
+
+
+class _ProgressDisplay:
+    """Fit concurrent progress into the current terminal, including after resize."""
+
+    def __init__(self, context: _CommandContext) -> None:
+        self.context = context
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        views = self.context.progress_views
+        height = max(1, console.size.height - 5)
+        if len(views) > 1:
+            rows: list[RenderableType] = []
+            for key, view in views.items():
+                compact = getattr(key, "compact_view", None)
+                rows.append(compact() if callable(compact) else view)
+            view = Group(*rows)
+        else:
+            view = Group(*views.values())
+        lines = console.render_lines(view, options.update(height=None), pad=False)
+        if len(lines) > height:
+            for line in lines[: height - 1]:
+                yield from line
+                yield Segment.line()
+            hidden = (
+                f"Активных этапов: {len(views)}; остальные скрыты по высоте окна"
+                if current_ui_language() == "ru"
+                else f"Active stages: {len(views)}; remaining details hidden to fit the terminal"
+            )
+            yield Text(hidden, overflow="ellipsis", no_wrap=True, style="dim")
+        else:
+            for line in lines:
+                yield from line
+                yield Segment.line()
 
 
 _COMMAND_CONTEXT: ContextVar[_CommandContext | None] = ContextVar(
@@ -188,15 +224,15 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or (verbose and not context.verbose):
         return
+    if context.progress_paused:
+        safe_message = ui_text(str(redact(message)))
+        if message.startswith(("AI batch ", "AI-пачка ")):
+            context.progress_note = safe_message
+        else:
+            context.pending_progress.append(Text(safe_message))
+        return
     if context.operation_live is not None and not context.progress_paused:
         context.operation_live.console.print(ui_text(str(redact(message))), markup=False)
-        return
-    if (
-        context.progress_paused
-        and context.progress_view is not None
-        and message.startswith(("AI batch ", "AI-пачка "))
-    ):
-        context.progress_note = ui_text(str(redact(message)))
         return
     if context.live is not None and not context.progress_paused:
         safe_message = ui_text(str(redact(message)))
@@ -214,7 +250,13 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
 
 def _refresh_live(context: _CommandContext) -> None:
     if context.live is not None and context.progress_view is not None:
-        context.live.update(Group(context.progress_view, Text(context.progress_note)), refresh=True)
+        context.live.update(
+            Group(
+                context.progress_view,
+                Text(context.progress_note, no_wrap=True, overflow="ellipsis"),
+            ),
+            refresh=True,
+        )
 
 
 def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
@@ -226,13 +268,13 @@ def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
     if not console.is_terminal or console.is_dumb_terminal:
         return False
     context.progress_views[key] = view
-    context.progress_view = Group(*context.progress_views.values())
+    context.progress_view = _ProgressDisplay(context)
     if context.progress_paused:
         return True
     _stop_operation_live(context)
     if context.live is None:
         context.live = Live(
-            view,
+            context.progress_view,
             console=console,
             auto_refresh=False,
             transient=True,
@@ -260,6 +302,11 @@ def pause_live_progress(paused: bool, *, key: object = None) -> None:
         context.live.stop()
         context.live = None
     if not context.progress_paused:
+        if context.pending_progress:
+            console = Console(stderr=True, no_color=context.no_color)
+            for message in context.pending_progress:
+                console.print(message)
+            context.pending_progress.clear()
         _resume_operation_live(context)
 
 
@@ -270,17 +317,23 @@ def finish_live_progress(*, key: object = None) -> None:
         return
     if key is not None:
         finished = context.progress_views.pop(key, None)
+        compact = getattr(key, "compact_view", None)
+        if finished is not None and callable(compact):
+            finished = compact()
         context.progress_pause_keys.discard(key)
         context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
         if context.progress_views:
-            context.progress_view = Group(*context.progress_views.values())
+            context.progress_view = _ProgressDisplay(context)
             if finished is not None:
                 console = (
                     context.live.console
                     if context.live is not None
                     else Console(stderr=True, no_color=context.no_color)
                 )
-                console.print(finished)
+                if context.progress_paused:
+                    context.pending_progress.append(finished)
+                else:
+                    console.print(finished)
             if context.live is not None:
                 _refresh_live(context)
             return
@@ -289,7 +342,10 @@ def finish_live_progress(*, key: object = None) -> None:
         context.live.stop()
         context.live = None
     if context.progress_view is not None:
-        Console(stderr=True, no_color=context.no_color).print(context.progress_view)
+        if context.progress_paused:
+            context.pending_progress.append(context.progress_view)
+        else:
+            Console(stderr=True, no_color=context.no_color).print(context.progress_view)
     context.progress_views.clear()
     context.progress_view = None
     context.progress_note = ""

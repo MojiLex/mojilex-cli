@@ -192,19 +192,22 @@ records its checksum, verification results, and prepared frames; completed AI
 results are also saved as they arrive. Stopping does not delete this work. An
 ordinary media failure no longer prevents processing other files in the pack.
 
-Choose **My packs → Continue**, or run `mojilex resume RUN_ID`. Importing the TXT
-again creates a new run. Valid retained frames are reused; missing or damaged
+Choose **My packs → Continue**, or run `mojilex resume RUN_ID`. Submitting the TXT
+or individual URLs again reuses completed imports in the same repository and
+resumes interrupted downloads. Use `mojilex import URL --refresh` to explicitly
+check for source updates. Valid retained frames are reused; missing or damaged
 cache entries may require downloading the file again for verification. Changed
 source media never silently replaces the saved input.
 
 After import completes, its page offers **Analyze saved import with AI**.
 Resuming downloads does not itself start paid analysis.
 
-For large lists, **Settings → Parallel packs** controls how many packs can be
-active together: three by default, from one to eight. Downloading and preparing
-one pack can overlap with AI analysis of another. Set this to one for sequential
-pack processing. The same setting is available as `processing.pack_concurrency`
-in TOML or `MOJILEX_PACK_CONCURRENCY` in the environment.
+Within each stage, packs are processed sequentially. Transient media failures
+are retried automatically (six attempts by default). An unresolved failure
+stops the queue before the next pack; saved work can be resumed. Downloads,
+decoding and AI requests within the current pack remain parallel. The legacy
+`processing.pack_concurrency` setting is retained for compatibility but does not
+override this queue's ordering.
 
 **Parallel media downloads**, **Parallel media decoders**, and **Parallel AI
 requests** are shared limits for the entire operation, not separate allowances
@@ -324,7 +327,7 @@ block submission; invalid data still fails validation.
 | Question | What to do or expect |
 |---|---|
 | Does analysis cost money? | It may, depending on your Gemini account and model. The default limit is **100 requests per run**, including retries. Resume retains the consumed count. Review the plan before approving unknown pricing. |
-| Can it run faster? | **Settings → Parallel packs** overlaps work on several packs within shared download, decoder and AI limits. Adjust those limits separately for your computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
+| Can it run faster? | Packs are queued sequentially. Increase download, decoder and AI concurrency within the current pack. Adjust those limits separately for your computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
 | The connection dropped or I stopped it | Use `mojilex resume NewsEmoji`. Completed work is reused; missing/corrupt media may need downloading again. Budget or access errors need resolving first. |
 | Why is the count not moving? | A batch may be waiting for a response or validation. Watch the stage, retries and elapsed time. Time spent is not completed work. |
 | Where are English descriptions? | Switch languages in `show` or open item details. Interface language is separate, under **Settings**. |

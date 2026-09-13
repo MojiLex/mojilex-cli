@@ -109,6 +109,26 @@ def test_confirmation_and_secret_prompt_pause_activity(terminal, monkeypatch):
         assert context.operation_live is not None
 
 
+def test_official_pack_confirmation_suspends_spinner_with_negative_default(terminal, monkeypatch):
+    context, _ = terminal
+    calls = []
+
+    def confirm(message, *, default):
+        assert context.operation_live is None and context.prompt_depth == 1
+        calls.append(default)
+        return False
+
+    monkeypatch.setattr(cli, "ui_confirm", confirm)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    callback = cli._official_confirmation_callback(
+        non_interactive=False, json_output=False, quiet=False
+    )
+    with runtime.operation_progress("Importing"):
+        assert callback("Already published packs?") is False
+        assert context.operation_live is not None
+    assert calls == [False]
+
+
 def test_generic_command_spinner_closes_after_failure(terminal):
     outer_context, _ = terminal
     captured = []

@@ -122,7 +122,10 @@ async def bounded_map(
             task.cancel()
         # A second Ctrl+C must not let callers delete files while workers still
         # own them. Keep draining even if cancellation is repeated during cleanup.
-        drained = asyncio.gather(*tasks, return_exceptions=True)
+        # Drain the original gathering future too: its completion callback can
+        # run after the child tasks finish, otherwise its cancellation exception
+        # may be left unobserved ("_GatheringFuture exception was never retrieved").
+        drained = asyncio.gather(*tasks, group, return_exceptions=True)
         while not drained.done():
             try:
                 await asyncio.shield(drained)

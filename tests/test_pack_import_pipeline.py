@@ -155,7 +155,7 @@ async def _cancel(task: asyncio.Task) -> None:
 
 
 @pytest.mark.parametrize("pack_concurrency", [1, 3])
-async def test_import_bounds_active_packs_and_overlaps_disjoint_media(
+async def test_import_finishes_current_pack_before_starting_next(
     tmp_path_factory, monkeypatch, pack_concurrency
 ):
     release = asyncio.Event()
@@ -167,7 +167,7 @@ async def test_import_bounds_active_packs_and_overlaps_disjoint_media(
         nonlocal maximum
         active.add(item.native_id)
         maximum = max(maximum, len(active))
-        if len(active) == pack_concurrency:
+        if len(active) == 1:
             active_ready.set()
         try:
             await release.wait()
@@ -185,24 +185,24 @@ async def test_import_bounds_active_packs_and_overlaps_disjoint_media(
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
         await asyncio.wait_for(active_ready.wait(), timeout=15)
-        assert len(state.fetched) == pack_concurrency
-        assert len(state.prepare_entered) == pack_concurrency
+        assert len(state.fetched) == 1
+        assert len(state.prepare_entered) == 1
         assert not state.prepare_finished
-        assert active == {f"item{i}" for i in range(pack_concurrency)}
+        assert active == {"item0"}
         release.set()
         result = await asyncio.wait_for(task, timeout=15)
     finally:
         await _cancel(task)
     assert not result.errors
     assert result.result["collections_imported"] == 5
-    assert maximum == pack_concurrency
+    assert maximum == 1
     checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
     assert len(checkpoint.elements) == 5
     assert len(checkpoint.safe_parameters["source_memberships"]) == 5
     assert checkpoint.ai_requests_used == 0
 
 
-async def test_recoverable_pack_failure_keeps_other_packs_and_resumes_only_missing(
+async def test_unresolved_pack_failure_stops_queue_and_resume_continues_in_order(
     tmp_path_factory, monkeypatch
 ):
     failing = True
@@ -218,26 +218,28 @@ async def test_recoverable_pack_failure_keeps_other_packs_and_resumes_only_missi
         maybe_fail,
     )
     result = await runner._run_import(state.sources, runner.PipelineOptions())
-    assert result.status.value == "partial"
-    assert result.result["collections_imported"] == 2
+    assert result.status.value == "failed"
+    assert result.result["collections_imported"] == 0
     assert len(result.errors) == 1
     checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
-    assert set(checkpoint.elements) == {"one", "two"}
+    assert set(checkpoint.elements) == set()
     assert all(element.fingerprint_complete for element in checkpoint.elements.values())
-    assert len(checkpoint.safe_parameters["source_memberships"]) == 3
+    assert len(checkpoint.safe_parameters["source_memberships"]) == 1
+    assert state.fetched == ["FailurePack"]
+    assert state.downloads == ["bad"] * state.config.telegram.max_attempts
     prior_downloads = len(state.downloads)
     prior_processors = len(state.processors)
     failing = False
     resumed = await runner.run_resume(result.run_id)
     assert not resumed.errors
     assert resumed.status.value == "succeeded"
-    assert state.downloads[prior_downloads:] == ["bad"]
-    assert sum(p.decode_calls for p in state.processors[prior_processors:]) == 1
+    assert state.downloads[prior_downloads:] == ["bad", "one", "two"]
+    assert sum(p.decode_calls for p in state.processors[prior_processors:]) == 3
     checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
     assert set(checkpoint.elements) == {"bad", "one", "two"}
 
 
-async def test_cancelled_parallel_import_keeps_each_pack_progress_and_resumes_missing_files(
+async def test_cancelled_import_keeps_current_pack_progress_and_resumes_missing_files(
     tmp_path_factory, monkeypatch
 ):
     release = asyncio.Event()
@@ -247,7 +249,7 @@ async def test_cancelled_parallel_import_keeps_each_pack_progress_and_resumes_mi
     async def block_second(item):
         if item.native_id.endswith("second"):
             blocked.add(item.native_id)
-            if len(blocked) == 2:
+            if len(blocked) == 1:
                 blocked_ready.set()
             await release.wait()
 
@@ -267,17 +269,16 @@ async def test_cancelled_parallel_import_keeps_each_pack_progress_and_resumes_mi
         await _cancel(task)
     checkpoint = RunStore(state.config.runs_dir).load(state.run_ids[0])
     assert checkpoint.status == "interrupted"
-    assert set(checkpoint.elements) == {"onefirst", "twofirst"}
+    assert set(checkpoint.elements) == {"onefirst"}
     assert all(element.fingerprint_complete for element in checkpoint.elements.values())
-    assert len(checkpoint.safe_parameters["source_memberships"]) == 2
+    assert len(checkpoint.safe_parameters["source_memberships"]) == 1
     prior_downloads = len(state.downloads)
     prior_processors = len(state.processors)
     release.set()
     resumed = await runner.run_resume(checkpoint.run_id)
     assert not resumed.errors
-    assert set(state.downloads[prior_downloads:]) == {"onesecond", "twosecond"}
-    assert len(state.downloads[prior_downloads:]) == 2
-    assert sum(p.decode_calls for p in state.processors[prior_processors:]) == 2
+    assert state.downloads[prior_downloads:] == ["onesecond", "twofirst", "twosecond"]
+    assert sum(p.decode_calls for p in state.processors[prior_processors:]) == 3
     checkpoint = RunStore(state.config.runs_dir).load(checkpoint.run_id)
     assert checkpoint.status == "succeeded"
     assert len(checkpoint.elements) == 4
@@ -285,7 +286,7 @@ async def test_cancelled_parallel_import_keeps_each_pack_progress_and_resumes_mi
 
 
 @pytest.mark.parametrize("duplicate_pack", [False, True])
-async def test_shared_emoji_or_duplicate_pack_waits_for_owner_while_disjoint_pack_runs(
+async def test_shared_emoji_or_duplicate_pack_reuses_completed_owner_before_next_pack(
     tmp_path_factory, monkeypatch, duplicate_pack
 ):
     shared_blocked = asyncio.Event()
@@ -311,22 +312,19 @@ async def test_shared_emoji_or_duplicate_pack_waits_for_owner_while_disjoint_pac
     )
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                shared_blocked.wait(), independent_blocked.wait(), state.metadata_ready.wait()
-            ),
-            timeout=15,
-        )
-        assert state.prepare_entered == ["OwnerPack", "IndependentPack"]
+        await asyncio.wait_for(shared_blocked.wait(), timeout=15)
+        assert state.prepare_entered == ["OwnerPack"]
         assert state.downloads.count("shared") == 1
         release_shared.set()
+        await asyncio.wait_for(independent_blocked.wait(), timeout=15)
+        assert state.prepare_entered == ["OwnerPack", second.native_id, "IndependentPack"]
         release_independent.set()
         result = await asyncio.wait_for(task, timeout=15)
     finally:
         await _cancel(task)
     assert not result.errors
     assert result.result["collections_imported"] == 3
-    assert state.prepare_entered[-1] == second.native_id
+    assert state.prepare_entered[-1] == "IndependentPack"
     assert state.downloads.count("shared") == 1
     checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
     expected = {item.native_id for source in (first, second) for item in source.items}

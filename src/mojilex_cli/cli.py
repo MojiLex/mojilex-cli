@@ -161,7 +161,8 @@ def _official_confirmation_callback(
         # General --yes never bypasses this separate, explicitly negative default.
         if non_interactive or json_output or quiet or not sys.stdin.isatty():
             return False
-        return ui_confirm(message, default=False)
+        with suspend_progress():
+            return ui_confirm(message, default=False)
 
     return confirm_official
 
@@ -513,6 +514,12 @@ def import_sources(
         list[str] | None, typer.Argument(help="Public source URLs or a text file path.")
     ] = None,
     from_file: Annotated[Path | None, typer.Option("--from-file")] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh", help="Check sources for updates instead of reusing saved imports."
+        ),
+    ] = False,
     official_packs: Annotated[
         str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
     ] = None,
@@ -539,6 +546,7 @@ def import_sources(
         return _pack_action(
             lambda: import_command(
                 selected,
+                refresh=refresh,
                 official_pack_policy=official_packs,
                 official_confirmation=_official_confirmation_callback(
                     non_interactive=False, json_output=json_output, quiet=quiet

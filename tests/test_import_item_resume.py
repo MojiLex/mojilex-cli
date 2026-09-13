@@ -116,7 +116,8 @@ async def test_import_persists_each_file_and_resumes_without_reanalysis(
     assert checkpoint.elements["first"].fingerprint_complete
     assert "second" not in checkpoint.elements
     assert checkpoint.elements["third"].fingerprint_complete
-    assert downloads == ["first", "second", "third"]
+    attempts = config.telegram.max_attempts if failure_type is MediaRenderError else 1
+    assert downloads == ["first", *(["second"] * attempts), "third"]
     assert checkpoint.ai_requests_used == 0
     assert all(not element.ai_facets_complete for element in checkpoint.elements.values())
     assert checkpoint.safe_parameters["source_memberships"][source.native_id] == [
@@ -134,7 +135,7 @@ async def test_import_persists_each_file_and_resumes_without_reanalysis(
     )
     assert not result.errors
     assert processors[-1].decode_calls == 1
-    assert downloads == ["first", "second", "third", "first", "second", "third"]
+    assert downloads == ["first", *(["second"] * attempts), "third", "first", "second", "third"]
     checkpoint = RunStore(config.runs_dir).load(result.run_id)
     assert len(checkpoint.elements) == 3
     assert backend_checks == ["webp"]

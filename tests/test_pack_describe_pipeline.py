@@ -134,7 +134,7 @@ def pipeline(request, monkeypatch):
     return state
 
 
-async def test_pack_stages_overlap_but_canonical_merge_keeps_input_order(pipeline, monkeypatch):
+async def test_pack_stages_finish_in_input_order_before_next_pack_starts(pipeline, monkeypatch):
     state = pipeline
     ai_alpha = asyncio.Event()
     media_beta = asyncio.Event()
@@ -143,15 +143,16 @@ async def test_pack_stages_overlap_but_canonical_merge_keeps_input_order(pipelin
 
     async def media(snapshot, adapter, source, processor, **kwargs):
         if source.native_id == "PackBeta":
-            await ai_alpha.wait()
+            assert ai_alpha.is_set()
+            assert order == ["PackAlpha"]
             media_beta.set()
         return await state.media(snapshot, adapter, source, processor, **kwargs)
 
     async def describe(snapshot, source, processed, **kwargs):
         if source.native_id == "PackAlpha":
             ai_alpha.set()
-            await media_beta.wait()
-            await ai_beta_done.wait()
+            assert not media_beta.is_set()
+            assert not ai_beta_done.is_set()
         result = await state.describe(snapshot, source, processed, **kwargs)
         order.append(source.native_id)
         if source.native_id == "PackBeta":
@@ -162,7 +163,7 @@ async def test_pack_stages_overlap_but_canonical_merge_keeps_input_order(pipelin
     monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
     result = await asyncio.wait_for(state.run(), 5)
     assert not result.errors
-    assert order == ["PackBeta", "PackAlpha"]
+    assert order == ["PackAlpha", "PackBeta"]
     assert state.merges == ["PackAlpha", "PackBeta"]
     assert sorted(state.callback_sources) == [
         ("PackAlpha", ("PackAlpha",)),
@@ -182,11 +183,11 @@ async def test_composition_evidence_is_merged_from_latest_checkpoint_after_await
 
     async def prepare(self, key, *args, **kwargs):
         if key == "PackAlpha":
-            await beta_entered.wait()
+            assert not beta_entered.is_set()
             alpha_done.set()
         else:
             beta_entered.set()
-            await alpha_done.wait()
+            assert alpha_done.is_set()
         return [SimpleNamespace(model_dump=lambda **_: {"pack": key})]
 
     state.queue.prepare = prepare
@@ -199,7 +200,9 @@ async def test_composition_evidence_is_merged_from_latest_checkpoint_after_await
 
 
 @pytest.mark.parametrize("external_cancel", [False, True])
-async def test_terminal_exit_drains_active_pack_tasks(pipeline, monkeypatch, external_cancel):
+async def test_terminal_exit_drains_current_pack_without_starting_next(
+    pipeline, monkeypatch, external_cancel
+):
     state = pipeline
     alpha_started = asyncio.Event()
     both_started = asyncio.Event()
@@ -213,8 +216,6 @@ async def test_terminal_exit_drains_active_pack_tasks(pipeline, monkeypatch, ext
         try:
             if key == "PackAlpha":
                 alpha_started.set()
-            else:
-                await alpha_started.wait()
                 both_started.set()
                 if not external_cancel:
                     raise CommandError("SOURCE_CHANGED_DURING_RUN", "synthetic", hint="retry")
@@ -233,10 +234,10 @@ async def test_terminal_exit_drains_active_pack_tasks(pipeline, monkeypatch, ext
     with pytest.raises(asyncio.CancelledError if external_cancel else CommandError):
         await asyncio.wait_for(task, 5)
     assert not active
-    assert finished == {"PackAlpha", "PackBeta"}
+    assert finished == {"PackAlpha"}
     assert not state.merges
     checkpoint = state.latest_checkpoint()
-    assert set(checkpoint.elements) == {"PackAlpha", "PackBeta"}
+    assert set(checkpoint.elements) == {"PackAlpha"}
     assert checkpoint.status == ("interrupted" if external_cancel else "stale")
 
 

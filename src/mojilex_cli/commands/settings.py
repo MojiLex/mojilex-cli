@@ -98,7 +98,7 @@ SETTINGS: dict[str, Setting] = {
     "pack_concurrency": Setting(
         ("processing", "pack_concurrency"),
         "Parallel packs",
-        "Maximum active packs. Downloads, decoders and AI share the run's global limits.",
+        "Legacy limit. The pack queue is sequential; media and AI within a pack remain parallel.",
         "MOJILEX_PACK_CONCURRENCY",
         "integer",
         1,
@@ -158,7 +158,7 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
     ),
     "pack_concurrency": (
         "Параллельные паки",
-        "Максимум активных паков. Лимиты скачиваний, декодеров и ИИ общие для всего запуска.",
+        "Прежний лимит. Очередь паков последовательная; медиа и ИИ внутри пака параллельны.",
     ),
     "render_concurrency": (
         "Параллельные декодеры медиа",

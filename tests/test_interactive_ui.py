@@ -328,7 +328,7 @@ def test_menu_analysis_uses_imported_id_without_automatic_publication(
 
     @contextmanager
     def captured():
-        yield [SimpleNamespace(run_id=RUN)]
+        yield [SimpleNamespace(run_id=RUN, result={})]
 
     monkeypatch.setattr(runtime, "capture_command_results", captured)
     monkeypatch.setattr(ui, "_resolve", lambda *a, **kw: pytest.fail("rediscovered by name"))

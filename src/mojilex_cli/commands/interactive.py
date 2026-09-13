@@ -442,7 +442,7 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                 ),
                 default=True,
             ):
-                _analyze(str(sources[0]), dispatch, repository=state["target"])
+                _analyze(str(sources[0]), dispatch, repository=state["target"], refresh=True)
                 return
 
 
@@ -464,10 +464,14 @@ def _history(state: dict[str, Any]) -> None:
         )
 
 
-def _analyze(source: str, dispatch: Dispatch, *, repository: str | None = None) -> None:
+def _analyze(
+    source: str, dispatch: Dispatch, *, repository: str | None = None, refresh: bool = False
+) -> None:
     from .runtime import capture_command_results
 
     arguments = ["import", source]
+    if refresh:
+        arguments.append("--refresh")
     if repository is not None:
         arguments.extend(["--repo", repository])
     with capture_command_results() as results:
@@ -488,7 +492,11 @@ def _analyze(source: str, dispatch: Dispatch, *, repository: str | None = None) 
             )
         )
         return
-    _invoke(dispatch, ["describe", results[-1].run_id])
+    selectors = results[-1].result.get("analysis_selectors", [results[-1].run_id])
+    if selectors:
+        _invoke(dispatch, ["describe", *selectors])
+    else:
+        _notice(label("Все выбранные паки уже обработаны.", "All selected packs are complete."))
 
 
 def _settings(dispatch: Dispatch) -> None:

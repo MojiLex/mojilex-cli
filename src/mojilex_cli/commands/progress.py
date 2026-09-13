@@ -59,6 +59,8 @@ class BatchProgress:
         return self
 
     async def __aexit__(self, exc_type: object, *_: object) -> None:
+        if exc_type is not None:
+            self.queue_stopped = True
         if self._heartbeat is not None:
             self._heartbeat.cancel()
             with suppress(asyncio.CancelledError):
@@ -67,7 +69,7 @@ class BatchProgress:
         finish_live_progress(key=self)
 
     def phase(self, key: str, phase: str, *, count: int | None = None) -> None:
-        if phase in {"retry", "transport_retry", "recovery"}:
+        if phase in {"retry", "transport_retry", "recovery", "media_retry"}:
             self.retry_events += 1
         self.active[key] = phase
         self.active_counts[key] = count if count is not None else self.active_counts.get(key, 1)
@@ -119,6 +121,9 @@ class BatchProgress:
             "approval": "проверка бюджета / подтверждение" if ru else "budget check / approval",
             "request": "ожидание ответа AI" if ru else "waiting for AI response",
             "retry": "повтор AI-запроса" if ru else "retrying AI request",
+            "media_retry": "повтор загрузки / обработки"
+            if ru
+            else "retrying download / processing",
             "transport_retry": "повторное подключение" if ru else "reconnecting",
             "recovery": "повтор по одному эмодзи" if ru else "retrying individual emojis",
             "verify": "проверка" if ru else "verifying",
@@ -164,7 +169,7 @@ class BatchProgress:
         retrying = sum(
             self.active_counts.get(key, 0)
             for key, phase in self.active.items()
-            if phase in {"retry", "transport_retry", "recovery"}
+            if phase in {"retry", "transport_retry", "recovery", "media_retry"}
         )
         pending = max(0, self.total - self.completed - self.failed - active)
         table = Table.grid(padding=(0, 3))
@@ -190,3 +195,27 @@ class BatchProgress:
         elif self.completed == self.total:
             table.add_row(Text("Готово" if ru else "Done", style="green"), Text(""))
         return update_live_progress(Panel(table, title=Text(self.label), expand=False), key=self)
+
+    def compact_view(self) -> Text:
+        """One line per active stage when many packs share the terminal."""
+        ru = current_ui_language() == "ru"
+        active = sum(self.active_counts.values())
+        retrying = sum(
+            self.active_counts.get(key, 0)
+            for key, phase in self.active.items()
+            if phase in {"retry", "transport_retry", "recovery", "media_retry"}
+        )
+        elapsed = int(time.monotonic() - self.started)
+        text = (
+            f"{self.label}: {self.completed}/{self.total} | "
+            f"{'в работе' if ru else 'active'} {active} | "
+            f"{'повтор' if ru else 'retry'} {retrying} | "
+            f"{'ошибок' if ru else 'errors'} {self.failed} | "
+            f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        )
+        if self.request_budget is not None:
+            used, limit = self.request_budget()
+            text += f" | AI {used}/{limit if limit is not None else '∞'}"
+        if self.queue_stopped:
+            text += " | остановлено" if ru else " | stopped"
+        return Text(text, no_wrap=True, overflow="ellipsis")

@@ -205,8 +205,17 @@ def import_command(
     fail_fast: bool,
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
+    refresh: bool = False,
 ) -> CommandResult:
+    from itertools import groupby
+
+    from mojilex_cli.i18n import current_ui_language
+    from mojilex_cli.runs.pack_scope import source_state
+
+    from .import_reuse import import_complete, reusable_imports
     from .official_packs import select_sources
+    from .packs import _source_name
+    from .runtime import report_progress
 
     selection = select_sources(
         sources,
@@ -217,6 +226,78 @@ def import_command(
     if not selection.selected:
         return selection.empty_result()
     del check_media  # import always verifies bytes; the option remains explicit in the CLI contract
+    config = load_config(cli={"repository": {"target": repo}})
+    existing = {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
+    if existing:
+        selectors: list[str] = []
+        resumed: set[tuple[str, str]] = set()
+        result = CommandResult(status="noop")  # type: ignore[arg-type]
+        groups = groupby(
+            selection.selected,
+            key=lambda source: existing[source][0].run_id if source in existing else None,
+        )
+        for parent_id, entries in groups:
+            group_sources = tuple(entries)
+            if parent_id is None:
+                result = run_import(
+                    group_sources,
+                    PipelineOptions(
+                        repository=repo,
+                        platform=platform,
+                        max_items=max_items,
+                        download_concurrency=download_concurrency,
+                        check_media=True,
+                        fail_fast=fail_fast,
+                        publish="local",
+                        official_approved_sources=selection.approved_sources,
+                    ),
+                )
+                if result.status not in {"succeeded", "noop"}:
+                    return selection.annotate(result)
+                if result.run_id:
+                    selectors.append(result.run_id)
+                continue
+            selected = []
+            for source in group_sources:
+                checkpoint, saved_source = existing[source]
+                if (
+                    not import_complete(checkpoint, saved_source)
+                    and (parent_id, saved_source) not in resumed
+                ):
+                    if source_state(checkpoint, saved_source)["phase"] != "import":
+                        name = _source_name(saved_source)
+                        raise CommandError(
+                            "CONFIG_INVALID",
+                            "A saved analysis needs to be resumed.",
+                            hint=f"Use mojilex resume {parent_id}:{name} to continue safely.",
+                        )
+                    selected.append(saved_source)
+            if selected:
+                result = run_resume_sync(
+                    parent_id,
+                    selected_sources=tuple(dict.fromkeys(selected)),
+                    download_concurrency=download_concurrency,
+                    official_pack_policy="allow",
+                )
+                if result.status not in {"succeeded", "noop"}:
+                    return selection.annotate(result)
+                resumed.update((parent_id, saved) for saved in selected)
+            for source in group_sources:
+                checkpoint, saved_source = existing[source]
+                name = _source_name(saved_source)
+                state = source_state(checkpoint, saved_source)
+                if state["phase"] != "describe" or state["status"] not in {"succeeded", "noop"}:
+                    selectors.append(f"{parent_id}:{name}")
+            result.run_id = parent_id
+        result.result["analysis_selectors"] = list(dict.fromkeys(selectors))
+        result.result["reused_packs"] = len(existing)
+        new_count = sum(source not in existing for source in selection.selected)
+        report_progress(
+            f"Использованы сохранённые паки: {len(existing)}; новых паков: {new_count}."
+            if current_ui_language() == "ru"
+            else f"Reused saved packs: {len(existing)}; new packs: {new_count}."
+        )
+        return selection.annotate(result)
     result = run_import(
         selection.selected,
         PipelineOptions(
@@ -246,6 +327,45 @@ def describe_command(
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
+    if len(selectors) > 1 and all(value.startswith("mlxrun_") for value in selectors):
+        from .packs import _sources, resolve_pack_run, selected_pack_sources
+
+        groups: list[tuple[str, list[str]]] = []
+        for selector in selectors:
+            checkpoint = resolve_pack_run(selector, purpose="describe")
+            selected = selected_pack_sources(checkpoint, selector)
+            if not groups or groups[-1][0] != checkpoint.run_id:
+                groups.append((checkpoint.run_id, []))
+            values = groups[-1][1]
+            values.extend(selected or _sources(checkpoint))
+        approved: bool | None = None
+
+        def approve_once(limit: int | None) -> bool:
+            nonlocal approved
+            if approved is None:
+                approved = bool(unknown_cost_confirmation and unknown_cost_confirmation(limit))
+            return approved
+
+        result = CommandResult()
+        for run_id, values in groups:
+            result = run_describe(
+                run_id,
+                PipelineOptions(
+                    selected_sources=tuple(dict.fromkeys(values)),
+                    provider=provider,
+                    model=model,
+                    ai_concurrency=ai_concurrency,
+                    max_ai_requests=max_ai_requests,
+                    max_cost_usd=max_cost_usd,
+                    allow_unknown_cost=allow_unknown_cost,
+                    unknown_cost_confirmation=approve_once,
+                    official_pack_policy=official_pack_policy,
+                    official_confirmation=official_confirmation,
+                ),
+            )
+            if result.status not in {"succeeded", "noop"}:
+                break
+        return result
     selected_sources: tuple[str, ...] = ()
     saved_run = selectors[0] if len(selectors) == 1 and selectors[0].startswith("mlxrun_") else None
     if saved_run is not None and ":" in saved_run:
