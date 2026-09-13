@@ -34,6 +34,11 @@ def collect_sources(
     stream: TextIO,
 ) -> tuple[str, ...]:
     values = list(positional)
+    if from_file is None and len(values) == 1 and "://" not in values[0]:
+        candidate = Path(values[0].strip().strip('"')).expanduser()
+        if candidate.is_file() or candidate.suffix.lower() == ".txt" or "\\" in str(candidate):
+            from_file = candidate
+            values = []
     if from_file is not None:
         path = from_file.expanduser().resolve()
         if not path.is_file() or path.is_symlink():
@@ -49,12 +54,18 @@ def collect_sources(
                 hint="Split the import into smaller batches.",
             )
         try:
-            values.extend(_source_lines(path.read_text(encoding="utf-8")))
+            values.extend(_source_lines(path.read_text(encoding="utf-8-sig")))
         except UnicodeError as exc:
             raise CommandError(
                 "CONFIG_INVALID",
                 "Source list is not valid UTF-8.",
                 hint="Save the file as UTF-8 and retry.",
+            ) from exc
+        except OSError as exc:
+            raise CommandError(
+                "CONFIG_INVALID",
+                "Cannot read the source list file.",
+                hint="Check the path and file permissions.",
             ) from exc
     if use_stdin:
         payload = stream.read(_MAX_SOURCE_FILE_BYTES + 1)

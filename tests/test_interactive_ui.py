@@ -207,7 +207,7 @@ def test_publication_uses_exact_ready_run_after_explicit_action(navigation, monk
     monkeypatch.setattr(ui, "confirm", lambda *a, **kw: accept)
     calls = []
     ui._pack_page(RUN, lambda args: calls.append(args) or True)
-    assert calls == ([["publish", RUN]] if accept else [])
+    assert calls == ([["publish", RUN, "--yes"]] if accept else [])
 
 
 def test_failed_import_does_not_start_ai(navigation):
@@ -216,7 +216,10 @@ def test_failed_import_does_not_start_ai(navigation):
     assert calls == [["import", "https://t.me/addemoji/NewsEmoji"]]
 
 
-def test_menu_analysis_uses_imported_id_without_automatic_publication(navigation, monkeypatch):
+@pytest.mark.parametrize("source", ["https://t.me/addemoji/NewsEmoji", r"C:\packs\links.txt"])
+def test_menu_analysis_uses_imported_id_without_automatic_publication(
+    navigation, monkeypatch, source
+):
     from contextlib import contextmanager
 
     from mojilex_cli.commands import runtime
@@ -229,12 +232,12 @@ def test_menu_analysis_uses_imported_id_without_automatic_publication(navigation
     monkeypatch.setattr(ui, "_resolve", lambda *a, **kw: pytest.fail("rediscovered by name"))
     calls = []
     ui._analyze(
-        "https://t.me/addemoji/NewsEmoji",
+        source,
         lambda args: calls.append(args) or True,
         repository="example/selected",
     )
     assert calls == [
-        ["import", "https://t.me/addemoji/NewsEmoji", "--repo", "example/selected"],
+        ["import", source, "--repo", "example/selected"],
         ["describe", RUN],
     ]
 

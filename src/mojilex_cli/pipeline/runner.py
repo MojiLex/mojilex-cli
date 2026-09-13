@@ -1573,10 +1573,11 @@ async def _run_submit(
     direct_push: bool,
     base: str | None,
     confirmation: Callable[[str], bool] | None,
+    batch_identifier: str | None = None,
 ) -> CommandResult:
     configured = load_config()
     credentials = load_credentials()
-    run_identifier = new_run_id()
+    run_identifier = batch_identifier or new_run_id()
     report_run_id(run_identifier)
     checkpoint: RunCheckpoint | None = None
     staged_repository: Path | None = None

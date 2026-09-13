@@ -337,7 +337,7 @@ def new_run_id() -> str:
 
 
 def require_confirmation(
-    message: str, *, yes: bool, non_interactive: bool, json_output: bool
+    message: str, *, yes: bool, non_interactive: bool, json_output: bool, default: bool = False
 ) -> None:
     if yes:
         return
@@ -348,7 +348,7 @@ def require_confirmation(
             hint="Rerun with --yes after reviewing the exact target.",
         )
     with suspend_progress():
-        confirmed = ui_confirm(message, default=False)
+        confirmed = ui_confirm(message, default=default)
     if not confirmed:
         raise CommandError(
             "CONFIG_INVALID",

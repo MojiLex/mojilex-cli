@@ -340,9 +340,9 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                     f"Отправить {name} в {state['target']} через Pull Request?",
                     f"Send {name} to {state['target']} via a pull request?",
                 ),
-                default=False,
+                default=True,
             ):
-                _invoke(dispatch, ["publish", state["run_id"]])
+                _invoke(dispatch, ["publish", state["run_id"], "--yes"])
         elif action == "resume":
             _invoke(dispatch, ["resume", active["run_id"]])
             return
@@ -360,7 +360,7 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                     "Загрузить обновления и проанализировать недостающее?",
                     "Download updates and analyze missing descriptions?",
                 ),
-                default=False,
+                default=True,
             ):
                 _analyze(str(sources[0]), dispatch, repository=state["target"])
                 return
@@ -507,16 +507,20 @@ def run_menu(dispatch: Dispatch) -> None:
                 "MojiLex",
                 [
                     label("Мои паки", "My packs"),
-                    label("Добавить пак по ссылке", "Add a pack URL"),
+                    label("Добавить паки по ссылке или из файла", "Add packs from a URL or file"),
                     label("Настройки", "Settings"),
                     label("Проверить подключение", "Check connections"),
+                    label(
+                        "Отправить все новые готовые паки на GitHub",
+                        "Sync all new completed packs to GitHub",
+                    ),
                     label("Выход", "Exit"),
                 ],
                 detail=label(
                     "Эмодзи → понятные текстовые описания", "Emoji → readable descriptions"
                 ),
             )
-            if choice in {None, 4}:
+            if choice in {None, 5}:
                 return
             if choice == 0:
                 rows = list_packs_command().result["packs"]
@@ -540,13 +544,20 @@ def run_menu(dispatch: Dispatch) -> None:
                     _pack_page(rows[index]["run_id"], dispatch)
             elif choice == 1:
                 source = str(
-                    typer.prompt(label("Ссылка на пак Telegram", "Telegram pack URL"))
+                    typer.prompt(
+                        label(
+                            "Ссылка на пак Telegram или путь к файлу",
+                            "Telegram pack URL or file path",
+                        )
+                    )
                 ).strip()
                 _analyze(source, dispatch)
             elif choice == 2:
                 _settings(dispatch)
             elif choice == 3:
                 _invoke(dispatch, ["doctor"])
+            elif choice == 4:
+                _invoke(dispatch, ["sync"])
         except (KeyboardInterrupt, EOFError, typer.Abort):
             continue
         except CommandError as exc:

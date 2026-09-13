@@ -105,7 +105,7 @@ Visual Studio Build Tools installation. For Linux/macOS, follow [media prerequis
 mojilex
 ```
 
-1. Choose **Add a pack URL** and paste a public link, such as `https://t.me/addemoji/NewsEmoji`.
+1. Choose **Add packs from a URL or file** and paste a public link, such as `https://t.me/addemoji/NewsEmoji`, or a text file path.
 2. Read the analysis plan and cost confirmation; allow requests if you agree.
 3. After completion, open **My packs → your pack → Browse descriptions**.
 4. Search, switch RU/EN, or open **All fields and English text**.
@@ -118,6 +118,30 @@ or the gallery makes no AI requests. Missing local previews appear as placeholde
 Example details, rendered by the program using sample data:
 
 ![Example Russian and English descriptions](docs/assets/details-en.svg)
+
+## Multiple packs from a file
+
+Paste a path such as `C:\Users\Me\Desktop\packs.txt` into the menu. Use one URL
+per line in a UTF-8 file. Blank lines, `#` comments and duplicate URLs are ignored.
+All URLs share one import and analysis run, with one AI cost approval rather than
+one per URL. The configured AI request limit still applies to the entire run.
+AI cost and publication confirmations default to **Yes**; Enter accepts it.
+
+Choose **Sync all new completed packs to GitHub**, or run:
+
+```console
+mojilex sync --local
+mojilex sync
+```
+
+The first command validates without uploading. The second submits all saved,
+completed new packs for the configured repository in one PR after one confirmation.
+Packs already on the base branch are skipped and published descriptions are preserved.
+A pending PR does not add packs to the base branch until it is merged.
+
+You can also use `mojilex import "C:\path\packs.txt"` or
+`mojilex import --from-file "C:\path\packs.txt"`, followed by
+`mojilex describe RUN_ID` using the combined import's printed run ID.
 
 ## Everyday commands
 

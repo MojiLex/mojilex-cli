@@ -28,6 +28,7 @@ _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "import",
             "describe",
             "publish",
+            "sync",
             "resume",
             "add",
             "submit",
@@ -53,6 +54,10 @@ _PANEL_TITLES: dict[str, tuple[str, str]] = {
 
 
 _COMMAND_HELP: dict[str, tuple[str, str]] = {
+    "sync": (
+        "Send all completed new packs in one GitHub pull request.",
+        "Отправить все новые готовые паки одним Pull Request на GitHub.",
+    ),
     "gallery": (
         "Open a local gallery of saved descriptions and previews.",
         "Открыть локальную галерею эмодзи с описаниями.",
@@ -861,6 +866,7 @@ def _group_root_commands(command: Any, language: UiLanguage) -> None:
         "describe",
         "publish",
         "resume",
+        "sync",
         "settings",
         "init",
         "doctor",

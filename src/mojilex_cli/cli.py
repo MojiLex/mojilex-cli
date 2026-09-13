@@ -155,7 +155,7 @@ def _help_all_callback(ctx: typer.Context, value: bool) -> None:
 
 
 def _confirmation_callback(
-    *, yes: bool, non_interactive: bool, json_output: bool
+    *, yes: bool, non_interactive: bool, json_output: bool, default: bool = False
 ) -> Callable[[str], bool]:
     def confirm(message: str) -> bool:
         require_confirmation(
@@ -163,6 +163,7 @@ def _confirmation_callback(
             yes=yes,
             non_interactive=non_interactive,
             json_output=json_output,
+            default=default,
         )
         return True
 
@@ -183,6 +184,7 @@ def _unknown_cost_callback(
                 yes=yes,
                 non_interactive=non_interactive,
                 json_output=json_output,
+                default=True,
             )
         except CommandError as exc:
             raise CommandError(
@@ -484,7 +486,10 @@ def add(
 
 @app.command("import")
 def import_sources(
-    sources: Annotated[list[str], typer.Argument(help="Public source URLs.")],
+    sources: Annotated[
+        list[str] | None, typer.Argument(help="Public source URLs or a text file path.")
+    ] = None,
+    from_file: Annotated[Path | None, typer.Option("--from-file")] = None,
     repo: Annotated[str | None, typer.Option("--repo")] = None,
     platform: Annotated[str, typer.Option("--platform")] = "auto",
     max_items: Annotated[int | None, typer.Option("--max-items", min=1)] = None,
@@ -499,23 +504,29 @@ def import_sources(
 ) -> None:
     """Download and verify media in a staging run without AI or publication."""
 
-    from mojilex_cli.commands.workflow import import_command
+    from mojilex_cli.commands.workflow import collect_sources, import_command
+
+    def action():  # type: ignore[no-untyped-def]
+        selected = collect_sources(
+            sources or [], from_file=from_file, use_stdin=False, stream=sys.stdin
+        )
+        return _pack_action(
+            lambda: import_command(
+                selected,
+                repo=repo,
+                platform=platform,
+                max_items=max_items,
+                download_concurrency=download_concurrency,
+                check_media=check_media,
+                fail_fast=fail_fast,
+            ),
+            selected,
+        )
 
     execute(
         "import",
         lambda: _with_runtime_secrets(
-            lambda: _pack_action(
-                lambda: import_command(
-                    sources,
-                    repo=repo,
-                    platform=platform,
-                    max_items=max_items,
-                    download_concurrency=download_concurrency,
-                    check_media=check_media,
-                    fail_fast=fail_fast,
-                ),
-                sources,
-            ),
+            action,
             names=("TELEGRAM_BOT_TOKEN",),
             prompt=_secret_prompt(
                 non_interactive=False,
@@ -689,6 +700,36 @@ def publish_pack(
                 yes=yes,
                 non_interactive=non_interactive,
                 json_output=json_output,
+                default=True,
+            ),
+        ),
+        json_output=json_output,
+        quiet=quiet,
+        debug=debug,
+    )
+
+
+@app.command("sync")
+def sync_packs(
+    local: Annotated[bool, typer.Option("--local", help="Validate without uploading.")] = False,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """Send all completed new packs to GitHub in one pull request."""
+    from mojilex_cli.pipeline.batch import sync_packs_command
+
+    execute(
+        "sync",
+        lambda: sync_packs_command(
+            local=local,
+            confirmation=_confirmation_callback(
+                yes=yes,
+                non_interactive=non_interactive,
+                json_output=json_output,
+                default=True,
             ),
         ),
         json_output=json_output,
@@ -768,6 +809,7 @@ def submit(
                 yes=yes,
                 non_interactive=non_interactive,
                 json_output=json_output,
+                default=True,
             ),
         )
 
