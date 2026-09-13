@@ -146,7 +146,7 @@ def test_concept_output_is_sorted_bounded_and_cannot_invent_free_text() -> None:
 
 
 def test_prompt_hash_is_role_bound_jcs_and_separate_from_manifest() -> None:
-    assert PROMPT_VERSION == "1.2.0"
+    assert PROMPT_VERSION == "1.2.1"
     assert prompt_sha256() == hashlib.sha256(rfc8785.dumps(prompt_templates())).hexdigest()
     assert prompt_manifest_sha256() == hashlib.sha256(rfc8785.dumps(prompt_manifest())).hexdigest()
     assert prompt_manifest_sha256() != prompt_sha256()

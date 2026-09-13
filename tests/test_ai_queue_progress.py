@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mojilex_cli.ai import AIOutputError, CostEstimate, RequestBudget
+from mojilex_cli.ai import AIError, AIOutputError, CostEstimate, RequestBudget
 from mojilex_cli.ai.base import UnknownCostError
 from mojilex_cli.cache import CacheStore
 from mojilex_cli.commands import progress as progress_module
@@ -50,7 +50,9 @@ async def test_first_ai_failure_stops_queued_batches_but_saves_active_success(
     second_started = asyncio.Event()
     first_failed = asyncio.Event()
     failure = (
-        UnknownCostError("approval declined") if concurrency == 1 else AIOutputError("invalid")
+        UnknownCostError("approval declined")
+        if concurrency == 1
+        else AIError("authentication failed")
     )
 
     async def describe(chunk, *_args, **_kwargs):

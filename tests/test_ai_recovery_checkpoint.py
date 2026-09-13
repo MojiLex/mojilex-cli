@@ -192,7 +192,7 @@ async def test_exact_batch_recovery_checkpoints_items_before_later_failure(
                 with pytest.raises(BudgetExceededError):
                     await run()
             else:
-                with pytest.raises(AIOutputError, match="synthetic schema_validation"):
+                with pytest.raises(BudgetExceededError):
                     await run()
         cached_count = cache.info()["ai_entries"]
     finally:
@@ -200,13 +200,13 @@ async def test_exact_batch_recovery_checkpoints_items_before_later_failure(
 
     pair = (first.native_id, second.native_id)
     if scenario == "single_invalid":
-        assert provider.calls == [(first.native_id,)] * 2
-        assert events == [("request", (first.native_id,))] * 2
+        assert provider.calls == [(first.native_id,)] * 10
+        assert events == [("request", (first.native_id,))] * 10
         completed, failed, batches = 0, 1, 0
     else:
         expected_calls = [pair, pair, (first.native_id,)]
         if scenario != "budget":
-            expected_calls += [(second.native_id,)] * (2 if scenario == "later_invalid" else 1)
+            expected_calls += [(second.native_id,)] * (7 if scenario == "later_invalid" else 1)
         assert provider.calls == expected_calls
         # Completion is durable before the next item gets a paid attempt.
         assert events[3] == ("checkpoint", (first.native_id,))
@@ -234,7 +234,7 @@ async def test_exact_batch_recovery_checkpoints_items_before_later_failure(
         previous_calls = len(provider.calls)
         provider.fail_id = None
         budget = RequestBudget(
-            max_requests=10,
+            max_requests=budget.requests_used + 1,
             requests_used=budget.requests_used,
             cost_reserved=budget.cost_reserved,
         )

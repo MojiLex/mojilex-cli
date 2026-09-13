@@ -23,7 +23,9 @@ from mojilex_cli import __version__
 from mojilex_cli.ai import (
     AIError,
     AIOutputError,
+    AITransientError,
     BilingualDescriptions,
+    BudgetExceededError,
     ContentClassification,
     DescriptionBatch,
     DescriptionItem,
@@ -1912,42 +1914,44 @@ async def _prepare_collection_media(
         backend_candidates=backend_candidates,
     )
     if (
-        current_prompt_version() != "1.1.0"
-        and config is not None
+        config is not None
         and resume_elements
         and any(element.ai_cache_key for element in resume_elements.values())
     ):
         # Validated old results keep their exact old prompt and routing identity.
         # Only cache reads run in this scope (their hard request budget is zero).
-        with use_prompt_version("1.1.0"):
-            legacy_inputs = (
-                _load_generation_inputs(snapshot, config)
-                if _GENERATION_INPUTS.get() is not None
-                else None
-            )
-            legacy_token = _GENERATION_INPUTS.set(legacy_inputs)
-            try:
-                legacy_media, legacy_outcomes, _ = await _resume_cached_processed_media(
-                    snapshot,
-                    collection,
-                    processor,
-                    cache=cache,
-                    resume_elements=resume_elements,
-                    config=config,
-                    taxonomy_version=taxonomy_version,
-                    cache_alias_scope=cache_alias_scope,
-                    forbidden_native_ids=set(guarded),
-                    redescribe=redescribe,
-                    overwrite_reviewed=overwrite_reviewed,
-                    backend_candidates=backend_candidates,
+        for legacy_version in ("1.2.0", "1.1.0"):
+            if legacy_version == current_prompt_version():
+                continue
+            with use_prompt_version(legacy_version):
+                legacy_inputs = (
+                    _load_generation_inputs(snapshot, config)
+                    if _GENERATION_INPUTS.get() is not None
+                    else None
                 )
-            finally:
-                _GENERATION_INPUTS.reset(legacy_token)
-        for native_id, outcome in legacy_outcomes.items():
-            if native_id not in cached_outcomes:
-                cached_outcomes[native_id] = outcome
-                cached[native_id] = legacy_media[native_id]
-                cached_analysis.pop(native_id, None)
+                legacy_token = _GENERATION_INPUTS.set(legacy_inputs)
+                try:
+                    legacy_media, legacy_outcomes, _ = await _resume_cached_processed_media(
+                        snapshot,
+                        collection,
+                        processor,
+                        cache=cache,
+                        resume_elements=resume_elements,
+                        config=config,
+                        taxonomy_version=taxonomy_version,
+                        cache_alias_scope=cache_alias_scope,
+                        forbidden_native_ids=set(guarded),
+                        redescribe=redescribe,
+                        overwrite_reviewed=overwrite_reviewed,
+                        backend_candidates=backend_candidates,
+                    )
+                finally:
+                    _GENERATION_INPUTS.reset(legacy_token)
+            for native_id, outcome in legacy_outcomes.items():
+                if native_id not in cached_outcomes:
+                    cached_outcomes[native_id] = outcome
+                    cached[native_id] = legacy_media[native_id]
+                    cached_analysis.pop(native_id, None)
     if import_only and cache is not None and resume_elements is not None:
         for item in collection.items:
             element = resume_elements.get(item.native_id)
@@ -2144,7 +2148,26 @@ async def _resume_cached_processed_media(
             overwrite_reviewed=overwrite_reviewed,
         )
     ]
-    for chunk in _description_chunks(ai_items, candidates, config):
+    # A prior run may have batched a different subset (for example, after
+    # skipping already described items). Reconstruct those saved label groups
+    # before trying today's grouping. Exact plan/cache validation below still
+    # requires every original neighbour; traces alone never authorize reuse.
+    saved_groups: dict[tuple[str, str, str, str], list[tuple[str, SourceEmoji]]] = {}
+    for item in ai_items:
+        for trace in traces.get(item.native_id, ()):
+            identity = trace.request_identity
+            group_key = (trace.stage, trace.model, identity.plan_sha256, identity.request_sha256)
+            saved_groups.setdefault(group_key, []).append(
+                (identity.label_for(item.native_id), item)
+            )
+    recovery_chunks: list[Sequence[SourceEmoji]] = [
+        tuple(item for _, item in sorted(group, key=lambda pair: pair[0]))
+        for group in saved_groups.values()
+    ]
+    recovery_chunks.extend(_description_chunks(ai_items, candidates, config))
+    for chunk in recovery_chunks:
+        if all(item.native_id in semantic_outcomes for item in chunk):
+            continue
         chunk_traces = _recover_ai_request_traces(
             cache,
             chunk,
@@ -2935,12 +2958,13 @@ async def _descriptions_for_collection(
         len(candidates),
         batch_total=len(chunks),
     )
-    first_failure: Exception | None = None
+    first_failure: BaseException | None = None
+    last_deferred: Exception | None = None
 
     async def describe_chunk(
         batch_index: int, chunk: Sequence[SourceEmoji]
     ) -> dict[str, _SemanticOutcome]:
-        nonlocal first_failure
+        nonlocal first_failure, last_deferred
         async with semaphore:
             # Set/check the stop condition while holding the semaphore. Otherwise
             # releasing it on an exception can start another queued paid batch.
@@ -2950,9 +2974,9 @@ async def _descriptions_for_collection(
             progress.phase(key, "ai", count=len(chunk))
             ru = current_ui_language() == "ru"
             batch_label = (
-                f"AI-пачка {batch_index}/{len(chunks)}: {len(chunk)} эмодзи"
+                f"AI-пачка {batch_index}/{progress.batch_total}: {len(chunk)} эмодзи"
                 if ru
-                else f"AI batch {batch_index}/{len(chunks)}: {len(chunk)} emojis"
+                else f"AI batch {batch_index}/{progress.batch_total}: {len(chunk)} emojis"
             )
             report_progress(batch_label)
 
@@ -2978,10 +3002,13 @@ async def _descriptions_for_collection(
 
             callback_token = _AI_PROGRESS_CALLBACK.set(request_progress)
             saved_items: set[str] = set()
+            saved_outcomes: dict[str, _SemanticOutcome] = {}
+            checkpoint_failure: Exception | None = None
 
             async def save_recovered_items(
                 items: Sequence[SourceEmoji], generated: Mapping[str, _SemanticOutcome]
             ) -> None:
+                nonlocal checkpoint_failure
                 expected = {item.native_id for item in items}
                 if (
                     set(generated) != expected
@@ -2992,8 +3019,13 @@ async def _descriptions_for_collection(
                     raise AIOutputError("AI recovery did not produce exact traced outcomes")
                 if on_chunk_completed is not None:
                     progress.phase(key, "save")
-                    await on_chunk_completed(items, generated)
+                    try:
+                        await on_chunk_completed(items, generated)
+                    except Exception as exc:
+                        checkpoint_failure = exc
+                        raise
                 saved_items.update(expected)
+                saved_outcomes.update(generated)
                 progress.advance(key, count=len(items))
 
             try:
@@ -3034,10 +3066,37 @@ async def _descriptions_for_collection(
                 remaining = tuple(item for item in chunk if item.native_id not in saved_items)
                 if on_chunk_completed is not None and remaining:
                     progress.phase(key, "save")
-                    await on_chunk_completed(
-                        remaining, {item.native_id: generated[item.native_id] for item in remaining}
-                    )
+                    try:
+                        await on_chunk_completed(
+                            remaining,
+                            {item.native_id: generated[item.native_id] for item in remaining},
+                        )
+                    except Exception as exc:
+                        checkpoint_failure = exc
+                        raise
+            except asyncio.CancelledError as exc:
+                first_failure = exc
+                progress.stop_queue()
+                progress.active.pop(key, None)
+                progress.active_counts.pop(key, None)
+                raise
             except Exception as exc:
+                if (
+                    isinstance(exc, (AIOutputError, AITransientError))
+                    and checkpoint_failure is None
+                ):
+                    last_deferred = exc
+                    progress.finish(key, count=len(chunk) - len(saved_items), failed=True)
+                    error = structured_exception(exc)
+                    report_progress(
+                        f"{error.code}: {error.message} — "
+                        + (
+                            "проблемные эмодзи отложены; продолжаем очередь."
+                            if ru
+                            else "unfinished emojis deferred; continuing the queue."
+                        )
+                    )
+                    return saved_outcomes
                 if first_failure is None:
                     first_failure = exc
                     progress.stop_queue()
@@ -3058,17 +3117,47 @@ async def _descriptions_for_collection(
             return generated
 
     async with progress:
-        outcomes = await asyncio.gather(
-            *(describe_chunk(index, chunk) for index, chunk in enumerate(chunks, start=1)),
-            return_exceptions=True,
-        )
-        if first_failure is not None:
-            raise first_failure
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException):
-            raise outcome
-    for generated in cast(list[dict[str, _SemanticOutcome]], outcomes):
-        outcomes_by_native.update(generated)
+        pending_chunks: Sequence[Sequence[SourceEmoji]] = chunks
+        while pending_chunks:
+            requests_before = budget.requests_used
+            completed_before = progress.completed
+            batch_offset = progress.completed_batches
+            outcomes = await asyncio.gather(
+                *(
+                    describe_chunk(batch_offset + index, chunk)
+                    for index, chunk in enumerate(pending_chunks, start=1)
+                ),
+                return_exceptions=True,
+            )
+            if first_failure is not None:
+                raise first_failure
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                outcomes_by_native.update(outcome)
+            pending = [item for item in candidates if item.native_id not in outcomes_by_native]
+            if not pending:
+                break
+            if budget.requests_used >= budget.max_requests:
+                progress.stop_queue()
+                raise BudgetExceededError(
+                    "AI request limit reached; validated results are saved. "
+                    f"{len(pending)} emoji(s) still need descriptions."
+                )
+            # Cache/context failures may occur before an HTTP request. Do not spin
+            # forever on an unchanged local failure that cannot consume budget.
+            if budget.requests_used == requests_before and progress.completed == completed_before:
+                progress.stop_queue()
+                assert last_deferred is not None
+                raise last_deferred
+            report_progress(
+                f"Повтор отложенных эмодзи: {len(pending)}; готовые описания сохранены."
+                if current_ui_language() == "ru"
+                else f"Retrying {len(pending)} deferred emojis; completed descriptions are saved."
+            )
+            pending_chunks = [(item,) for item in pending]
+            progress.failed = 0
+            progress.batch_total = progress.completed_batches + len(pending_chunks)
     if request_traces_out is not None:
         request_traces_out.clear()
         request_traces_out.update(

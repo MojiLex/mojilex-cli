@@ -82,8 +82,11 @@ mojilex init --force --repo MojiLex/mojilex --publish local --model gemini-3.8-f
 ### Staged analysis and publication
 
 AI progress distinguishes validated emojis, batches, requests, retries, and queued
-work. A failed batch or declined cost approval stops queued batches; successful
-in-flight batches still checkpoint their results. Each Gemini request has a
+work. Invalid AI output or exhausted transient network retries defer unfinished
+emojis while the remaining queue continues. Deferred items are then retried individually
+until they succeed or the shared budget runs out; completed descriptions are retained.
+Budget/cost limits, declined approval, authentication or persistence errors, and cancellation
+stop queued work. Successful in-flight batches still checkpoint their results. Each request has a
 30-second timeout. An unchanged emoji count can mean a batch is still awaiting
 or validating its response, not that those emojis are complete.
 During per-item recovery, each validated result is checkpointed and counted
@@ -95,10 +98,11 @@ download restarts with a fresh bounded buffer. Gemini allows up to 3 attempts fo
 transient failures, waiting 1 and 2 seconds, with every attempt charged to the existing
 request budget. Authentication and ordinary invalid requests are not retried.
 
-Prompt 1.2.0 explicitly specifies cross-field text, number, style and uncertainty
-rules. Local semantic validation remains strict and reports specific rule codes.
-Validated 1.1.0 results keep their exact original provenance during resume; new
-descriptions use 1.2.0.
+Prompt 1.2.1 explicitly specifies cross-field text, number, style and uncertainty
+rules and the exact suggested_uses values, distinct from free-form usage descriptions.
+Local semantic validation remains strict and reports specific rule codes.
+Validated 1.1.0 and 1.2.0 results keep their exact original provenance and batch grouping
+during resume; new descriptions use 1.2.1.
 
 Generated PNG frames are retained in `resume-media` under the configured cache
 directory, outside the dataset, and share the run disk budget with transient files.

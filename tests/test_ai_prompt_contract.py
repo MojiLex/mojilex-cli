@@ -18,14 +18,15 @@ from mojilex_cli.ai.prompts import (
     use_prompt_version,
     v1_1_0,
     v1_2_0,
+    v1_2_1,
 )
 from test_ai_semantic_facets import _payload
 
 
 def test_versioned_prompt_dispatch_preserves_exact_old_prompt_and_transport() -> None:
-    assert PROMPT_VERSION == current_prompt_version() == "1.2.0"
+    assert PROMPT_VERSION == current_prompt_version() == "1.2.1"
     current_hash = prompt_sha256()
-    assert current_hash == v1_2_0.prompt_sha256()
+    assert current_hash == v1_2_1.prompt_sha256()
     with use_prompt_version("1.1.0"):
         assert current_prompt_version() == "1.1.0"
         assert prompt_manifest() == v1_1_0.prompt_manifest()
@@ -38,12 +39,12 @@ def test_versioned_prompt_dispatch_preserves_exact_old_prompt_and_transport() ->
             assert current_prompt_version() == "1.2.0"
             raise RuntimeError("synthetic failure")
         assert current_prompt_version() == "1.1.0"
-    assert current_prompt_version() == "1.2.0"
+    assert current_prompt_version() == "1.2.1"
     assert gemini_request_parameters_sha256() == v1_1_0.gemini_request_parameters_sha256()
     with pytest.raises(ValueError, match="unsupported prompt version"):
         with use_prompt_version("unsupported-synthetic-version"):
             pass
-    assert current_prompt_version() == "1.2.0"
+    assert current_prompt_version() == "1.2.1"
 
 
 @pytest.mark.asyncio
@@ -53,11 +54,12 @@ async def test_prompt_selection_is_isolated_between_concurrent_tasks() -> None:
             await asyncio.sleep(0)
             return current_prompt_version(), prompt_sha256()
 
-    assert await asyncio.gather(digest("1.1.0"), digest("1.2.0")) == [
+    assert await asyncio.gather(digest("1.1.0"), digest("1.2.0"), digest("1.2.1")) == [
         ("1.1.0", v1_1_0.prompt_sha256()),
         ("1.2.0", v1_2_0.prompt_sha256()),
+        ("1.2.1", v1_2_1.prompt_sha256()),
     ]
-    assert current_prompt_version() == "1.2.0"
+    assert current_prompt_version() == "1.2.1"
 
 
 @pytest.mark.parametrize(

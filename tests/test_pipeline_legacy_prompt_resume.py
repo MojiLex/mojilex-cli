@@ -7,7 +7,13 @@ import pytest
 import rfc8785
 
 from mojilex_cli.ai import RequestBudget
-from mojilex_cli.ai.prompts import current_prompt_version, prompt_sha256, use_prompt_version, v1_1_0
+from mojilex_cli.ai.prompts import (
+    PROMPT_VERSION,
+    current_prompt_version,
+    prompt_sha256,
+    use_prompt_version,
+    v1_1_0,
+)
 from mojilex_cli.cache import CacheStore
 from mojilex_cli.config import AIConfig, MojiLexConfig
 from mojilex_cli.media import TemporaryMediaRun
@@ -52,10 +58,15 @@ def test_legacy_prompt_and_schema_digests_are_frozen_for_resume() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_version", ["1.1.0", "1.2.0"])
 @pytest.mark.parametrize("with_concepts", [False, True])
 @pytest.mark.parametrize("with_missing_item", [False, True])
 async def test_legacy_paid_result_keeps_old_provenance_while_missing_item_uses_new_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_concepts: bool, with_missing_item: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_concepts: bool,
+    with_missing_item: bool,
+    legacy_version: str,
 ) -> None:
     snapshot = write_fixture(tmp_path / "dataset")
     if with_concepts:
@@ -67,7 +78,7 @@ async def test_legacy_paid_result_keeps_old_provenance_while_missing_item_uses_n
     source = _collection((first, second) if with_missing_item else (first,))
     value = _processed(snapshot)
     cache = CacheStore(tmp_path / "cache.sqlite3", repository_root=snapshot.root)
-    with use_prompt_version("1.1.0"):
+    with use_prompt_version(legacy_version):
         old_hash = prompt_sha256()
         old_inputs = runner._load_generation_inputs(snapshot, config) if with_concepts else None
         token = runner._GENERATION_INPUTS.set(old_inputs)
@@ -115,10 +126,10 @@ async def test_legacy_paid_result_keeps_old_provenance_while_missing_item_uses_n
             assert processor.decode_calls == int(with_missing_item)
             assert processor.analysis_calls == int(with_missing_item)
             old_generation = verified[first.native_id].generation
-            assert old_generation.prompt_version == "1.1.0"
+            assert old_generation.prompt_version == legacy_version
             assert old_generation.prompt_sha256 == old_hash != new_hash
             assert runner._GENERATION_INPUTS.get() is new_inputs
-            assert current_prompt_version() == "1.2.0"
+            assert current_prompt_version() == PROMPT_VERSION
             monkeypatch.setattr(runner, "_provider_for_model", fixed_provider)
             budget = RequestBudget(max_requests=int(with_missing_item))
             descriptions, generations = await runner._descriptions_for_collection(
@@ -140,8 +151,8 @@ async def test_legacy_paid_result_keeps_old_provenance_while_missing_item_uses_n
             assert budget.requests_used == int(with_missing_item)
             if with_missing_item:
                 assert provider.calls == [second.native_id]
-                assert paid_versions == ["1.2.0"]
-                assert generations[second.native_id].prompt_version == "1.2.0"
+                assert paid_versions == [PROMPT_VERSION]
+                assert generations[second.native_id].prompt_version == PROMPT_VERSION
                 assert generations[second.native_id].prompt_sha256 == new_hash
             else:
                 assert not provider.calls and not paid_versions
@@ -244,4 +255,4 @@ async def test_legacy_prompt_restore_cannot_bypass_changed_generation_context(
     finally:
         runner._GENERATION_INPUTS.reset(token)
         cache.close()
-    assert current_prompt_version() == "1.2.0"
+    assert current_prompt_version() == PROMPT_VERSION

@@ -6,11 +6,11 @@ from contextvars import ContextVar
 from types import ModuleType
 from typing import Any
 
-from . import v1_1_0, v1_2_0
+from . import v1_1_0, v1_2_0, v1_2_1
 
-PROMPT_VERSION = v1_2_0.PROMPT_VERSION
-SYSTEM_PROMPT = v1_2_0.SYSTEM_PROMPT
-_VERSIONS = {"1.1.0": v1_1_0, "1.2.0": v1_2_0}
+PROMPT_VERSION = v1_2_1.PROMPT_VERSION
+SYSTEM_PROMPT = v1_2_1.SYSTEM_PROMPT
+_VERSIONS = {"1.1.0": v1_1_0, "1.2.0": v1_2_0, "1.2.1": v1_2_1}
 _PROMPT_VERSION: ContextVar[str] = ContextVar("mojilex_prompt_version", default=PROMPT_VERSION)
 
 
