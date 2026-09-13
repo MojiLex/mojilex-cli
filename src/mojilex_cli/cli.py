@@ -29,6 +29,7 @@ from mojilex_cli.commands.runtime import (
     machine_envelope_emitted,
     machine_output_mode,
     require_confirmation,
+    suspend_progress,
 )
 from mojilex_cli.i18n import (
     confirm as ui_confirm,
@@ -250,7 +251,12 @@ def _secret_prompt(
 ) -> Callable[[str], str] | None:
     if non_interactive or json_output or quiet or not sys.stdin.isatty():
         return None
-    return lambda label: str(typer.prompt(label, hide_input=True, err=True))
+    return lambda label: _progress_prompt(label, hide_input=True, err=True)
+
+
+def _progress_prompt(label: str, **options: Any) -> str:
+    with suspend_progress():
+        return str(typer.prompt(label, **options))
 
 
 def _pack_action(action: Callable[[], CommandResult], selectors: Sequence[str]) -> CommandResult:
@@ -350,7 +356,7 @@ def initialize(
             config_path=config_path,
             force=force,
             languages=tuple(lang or ("ru", "en")),
-            prompt=(lambda label, default: typer.prompt(label, default=default, err=True))
+            prompt=(lambda label, default: _progress_prompt(label, default=default, err=True))
             if sys.stdin.isatty() and not (non_interactive or json_output or quiet)
             else None,
             ui_language=current_ui_language(),
@@ -1170,14 +1176,15 @@ def doctor(
             and not quiet
             and sys.stdin.isatty()
         ):
-            authorized = ui_confirm(
-                ui_text(
-                    "Install the missing Windows media components now? "
-                    "This may install FFmpeg or Visual Studio Build Tools."
-                ),
-                default=False,
-                err=True,
-            )
+            with suspend_progress():
+                authorized = ui_confirm(
+                    ui_text(
+                        "Install the missing Windows media components now? "
+                        "This may install FFmpeg or Visual Studio Build Tools."
+                    ),
+                    default=False,
+                    err=True,
+                )
         if not authorized:
             return result
         return install_media_dependencies_command(cast(dict[str, Any], result.result["checks"]))

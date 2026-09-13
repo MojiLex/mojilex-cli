@@ -162,11 +162,15 @@ def _build(dataset: Path, output: Path, **overrides: object):
     return build_index(dataset, output, **arguments)  # type: ignore[arg-type]
 
 
-def _tree_bytes(root: Path) -> dict[str, bytes]:
+def _tree_bytes(root: Path, *, include_transaction_lock: bool = True) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in root.rglob("*")
         if path.is_file()
+        and (
+            include_transaction_lock
+            or path.relative_to(root).as_posix() != ".mojilex/locks/dataset-transaction-v1.lock"
+        )
     }
 
 
@@ -305,11 +309,12 @@ def test_search_record_has_exact_safe_filtering_fields(tmp_path: Path) -> None:
 def test_builder_never_writes_media_or_mutates_canonical_source(tmp_path: Path) -> None:
     dataset = _prepare_distribution_fixture(tmp_path / "dataset")
     output = tmp_path / "dist"
-    before = _tree_bytes(dataset)
+    (dataset / ".mojilex" / "locks" / "dataset-transaction-v1.lock").touch()
+    before = _tree_bytes(dataset, include_transaction_lock=False)
 
     _build(dataset, output)
 
-    assert _tree_bytes(dataset) == before
+    assert _tree_bytes(dataset, include_transaction_lock=False) == before
     emitted = _tree_bytes(output)
     assert emitted
     assert all(path == "SHA256SUMS" or Path(path).suffix in {".json", ".jsonl"} for path in emitted)

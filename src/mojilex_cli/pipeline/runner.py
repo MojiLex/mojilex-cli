@@ -71,6 +71,7 @@ from mojilex_cli.commands.progress import BatchProgress
 from mojilex_cli.commands.runtime import (
     CommandError,
     CommandResult,
+    operation_progress,
     report_progress,
     report_run_id,
     structured_exception,
@@ -1558,6 +1559,12 @@ async def run_resume(
     )
 
 
+@contextmanager
+def _publication_progress(russian: str, english: str) -> Iterator[None]:
+    with operation_progress(russian if current_ui_language() == "ru" else english):
+        yield
+
+
 async def _run_submit(
     target: str | None,
     *,
@@ -1608,10 +1615,13 @@ async def _run_submit(
         }
     )
     if staged_repository is not None:
-        staged_report = validate_dataset(staged_repository, strict=True)
-        staged_report.raise_for_errors()
-        staged_snapshot = load_dataset(staged_repository)
-        review_routing = official_submission_report(staged_snapshot)
+        with _publication_progress(
+            "Проверка сохранённых описаний", "Validating saved descriptions"
+        ):
+            staged_report = validate_dataset(staged_repository, strict=True)
+            staged_report.raise_for_errors()
+            staged_snapshot = load_dataset(staged_repository)
+            review_routing = official_submission_report(staged_snapshot)
         if config.repository.publish == "local" and not direct_push:
             with snapshot_at_revision(
                 staged_repository, cast(RunCheckpoint, checkpoint).base_revision
@@ -1637,17 +1647,20 @@ async def _run_submit(
         git_publisher = GitPublisher(git)
         guard: Any | None = None
         if staged_repository is not None:
-            latest_report = validate_dataset(workspace.root, strict=True)
-            latest_report.raise_for_errors()
-            latest = load_dataset(workspace.root)
-            candidate_snapshot = load_dataset(staged_repository)
-            assert checkpoint is not None
-            with snapshot_at_revision(staged_repository, checkpoint.base_revision) as base_root:
-                imported_base = load_dataset(base_root)
-                merged = reapply_candidate(imported_base, candidate_snapshot, latest)
-            merged_report = validate_snapshot(merged, schemas=True, repository_files=True)
-            merged_report.raise_for_errors()
-            review_routing = official_submission_report(merged)
+            with _publication_progress(
+                "Обновление данных относительно GitHub", "Reapplying data to the latest repository"
+            ):
+                latest_report = validate_dataset(workspace.root, strict=True)
+                latest_report.raise_for_errors()
+                latest = load_dataset(workspace.root)
+                candidate_snapshot = load_dataset(staged_repository)
+                assert checkpoint is not None
+                with snapshot_at_revision(staged_repository, checkpoint.base_revision) as base_root:
+                    imported_base = load_dataset(base_root)
+                    merged = reapply_candidate(imported_base, candidate_snapshot, latest)
+                merged_report = validate_snapshot(merged, schemas=True, repository_files=True)
+                merged_report.raise_for_errors()
+                review_routing = official_submission_report(merged)
             calculated_paths = _changed_paths(latest, merged)
             if any(not _submit_path_allowed(str(path)) for path in calculated_paths):
                 raise CommandError(
@@ -1663,10 +1676,13 @@ async def _run_submit(
                 _apply_with_rollback(latest, merged)
             paths = tuple(str(path) for path in calculated_paths)
         else:
-            report = validate_dataset(workspace.root, strict=True)
-            report.raise_for_errors()
-            review_routing = official_submission_report(load_dataset(workspace.root))
-            paths = tuple(dict.fromkeys(git.status_paths()))
+            with _publication_progress(
+                "Проверка данных перед отправкой", "Validating data before publication"
+            ):
+                report = validate_dataset(workspace.root, strict=True)
+                report.raise_for_errors()
+                review_routing = official_submission_report(load_dataset(workspace.root))
+                paths = tuple(dict.fromkeys(git.status_paths()))
         assert review_routing is not None
         if not paths:
             return CommandResult(
@@ -1695,65 +1711,76 @@ async def _run_submit(
                 },
                 publication={"mode": "local", "path": str(workspace.root)},
             )
-        base_sha = git.current_sha()
-        branch = make_import_branch(pack_name=None, run_id=run_identifier, batch=True)
-        if guard is not None:
-            prepared = git_publisher.prepare_commit(
-                paths=paths,
-                message="data: submit validated MojiLex change set",
-                branch=branch,
-                base_revision="HEAD",
-                identity=_configured_git_identity(config),
-                guard=guard,
-            )
-            if prepared is None:
-                return CommandResult(run_id=run_identifier, status=RunStatus.NOOP)
-            staged = prepared.paths
-            commit_sha = prepared.commit_sha
-        else:
-            git.create_branch(branch, base_sha)
-            staged = git.stage_paths(paths)
-            if not git.has_staged_changes():
-                return CommandResult(run_id=run_identifier, status=RunStatus.NOOP)
-            commit_message = "data: submit validated MojiLex change set"
-            commit_identity = git.resolve_identity(_configured_git_identity(config))
-            commit_sha = git.commit(
-                commit_message,
-                identity=commit_identity,
-            )
-            prepared = PreparedCommit(
-                branch=branch,
-                base_sha=base_sha,
-                commit_sha=commit_sha,
-                paths=staged,
-                message=commit_message,
-                identity=commit_identity,
-            )
+        with _publication_progress("Подготовка коммита", "Preparing the commit"):
+            base_sha = git.current_sha()
+            branch = make_import_branch(pack_name=None, run_id=run_identifier, batch=True)
+            if guard is not None:
+                prepared = git_publisher.prepare_commit(
+                    paths=paths,
+                    message="data: submit validated MojiLex change set",
+                    branch=branch,
+                    base_revision="HEAD",
+                    identity=_configured_git_identity(config),
+                    guard=guard,
+                )
+                if prepared is None:
+                    return CommandResult(run_id=run_identifier, status=RunStatus.NOOP)
+                staged = prepared.paths
+                commit_sha = prepared.commit_sha
+            else:
+                git.create_branch(branch, base_sha)
+                staged = git.stage_paths(paths)
+                if not git.has_staged_changes():
+                    return CommandResult(run_id=run_identifier, status=RunStatus.NOOP)
+                commit_message = "data: submit validated MojiLex change set"
+                commit_identity = git.resolve_identity(_configured_git_identity(config))
+                commit_sha = git.commit(
+                    commit_message,
+                    identity=commit_identity,
+                )
+                prepared = PreparedCommit(
+                    branch=branch,
+                    base_sha=base_sha,
+                    commit_sha=commit_sha,
+                    paths=staged,
+                    message=commit_message,
+                    identity=commit_identity,
+                )
         if not staged:
             return CommandResult(run_id=run_identifier, status=RunStatus.NOOP)
         github = GitHubCLI(token=credentials.github_token)
-        github.auth_status()
-        info = github.repository_info(workspace.target)
+        with _publication_progress("Проверка доступа к GitHub", "Checking GitHub access"):
+            github.auth_status()
+            info = github.repository_info(workspace.target)
         github_publisher = GitHubPublisher(git, github)
         publication: dict[str, Any]
         fork = workspace.target
         remote = "origin"
         if not direct_push:
-            fork = workspace.target if info.can_write else github.ensure_fork(workspace.target)
-            if fork != workspace.target:
-                remote = "mojilex-fork"
-                remotes = git.run("remote", check=False).stdout.splitlines()
-                if remote not in remotes:
-                    git.run("remote", "add", remote, f"https://github.com/{fork}.git")
-        prepared = git_publisher.reconcile_remote_branch(
-            prepared,
-            remote=remote,
-            path_is_allowed=_submit_path_allowed,
-        )
+            with _publication_progress(
+                "Подготовка репозитория для отправки", "Preparing the publication repository"
+            ):
+                fork = workspace.target if info.can_write else github.ensure_fork(workspace.target)
+                if fork != workspace.target:
+                    remote = "mojilex-fork"
+                    remotes = git.run("remote", check=False).stdout.splitlines()
+                    if remote not in remotes:
+                        git.run("remote", "add", remote, f"https://github.com/{fork}.git")
+        with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+            prepared = git_publisher.reconcile_remote_branch(
+                prepared,
+                remote=remote,
+                path_is_allowed=_submit_path_allowed,
+            )
         commit_sha = prepared.commit_sha
         if direct_push:
-            required = github.required_checks(workspace.target, config.repository.base_branch)
-            bypass = github.has_direct_push_bypass(workspace.target, config.repository.base_branch)
+            with _publication_progress(
+                "Проверка правил публикации GitHub", "Checking GitHub publication rules"
+            ):
+                required = github.required_checks(workspace.target, config.repository.base_branch)
+                bypass = github.has_direct_push_bypass(
+                    workspace.target, config.repository.base_branch
+                )
             user_confirmed = _confirm_direct_push(
                 confirmation,
                 git,
@@ -5531,9 +5558,10 @@ async def _publish(
     if config.repository.publish == "local" and not options.direct_push:
         return {"mode": "local", "path": str(workspace.root)}
     github = GitHubCLI(token=github_token)
-    github.auth_status()
-    target = workspace.target
-    info = github.repository_info(target)
+    with _publication_progress("Проверка доступа к GitHub", "Checking GitHub access"):
+        github.auth_status()
+        target = workspace.target
+        info = github.repository_info(target)
     branch = make_import_branch(
         pack_name=sources[0].native_id if len(sources) == 1 else None,
         run_id=run_id,
@@ -5545,14 +5573,15 @@ async def _publish(
         message = f"data(telegram): update {len(sources)} custom emoji packs"
     else:
         message = "data(telegram): update verified source availability"
-    prepared = publisher.prepare_commit(
-        paths=tuple(str(path) for path in paths),
-        message=message,
-        branch=branch,
-        base_revision="HEAD",
-        identity=_configured_git_identity(config),
-        guard=guard,
-    )
+    with _publication_progress("Подготовка коммита", "Preparing the commit"):
+        prepared = publisher.prepare_commit(
+            paths=tuple(str(path) for path in paths),
+            message=message,
+            branch=branch,
+            base_revision="HEAD",
+            identity=_configured_git_identity(config),
+            guard=guard,
+        )
     if prepared is None:
         return {"mode": "local", "status": "noop"}
     service = GitHubPublisher(git, github)
@@ -5586,22 +5615,26 @@ async def _publish(
         record_publication(intent)
 
     if options.direct_push:
-        _validate_previous_candidate_ref(
-            previous_publication,
-            prepared,
-            git=git,
-            mode="direct",
-            remote="origin",
-            base_branch=config.repository.base_branch,
-        )
-        prepared = publisher.reconcile_remote_branch(
-            prepared,
-            remote="origin",
-            path_is_allowed=_submit_path_allowed,
-        )
+        with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+            _validate_previous_candidate_ref(
+                previous_publication,
+                prepared,
+                git=git,
+                mode="direct",
+                remote="origin",
+                base_branch=config.repository.base_branch,
+            )
+            prepared = publisher.reconcile_remote_branch(
+                prepared,
+                remote="origin",
+                path_is_allowed=_submit_path_allowed,
+            )
         persist_intent(prepared, remote="origin")
-        required = github.required_checks(target, config.repository.base_branch)
-        bypass = github.has_direct_push_bypass(target, config.repository.base_branch)
+        with _publication_progress(
+            "Проверка правил публикации GitHub", "Checking GitHub publication rules"
+        ):
+            required = github.required_checks(target, config.repository.base_branch)
+            bypass = github.has_direct_push_bypass(target, config.repository.base_branch)
         user_confirmed = _confirm_direct_push(
             options.confirmation,
             git,
@@ -5629,40 +5662,42 @@ async def _publish(
     fork = target
     fork_remote = "origin"
     if not info.can_write:
-        login, _ = github.current_user()
-        expected_fork = RepositoryRef(owner=login, name=target.name)
-        fork_remote = "mojilex-fork"
-        if not _same_publication_attempt(
+        with _publication_progress("Подготовка форка на GitHub", "Preparing the GitHub fork"):
+            login, _ = github.current_user()
+            expected_fork = RepositoryRef(owner=login, name=target.name)
+            fork_remote = "mojilex-fork"
+            if not _same_publication_attempt(
+                previous_publication,
+                prepared,
+                mode="pr",
+                remote=fork_remote,
+                base_branch=config.repository.base_branch,
+            ):
+                persist_intent(prepared, remote=fork_remote)
+            fork = github.ensure_fork(target)
+            if fork != expected_fork:
+                raise CommandError(
+                    "GIT_CONFLICT",
+                    "GitHub created or selected a different fork than the publication intent.",
+                    hint="Inspect the authenticated GitHub account and retry the same run.",
+                )
+            existing = git.run("remote", check=False).stdout.splitlines()
+            if fork_remote not in existing:
+                git.run("remote", "add", fork_remote, f"https://github.com/{fork}.git")
+    with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+        _validate_previous_candidate_ref(
             previous_publication,
             prepared,
+            git=git,
             mode="pr",
             remote=fork_remote,
             base_branch=config.repository.base_branch,
-        ):
-            persist_intent(prepared, remote=fork_remote)
-        fork = github.ensure_fork(target)
-        if fork != expected_fork:
-            raise CommandError(
-                "GIT_CONFLICT",
-                "GitHub created or selected a different fork than the publication intent.",
-                hint="Inspect the authenticated GitHub account and retry the same run.",
-            )
-        existing = git.run("remote", check=False).stdout.splitlines()
-        if fork_remote not in existing:
-            git.run("remote", "add", fork_remote, f"https://github.com/{fork}.git")
-    _validate_previous_candidate_ref(
-        previous_publication,
-        prepared,
-        git=git,
-        mode="pr",
-        remote=fork_remote,
-        base_branch=config.repository.base_branch,
-    )
-    prepared = publisher.reconcile_remote_branch(
-        prepared,
-        remote=fork_remote,
-        path_is_allowed=_submit_path_allowed,
-    )
+        )
+        prepared = publisher.reconcile_remote_branch(
+            prepared,
+            remote=fork_remote,
+            path_is_allowed=_submit_path_allowed,
+        )
     persist_intent(prepared, remote=fork_remote)
     title = message
     body = _pull_request_body(sources, totals, config, run_id, review_routing)
@@ -5763,25 +5798,28 @@ def repository_workspace(
     )
     with tempfile.TemporaryDirectory(prefix="mojilex-repository-") as raw:
         root = Path(raw) / reference.name
-        with git_subprocess_environment(github_token) as environment:
-            completed = subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--filter=blob:none",
-                    "--no-tags",
-                    "--single-branch",
-                    "--branch",
-                    base_branch,
-                    f"https://github.com/{reference}.git",
-                    str(root),
-                ],
-                capture_output=True,
-                check=False,
-                timeout=120,
-                shell=False,
-                env=environment,
-            )
+        with _publication_progress(
+            "Загрузка репозитория из GitHub", "Downloading the repository from GitHub"
+        ):
+            with git_subprocess_environment(github_token) as environment:
+                completed = subprocess.run(
+                    [
+                        "git",
+                        "clone",
+                        "--filter=blob:none",
+                        "--no-tags",
+                        "--single-branch",
+                        "--branch",
+                        base_branch,
+                        f"https://github.com/{reference}.git",
+                        str(root),
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=120,
+                    shell=False,
+                    env=environment,
+                )
         if completed.returncode != 0:
             raise CommandError(
                 "GIT_CONFLICT",

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from pydantic_core.core_schema import ErrorType
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -53,11 +54,121 @@ class _CommandContext:
     progress_view: RenderableType | None = None
     progress_note: str = ""
     progress_paused: bool = False
+    operations: list[tuple[str, float]] = field(default_factory=list)
+    operation_live: Live | None = None
+    operation_spinner: Spinner = field(default_factory=lambda: Spinner("dots"))
+    prompt_depth: int = 0
 
 
 _COMMAND_CONTEXT: ContextVar[_CommandContext | None] = ContextVar(
     "mojilex_command_context", default=None
 )
+
+
+def _operation_view(context: _CommandContext) -> RenderableType:
+    table = Table.grid(padding=(0, 1))
+    operations = tuple(context.operations)
+    if operations:
+        label, started = operations[-1]
+        elapsed = int(time.monotonic() - started)
+        table.add_row(
+            context.operation_spinner,
+            Text(label),
+            Text(f"{elapsed // 60:02d}:{elapsed % 60:02d}", style="dim"),
+        )
+    return table
+
+
+def _stop_operation_live(context: _CommandContext) -> None:
+    if context.operation_live is not None:
+        context.operation_live.stop()
+        context.operation_live = None
+
+
+def _resume_operation_live(context: _CommandContext) -> None:
+    if (
+        not context.operations
+        or context.quiet
+        or context.json_output
+        or context.progress_paused
+        or context.prompt_depth
+        or context.live is not None
+    ):
+        return
+    console = Console(stderr=True, no_color=context.no_color)
+    if not console.is_terminal or console.is_dumb_terminal:
+        return
+    if context.operation_live is None:
+        context.operation_live = Live(
+            get_renderable=lambda: _operation_view(context),
+            console=console,
+            auto_refresh=True,
+            refresh_per_second=4,
+            transient=True,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        )
+        context.operation_live.start(refresh=True)
+    else:
+        context.operation_live.refresh()
+
+
+@contextmanager
+def operation_progress(label: str) -> Iterator[None]:
+    """Show activity and elapsed time even while a synchronous subprocess blocks."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.quiet or context.json_output:
+        yield
+        return
+    safe_label = ui_text(str(redact(label)))
+    context.operations.append((safe_label, time.monotonic()))
+    try:
+        _resume_operation_live(context)
+        if context.operation_live is None and context.live is None:
+            report_progress(safe_label)
+        yield
+    finally:
+        context.operations.pop()
+        if context.operations:
+            _resume_operation_live(context)
+        else:
+            _stop_operation_live(context)
+
+
+@contextmanager
+def suspend_progress() -> Iterator[None]:
+    """Do not redraw or animate over a credential or confirmation prompt."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None:
+        yield
+        return
+    previous = context.progress_paused
+    context.prompt_depth += 1
+    pause_live_progress(True)
+    try:
+        yield
+    finally:
+        context.prompt_depth -= 1
+        pause_live_progress(previous)
+
+
+def _command_activity(command: str) -> str:
+    ru = current_ui_language() == "ru"
+    labels = {
+        "publish": ("Публикация на GitHub", "Publishing to GitHub"),
+        "submit": ("Подготовка и отправка данных", "Preparing and submitting data"),
+        "import": ("Загрузка пака", "Importing pack"),
+        "describe": ("Подготовка анализа", "Preparing analysis"),
+        "add": ("Обработка пака", "Processing pack"),
+        "resume": ("Восстановление сохранённой обработки", "Resuming saved processing"),
+        "gallery": ("Подготовка галереи", "Preparing gallery"),
+        "validate": ("Проверка данных", "Validating data"),
+        "doctor": ("Проверка подключений и инструментов", "Checking connections and tools"),
+        "build-index": ("Сборка поискового индекса", "Building search index"),
+        "update": ("Проверка обновлений пака", "Checking pack updates"),
+        "init": ("Подготовка настроек и инструментов", "Preparing settings and tools"),
+    }
+    return labels.get(command, ("Выполнение " + command, "Running " + command))[0 if ru else 1]
 
 
 def report_run_id(run_id: str) -> None:
@@ -74,6 +185,9 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
 
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or (verbose and not context.verbose):
+        return
+    if context.operation_live is not None and not context.progress_paused:
+        context.operation_live.console.print(ui_text(str(redact(message))), markup=False)
         return
     if (
         context.progress_paused
@@ -112,6 +226,7 @@ def update_live_progress(view: RenderableType) -> bool:
     context.progress_view = view
     if context.progress_paused:
         return True
+    _stop_operation_live(context)
     if context.live is None:
         context.live = Live(
             view,
@@ -131,10 +246,14 @@ def pause_live_progress(paused: bool) -> None:
     context = _COMMAND_CONTEXT.get()
     if context is None:
         return
-    context.progress_paused = paused
-    if paused and context.live is not None:
+    context.progress_paused = paused or context.prompt_depth > 0
+    if context.progress_paused:
+        _stop_operation_live(context)
+    if context.progress_paused and context.live is not None:
         context.live.stop()
         context.live = None
+    if not context.progress_paused:
+        _resume_operation_live(context)
 
 
 def finish_live_progress() -> None:
@@ -149,6 +268,7 @@ def finish_live_progress() -> None:
     context.progress_view = None
     context.progress_note = ""
     context.progress_paused = False
+    _resume_operation_live(context)
 
 
 class CommandError(RuntimeError):
@@ -227,7 +347,9 @@ def require_confirmation(
             "This sensitive operation requires explicit confirmation.",
             hint="Rerun with --yes after reviewing the exact target.",
         )
-    if not ui_confirm(message, default=False):
+    with suspend_progress():
+        confirmed = ui_confirm(message, default=False)
+    if not confirmed:
         raise CommandError(
             "CONFIG_INVALID",
             "Operation was not confirmed.",
@@ -418,7 +540,28 @@ def execute(
     )
     context_token = _COMMAND_CONTEXT.set(context)
     try:
-        command_result = action()
+        if command in {
+            "add",
+            "import",
+            "describe",
+            "publish",
+            "submit",
+            "resume",
+            "update",
+            "validate",
+            "build-index",
+            "gallery",
+            "doctor",
+            "dedupe scan",
+            "benchmark-model",
+            "benchmark-dedupe",
+            "cache prune",
+            "init",
+        }:
+            with operation_progress(_command_activity(command)):
+                command_result = action()
+        else:
+            command_result = action()
         collector = _RESULT_COLLECTOR.get()
         if collector is not None:
             collector.append(command_result)
@@ -472,6 +615,7 @@ def execute(
         )
     finally:
         finish_live_progress()
+        _stop_operation_live(context)
         _COMMAND_CONTEXT.reset(context_token)
 
     if effective_json:

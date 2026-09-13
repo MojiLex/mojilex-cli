@@ -44,7 +44,7 @@ def test_release_retains_pending_canonical_records_until_search_mapping_is_compl
     _set_mapping(dataset, complete=complete, approved=approved)
     output = tmp_path / "dist"
 
-    before = _tree_bytes(dataset)
+    before = _tree_bytes(dataset, include_transaction_lock=False)
     _build(dataset, output)
     canonical = json.loads((output / "emojis.jsonl").read_bytes())
     active = json.loads((output / "emojis-active.jsonl").read_bytes())
@@ -59,7 +59,7 @@ def test_release_retains_pending_canonical_records_until_search_mapping_is_compl
             assert json.loads(search)["semantic"]["concept_ids"] == ["animal.cat"]
         else:
             assert search == b""
-    assert _tree_bytes(dataset) == before
+    assert _tree_bytes(dataset, include_transaction_lock=False) == before
 
 
 def test_rebuild_removes_stale_search_rows_without_discarding_pending_records(

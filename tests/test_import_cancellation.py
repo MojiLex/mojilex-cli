@@ -24,6 +24,9 @@ from test_pipeline_resume_cache import (
 async def test_cancelled_import_preserves_completed_item_and_resumes(tmp_path_factory, monkeypatch):
     tmp_path = tmp_path_factory.mktemp("ic")
     snapshot = write_fixture(tmp_path / "data")
+    (snapshot.root / ".gitignore").write_text(".mojilex/\n", encoding="utf-8")
+    # Exercise the persistent POSIX lock artifact on Windows too.
+    (snapshot.root / ".mojilex" / "locks" / "dataset-transaction-v1.lock").touch()
     for args in (
         ("init", "-b", "main"),
         ("add", "."),

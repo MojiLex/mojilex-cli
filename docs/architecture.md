@@ -7,7 +7,12 @@ pages use explicit run selection; a separate unfinished run is shown separately.
 Menu refresh preserves the selected repository. Browsing does not mutate
 checkpoints, cache entries, review decisions or publication state. Browser galleries
 embed only checksum-verified retained PNGs and escaped text, with no external assets.
-TTY progress uses Rich Live; pipes and JSON preserve line-oriented diagnostics.
+TTY progress uses Rich Live. Counted work shows completed items; operations with
+unknown duration show an animated activity indicator, the current stage and elapsed
+time. Publication reports validation, repository preparation, commit, push and PR
+creation separately. Animation continues during blocking network and Git calls and
+pauses for credential and confirmation prompts. Pipes keep stage diagnostics;
+quiet and JSON modes do not emit animation.
 Human settings edits validate the effective configuration and atomically update
 only the selected scalar while preserving unrelated TOML and comments.
 

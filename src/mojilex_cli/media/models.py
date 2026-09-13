@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mojilex_cli.analysis import DeterministicMediaAnalysis
 
+from .unix_worker import HARD_MAX_WORKER_MEMORY as HARD_MAX_WORKER_MEMORY
+
 MIB = 1024 * 1024
 HARD_MAX_FILE_BYTES = 20 * MIB
 HARD_MAX_TGS_JSON_BYTES = 8 * MIB
@@ -16,7 +18,6 @@ HARD_MAX_PIXELS = 16_000_000
 HARD_MAX_DURATION_MS = 10_000
 HARD_MAX_FRAMES = 16
 HARD_MAX_WORKER_SECONDS = 30.0
-HARD_MAX_WORKER_MEMORY = 512 * MIB
 HARD_MAX_RUN_TEMP_BYTES = 2 * 1024**3
 PIPELINE_VERSION = "1.0.0"
 

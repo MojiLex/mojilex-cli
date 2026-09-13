@@ -78,7 +78,7 @@ def test_release_includes_unreviewed_content_and_preserves_consumer_labels(
     for path, payload in snapshot.to_files().items():
         writer.stage_bytes(path, payload)
     writer.commit()
-    before = _tree_bytes(dataset)
+    before = _tree_bytes(dataset, include_transaction_lock=False)
 
     assert _publishable(emoji)
     output = tmp_path / "dist"
@@ -96,7 +96,7 @@ def test_release_includes_unreviewed_content_and_preserves_consumer_labels(
         assert row["content"] == active["content"]
         assert row["review"]["status"] == "unreviewed"
         assert row["review"]["attested"] is False
-    assert _tree_bytes(dataset) == before
+    assert _tree_bytes(dataset, include_transaction_lock=False) == before
 
 
 @pytest.mark.parametrize("status", ["changes_requested", "rejected"])

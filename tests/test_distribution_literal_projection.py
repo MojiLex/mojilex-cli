@@ -42,7 +42,7 @@ def test_all_canonical_literal_kinds_project_to_the_existing_search_schema(tmp_p
     for path, payload in snapshot.to_files().items():
         writer.stage_bytes(path, payload)
     writer.commit()
-    before = _tree_bytes(dataset)
+    before = _tree_bytes(dataset, include_transaction_lock=False)
     output = tmp_path / "dist"
     _build(dataset, output)
     canonical = json.loads((output / "emojis.jsonl").read_bytes())
@@ -68,4 +68,4 @@ def test_all_canonical_literal_kinds_project_to_the_existing_search_schema(tmp_p
             assert {key: value for key, value in projected.items() if key != "kind"} == {
                 key: value for key, value in original.items() if key not in {"kind", "media_refs"}
             }
-    assert _tree_bytes(dataset) == before
+    assert _tree_bytes(dataset, include_transaction_lock=False) == before

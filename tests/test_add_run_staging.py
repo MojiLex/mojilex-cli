@@ -31,6 +31,9 @@ def saved_add(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     snapshot = write_fixture(tmp_path / "source")
     root = snapshot.root
+    (root / ".gitignore").write_text(".mojilex/\n", encoding="utf-8")
+    # Exercise the persistent POSIX lock artifact on Windows too.
+    (root / ".mojilex" / "locks" / "dataset-transaction-v1.lock").touch()
     shutil.copytree(Path(runner.__file__).parents[1] / "schemas" / "v1", root / "schemas" / "v1")
     _git(root, "init", "--initial-branch=main")
     _git(root, "add", ".")

@@ -13,9 +13,16 @@ from mojilex_cli.i18n import (
 )
 
 
+@pytest.mark.parametrize("force_color", [False, True])
 def test_russian_help_describes_every_command(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    force_color: bool,
 ) -> None:
+    if force_color:
+        monkeypatch.setenv("FORCE_COLOR", "1")
+    else:
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
     command = typer.main.get_command(app)
     localize_command_tree(command, "ru")
 
@@ -33,7 +40,7 @@ def test_russian_help_describes_every_command(
                 windows_expand_args=False,
             )
 
-    output = capsys.readouterr().out
+    output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", capsys.readouterr().out)
     assert captured_exit.value.code == 0
     assert "Команды" in output
     assert "Проверить черновик" in output
@@ -49,7 +56,7 @@ def test_russian_help_describes_every_command(
     assert [output.index(title) for title in panel_titles] == sorted(
         output.index(title) for title in panel_titles
     )
-    commands = re.findall(r"(?m)^\s*│\s+(list|show|import|describe|publish)\s", output)
+    commands = re.findall(r"(?m)^\s*[│|]\s+(list|show|import|describe|publish)\s", output)
     assert commands == ["list", "show", "import", "describe", "publish"]
 
 

@@ -589,6 +589,8 @@ def test_load_fails_closed_with_explicit_diagnostic_when_lock_storage_is_unavail
 ) -> None:
     root = tmp_path / "dataset"
     write_fixture(root)
+    # POSIX filelock keeps its inode after release; Windows removes it.
+    (root / ".mojilex" / "locks" / "dataset-transaction-v1.lock").unlink(missing_ok=True)
     (root / ".mojilex" / "locks").rmdir()
     (root / ".mojilex").rmdir()
     real_mkdir = Path.mkdir

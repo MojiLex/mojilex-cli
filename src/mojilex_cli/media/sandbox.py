@@ -91,7 +91,12 @@ class SafeMediaWorker:
         environment = _worker_environment(source.parent)
         kwargs: dict[str, Any] = {}
         if os.name != "nt":
-            kwargs["preexec_fn"] = _unix_limits(self.limits.worker_memory_bytes)
+            command = [
+                sys.executable,
+                str(Path(__file__).with_name("unix_worker.py")),
+                str(self.limits.worker_memory_bytes),
+                *command[3:],
+            ]
             kwargs["start_new_session"] = True
         try:
             process = subprocess.Popen(
@@ -133,7 +138,9 @@ class SafeMediaWorker:
             detail = stderr.decode("utf-8", errors="replace")[:500]
             # Worker has no secrets or URLs; still avoid leaking local paths.
             detail = detail.replace(str(source), "<media>").replace(str(source.parent), "<temp>")
-            if "required" in detail and ("ffmpeg" in detail or "rlottie" in detail):
+            if "isolated media worker limits unavailable" in detail or (
+                "required" in detail and ("ffmpeg" in detail or "rlottie" in detail)
+            ):
                 raise MediaDependencyError(detail)
             raise MediaRenderError(detail or "media worker failed")
         try:
@@ -210,24 +217,6 @@ def _worker_environment(temp_dir: Path) -> dict[str, str]:
         if name in os.environ:
             result[name] = os.environ[name]
     return result
-
-
-def _unix_limits(memory_bytes: int) -> Callable[[], None]:
-    def apply() -> None:
-        import resource
-
-        memory = min(memory_bytes, HARD_MAX_WORKER_MEMORY)
-        resource_api = cast(Any, resource)
-        set_limit = resource_api.setrlimit
-        for limit_name in ("RLIMIT_AS", "RLIMIT_DATA"):
-            if hasattr(resource_api, limit_name):
-                set_limit(getattr(resource_api, limit_name), (memory, memory))
-        set_limit(resource_api.RLIMIT_CPU, (30, 30))
-        # The large lossless TGS transport uses a pipe; generated files remain bounded.
-        set_limit(resource_api.RLIMIT_FSIZE, (64 * 1024 * 1024, 64 * 1024 * 1024))
-        set_limit(resource_api.RLIMIT_NOFILE, (64, 64))
-
-    return apply
 
 
 def _windows_kernel32() -> Any:
