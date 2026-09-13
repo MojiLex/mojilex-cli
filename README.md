@@ -2,20 +2,37 @@
 
 ## Everyday commands
 
-After setup, use saved pack names instead of internal paths:
+After setup, run `mojilex` to open the terminal menu. Use arrows to choose,
+Enter to open, and Esc to go back. My packs separates ready descriptions from
+another unfinished operation. Adding a URL downloads and analyzes locally;
+GitHub publication is a separate action. Unknown GitHub status is never shown
+as confirmed publication.
+
+Direct commands remain available:
 
 ```console
 mojilex list
 mojilex show NewsEmoji
-mojilex review NewsEmoji
+mojilex gallery NewsEmoji
+mojilex settings
 mojilex publish NewsEmoji --local
 mojilex publish NewsEmoji
 mojilex resume NewsEmoji
 ```
 
-`show` displays saved descriptions, motion, usage, tags, and content warnings in
-the terminal without AI requests. `review` is optional browsing, with no approval
-or status mutation. `publish --local` validates without upload; `publish` creates
+`show` opens a searchable terminal list with a language switch and item details.
+Use `show --all` to print every field. Pipes and JSON retain non-interactive output.
+`gallery` (also `show --browser`) opens a standalone local HTML gallery with saved
+previews, search, Russian descriptions and expandable details. Missing retained
+frames show a placeholder; viewing never downloads media or calls AI. JSON mode
+does not open a browser. `review` remains a compatible optional browsing command,
+hidden from basic help. `--help-all` lists all advanced commands.
+
+`settings` displays and edits ordinary analysis settings, limits and retry rules
+in a terminal. Environment overrides remain authoritative, saved run settings
+stay unchanged, and language changes apply on the next invocation.
+
+`publish --local` validates without upload; `publish` creates
 a GitHub pull request from the completed draft, without repeating AI analysis.
 Content ratings and warnings remain in the data but never require manual approval,
 block publication, or trigger model escalation. Missing model qualifications do not
@@ -30,9 +47,11 @@ Ambiguous names across repositories/source groups require an explicit Run ID fro
 `list`. Commands support `--json`; existing Run IDs, `submit`, and explicit
 `review ID approve` remain supported.
 
-Long-running `add`, `import`, `describe`, and `resume` operations report completed
-items, percentage, errors, elapsed time, and active download/processing/AI phases.
-A heartbeat repeats every 5 seconds while waiting; elapsed time never counts as
+Long-running `add`, `import`, `describe`, and `resume` operations show one updating
+terminal panel with completed items, processing, retries, remaining failures and
+elapsed time. AI analysis includes the shared request budget. Prompts pause redraw.
+Piped/JSON callers retain line logs. A heartbeat repeats every 5 seconds while
+waiting; elapsed time never counts as
 completed work. Media failures stop queued jobs while already active jobs finish
 safely. Imports checkpoint each completed file, so `mojilex resume RUN_ID` checks
 retained frame hashes and source identity, skips completed downloads/renders, and

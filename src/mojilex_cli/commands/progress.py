@@ -1,22 +1,40 @@
 """Bounded human progress on stderr, including heartbeats during slow requests."""
 
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import Counter
+from collections.abc import Callable
 from contextlib import suppress
+
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from mojilex_cli.i18n import current_ui_language
 
-from .runtime import report_progress
+from .runtime import (
+    finish_live_progress,
+    pause_live_progress,
+    report_progress,
+    update_live_progress,
+)
 
 
 class BatchProgress:
     """Track actual completions; never present an elapsed timer as completed work."""
 
     def __init__(
-        self, label: str, total: int, *, interval: float = 5.0, batch_total: int | None = None
+        self,
+        label: str,
+        total: int,
+        *,
+        interval: float = 5.0,
+        batch_total: int | None = None,
+        request_budget: Callable[[], tuple[int, int]] | None = None,
     ) -> None:
         self.label = label
         self.total = total
@@ -32,6 +50,8 @@ class BatchProgress:
         self.last_completion = self.started
         self.last_report = self.started
         self._heartbeat: asyncio.Task[None] | None = None
+        self.retry_events = 0
+        self.request_budget = request_budget
 
     async def __aenter__(self) -> BatchProgress:
         self._report()
@@ -44,10 +64,15 @@ class BatchProgress:
             with suppress(asyncio.CancelledError):
                 await self._heartbeat
         self._report(interrupted=exc_type is not None)
+        finish_live_progress()
 
     def phase(self, key: str, phase: str, *, count: int | None = None) -> None:
+        if phase in {"retry", "transport_retry", "recovery"}:
+            self.retry_events += 1
         self.active[key] = phase
         self.active_counts[key] = count if count is not None else self.active_counts.get(key, 1)
+        pause_live_progress("approval" in self.active.values())
+        self._report_live()
 
     def stop_queue(self) -> None:
         self.queue_stopped = True
@@ -62,6 +87,7 @@ class BatchProgress:
     def finish(self, key: str, *, count: int = 1, failed: bool = False) -> None:
         self.active.pop(key, None)
         self.active_counts.pop(key, None)
+        pause_live_progress("approval" in self.active.values())
         if failed:
             self.failed += count
         else:
@@ -77,6 +103,9 @@ class BatchProgress:
             self._report()
 
     def _report(self, *, interrupted: bool = False) -> None:
+        if self._report_live(interrupted=interrupted):
+            self.last_report = time.monotonic()
+            return
         now = time.monotonic()
         elapsed = int(now - self.started)
         idle = int(now - self.last_completion)
@@ -127,3 +156,36 @@ class BatchProgress:
             text += " | остановлено" if ru else " | stopped"
         report_progress(text)
         self.last_report = now
+
+    def _report_live(self, *, interrupted: bool = False) -> bool:
+        ru = current_ui_language() == "ru"
+        elapsed = int(time.monotonic() - self.started)
+        active = sum(self.active_counts.values())
+        retrying = sum(
+            self.active_counts.get(key, 0)
+            for key, phase in self.active.items()
+            if phase in {"retry", "transport_retry", "recovery"}
+        )
+        pending = max(0, self.total - self.completed - self.failed - active)
+        table = Table.grid(padding=(0, 3))
+        rows = [
+            ("Готово" if ru else "Completed", f"{self.completed} / {self.total}"),
+            ("Обрабатывается" if ru else "Processing", str(max(0, active - retrying))),
+            ("Ожидает повтора" if ru else "Retrying", str(retrying)),
+            ("Не начато" if ru else "Not started", str(pending)),
+        ]
+        if self.retry_events:
+            rows.append(("Повторных попыток" if ru else "Retry attempts", str(self.retry_events)))
+        if self.failed:
+            rows.append(("Осталось с ошибкой" if ru else "Unresolved failures", str(self.failed)))
+        if self.request_budget is not None:
+            used, limit = self.request_budget()
+            rows.append(("Запросы к ИИ" if ru else "AI requests", f"{used} / {limit}"))
+        rows.append(("Прошло" if ru else "Elapsed", f"{elapsed // 60:02d}:{elapsed % 60:02d}"))
+        for label, value in rows:
+            table.add_row(Text(label), Text(value))
+        if interrupted or self.queue_stopped:
+            table.add_row(Text("Остановлено" if ru else "Stopped", style="yellow"), Text(""))
+        elif self.completed == self.total:
+            table.add_row(Text("Готово" if ru else "Done", style="green"), Text(""))
+        return update_live_progress(Panel(table, title=Text(self.label), expand=False))

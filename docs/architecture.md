@@ -1,5 +1,16 @@
 # Architecture
 
+The terminal menu delegates to the same CLI commands, credentials and budget
+checks as direct usage. Scoped command-result capture binds import-to-describe
+navigation to the exact newly imported run, never a second name lookup. Pack
+pages use explicit run selection; a separate unfinished run is shown separately.
+Menu refresh preserves the selected repository. Browsing does not mutate
+checkpoints, cache entries, review decisions or publication state. Browser galleries
+embed only checksum-verified retained PNGs and escaped text, with no external assets.
+TTY progress uses Rich Live; pipes and JSON preserve line-oriented diagnostics.
+Human settings edits validate the effective configuration and atomically update
+only the selected scalar while preserving unrelated TOML and comments.
+
 Content ratings and warnings are retained as metadata and do not require manual
 approval. Missing model qualifications are allowed; a declared qualification must
 still match its registry entry and generation context. Negative explicit review

@@ -105,6 +105,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
 "src/mojilex_cli/i18n.py" = ["RUF001"]
+"src/mojilex_cli/commands/interactive.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.11"

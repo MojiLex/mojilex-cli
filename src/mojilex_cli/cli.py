@@ -44,7 +44,8 @@ from mojilex_cli.i18n import text as ui_text
 app = typer.Typer(
     name="mojilex",
     help="Build, validate, and publish the media-free MojiLex emoji dataset.",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
     pretty_exceptions_enable=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -141,6 +142,14 @@ def uninstall_command(*, keep_data: bool) -> CommandResult:
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"mojilex {__version__}")
+        raise typer.Exit()
+
+
+def _help_all_callback(ctx: typer.Context, value: bool) -> None:
+    if value:
+        for command in getattr(ctx.command, "commands", {}).values():
+            command.hidden = False
+        typer.echo(ctx.get_help())
         raise typer.Exit()
 
 
@@ -244,8 +253,25 @@ def _secret_prompt(
     return lambda label: str(typer.prompt(label, hide_input=True, err=True))
 
 
+def _pack_action(action: Callable[[], CommandResult], selectors: Sequence[str]) -> CommandResult:
+    """Attach a usable next-step name without changing execution or saved data."""
+    result = action()
+    from mojilex_cli.commands.packs import _names, _source_name, resolve_pack_run
+
+    names = [name for selector in selectors if (name := _source_name(selector))]
+    if not names and result.run_id:
+        try:
+            names = list(_names(resolve_pack_run(result.run_id, purpose="view")))
+        except (OSError, ValueError, CommandError):
+            pass  # A display hint must never turn a successful operation into failure.
+    if len(set(names)) == 1:
+        result.result.setdefault("pack_name", names[0])
+    return result
+
+
 @app.callback()
 def root(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version."),
@@ -257,8 +283,33 @@ def root(
             help="Human interface language: en or ru. Commands and JSON fields stay unchanged.",
         ),
     ] = None,
+    help_all: Annotated[
+        bool,
+        typer.Option(
+            "--help-all",
+            is_eager=True,
+            callback=_help_all_callback,
+            help="Show all advanced commands.",
+        ),
+    ] = False,
 ) -> None:
     """MojiLex dataset authoring utility."""
+    if ctx.invoked_subcommand is None:
+        from mojilex_cli.commands.interactive import dispatch_command, is_interactive, run_menu
+
+        if machine_output_mode_requested():
+            raise typer.BadParameter("Choose a command, such as list.")
+        if is_interactive():
+            run_menu(dispatch_command)
+        else:
+            typer.echo(ctx.get_help())
+            raise typer.Exit(2)
+
+
+def machine_output_mode_requested() -> bool:
+    from mojilex_cli.commands.runtime import machine_output_requested
+
+    return machine_output_requested()
 
 
 @app.command("init")
@@ -447,14 +498,17 @@ def import_sources(
     execute(
         "import",
         lambda: _with_runtime_secrets(
-            lambda: import_command(
+            lambda: _pack_action(
+                lambda: import_command(
+                    sources,
+                    repo=repo,
+                    platform=platform,
+                    max_items=max_items,
+                    download_concurrency=download_concurrency,
+                    check_media=check_media,
+                    fail_fast=fail_fast,
+                ),
                 sources,
-                repo=repo,
-                platform=platform,
-                max_items=max_items,
-                download_concurrency=download_concurrency,
-                check_media=check_media,
-                fail_fast=fail_fast,
             ),
             names=("TELEGRAM_BOT_TOKEN",),
             prompt=_secret_prompt(
@@ -491,19 +545,22 @@ def describe(
     execute(
         "describe",
         lambda: _with_runtime_secrets(
-            lambda: describe_command(
-                selectors,
-                provider=provider,
-                model=model,
-                ai_concurrency=ai_concurrency,
-                max_ai_requests=max_ai_requests,
-                max_cost_usd=_decimal(max_cost_usd),
-                allow_unknown_cost=allow_unknown_cost,
-                unknown_cost_confirmation=_unknown_cost_callback(
-                    yes=yes,
-                    non_interactive=non_interactive,
-                    json_output=json_output,
+            lambda: _pack_action(
+                lambda: describe_command(
+                    selectors,
+                    provider=provider,
+                    model=model,
+                    ai_concurrency=ai_concurrency,
+                    max_ai_requests=max_ai_requests,
+                    max_cost_usd=_decimal(max_cost_usd),
+                    allow_unknown_cost=allow_unknown_cost,
+                    unknown_cost_confirmation=_unknown_cost_callback(
+                        yes=yes,
+                        non_interactive=non_interactive,
+                        json_output=json_output,
+                    ),
                 ),
+                selectors,
             ),
             names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
             prompt=_secret_prompt(
@@ -536,17 +593,70 @@ def show_pack(
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
+    all_fields: Annotated[bool, typer.Option("--all", help="Print all saved fields.")] = False,
+    browser: Annotated[
+        bool, typer.Option("--browser", help="Open a local browser gallery.")
+    ] = False,
 ) -> None:
     """Read saved descriptions without AI requests."""
+    from mojilex_cli.commands.interactive import browse_descriptions, is_interactive
     from mojilex_cli.commands.packs import show_pack_command
+
+    if browser:
+        gallery(pack, json_output=json_output, quiet=quiet, debug=debug)
+        return
+    interactive = is_interactive() and not (
+        all_fields or json_output or quiet or machine_output_mode_requested()
+    )
 
     execute(
         "show",
-        lambda: show_pack_command(pack),
+        lambda: browse_descriptions(pack) if interactive else show_pack_command(pack),
+        json_output=json_output,
+        quiet=quiet or interactive,
+        debug=debug,
+    )
+
+
+@app.command("gallery")
+def gallery(
+    pack: Annotated[str, typer.Argument(help="Pack name or run ID.")],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """Open saved descriptions and local previews in a browser."""
+    from mojilex_cli.commands.gallery import gallery_command
+
+    execute(
+        "gallery",
+        lambda: gallery_command(
+            pack, open_browser=not (json_output or quiet or machine_output_mode_requested())
+        ),
         json_output=json_output,
         quiet=quiet,
         debug=debug,
     )
+
+
+@app.command("settings")
+def settings(
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    quiet: Annotated[bool, typer.Option("--quiet")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    """View and edit ordinary analysis settings."""
+    from mojilex_cli.commands.interactive import _settings, dispatch_command, is_interactive
+    from mojilex_cli.commands.settings import settings_command
+
+    interactive = is_interactive() and not (json_output or quiet or machine_output_mode_requested())
+
+    def action() -> CommandResult:
+        if interactive:
+            _settings(dispatch_command)
+        return settings_command()
+
+    execute("settings", action, json_output=json_output, quiet=quiet or interactive, debug=debug)
 
 
 @app.command("publish")
@@ -918,7 +1028,7 @@ def resume(
 
     execute(
         "resume",
-        action,
+        lambda: _pack_action(action, [run_id]),
         json_output=json_output,
         quiet=quiet,
         debug=debug,
@@ -938,7 +1048,16 @@ def review(
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
     """Browse a pack; optionally record an explicit review of one emoji."""
+    from mojilex_cli.commands.interactive import is_interactive
     from mojilex_cli.commands.packs import show_pack_command
+
+    if (
+        action is None
+        and is_interactive()
+        and not (json_output or quiet or machine_output_mode_requested())
+    ):
+        show_pack(emoji_id, json_output=json_output, quiet=quiet, debug=debug)
+        return
 
     execute(
         "review",
@@ -1281,6 +1400,11 @@ def _extract_json_flag(argv: Sequence[str]) -> tuple[bool, list[str]]:
 
 def _command_label(argv: Sequence[str]) -> str:
     commands = {
+        "list",
+        "show",
+        "publish",
+        "gallery",
+        "settings",
         "add",
         "benchmark-dedupe",
         "benchmark-model",
@@ -1378,7 +1502,7 @@ def main() -> None:
             return
 
     with use_ui_language(ui_language), machine_output_mode():
-        if any(argument in {"-h", "--help", "--version"} for argument in argv):
+        if any(argument in {"-h", "--help", "--help-all", "--version"} for argument in argv):
             _emit_boundary_error(
                 label,
                 CommandError(

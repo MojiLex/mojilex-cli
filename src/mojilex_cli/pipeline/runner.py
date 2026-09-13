@@ -3011,6 +3011,7 @@ async def _descriptions_for_collection(
         "AI-описания" if current_ui_language() == "ru" else "AI descriptions",
         len(candidates),
         batch_total=len(chunks),
+        request_budget=lambda: (budget.requests_used, budget.max_requests),
     )
     first_failure: BaseException | None = None
     last_deferred: Exception | None = None

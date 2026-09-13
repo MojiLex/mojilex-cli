@@ -21,7 +21,18 @@ _CURRENT_UI_LANGUAGE: ContextVar[UiLanguage] = ContextVar("mojilex_ui_language",
 _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "pack_workflow",
-        ("list", "show", "import", "describe", "publish", "resume", "add", "submit", "update"),
+        (
+            "list",
+            "show",
+            "gallery",
+            "import",
+            "describe",
+            "publish",
+            "resume",
+            "add",
+            "submit",
+            "update",
+        ),
     ),
     (
         "read",
@@ -29,7 +40,7 @@ _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("quality", ("validate", "dedupe", "review", "set-status", "takedown")),
     ("releases", ("snapshot", "build-index", "benchmark-dedupe", "benchmark-model")),
-    ("setup", ("init", "doctor", "config", "cache", "uninstall")),
+    ("setup", ("settings", "init", "doctor", "config", "cache", "uninstall")),
 )
 
 _PANEL_TITLES: dict[str, tuple[str, str]] = {
@@ -42,6 +53,14 @@ _PANEL_TITLES: dict[str, tuple[str, str]] = {
 
 
 _COMMAND_HELP: dict[str, tuple[str, str]] = {
+    "gallery": (
+        "Open a local gallery of saved descriptions and previews.",
+        "Открыть локальную галерею эмодзи с описаниями.",
+    ),
+    "settings": (
+        "View and edit analysis settings and limits.",
+        "Посмотреть и изменить настройки анализа и лимиты.",
+    ),
     "list": ("List saved packs and progress.", "Показать сохранённые паки и прогресс анализа."),
     "show": ("Read saved pack descriptions.", "Показать готовые описания пака без AI-запросов."),
     "publish": (
@@ -50,7 +69,8 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
     ),
     "mojilex": (
         "Build, validate, and publish the media-free MojiLex emoji dataset.",
-        "Собирайте, проверяйте и публикуйте набор данных эмодзи MojiLex без исходных медиа.",
+        "Превращайте эмодзи в текстовые описания. Запустите mojilex без команды, "
+        "чтобы открыть меню. Все команды: mojilex --help-all.",
     ),
     "snapshots": (
         "List local release snapshots and their paths.",
@@ -209,6 +229,9 @@ _COMMAND_HELP: dict[str, tuple[str, str]] = {
 
 
 _PARAMETER_HELP: dict[str, tuple[str, str]] = {
+    "help_all": ("Show all advanced commands.", "Показать все дополнительные команды."),
+    "all_fields": ("Print every saved field.", "Вывести все сохранённые поля сразу."),
+    "browser": ("Open a local browser gallery.", "Открыть локальную галерею в браузере."),
     "version": ("Show the installed version.", "Показать установленную версию."),
     "install_completion": (
         "Install completion for the current shell.",
@@ -650,8 +673,9 @@ def extract_ui_language(
     *,
     environment: Mapping[str, str] | None = None,
     user_path: Path | None = None,
+    project_path: Path | None = None,
 ) -> tuple[UiLanguage, list[str]]:
-    """Extract a global UI language flag from any pre-command position."""
+    """Resolve CLI > environment > project > user > English before loading commands."""
 
     selected: str | None = None
     cleaned: list[str] = []
@@ -679,23 +703,30 @@ def extract_ui_language(
     selected_environment = os.environ if environment is None else environment
     source = selected if selected is not None else selected_environment.get(UI_LANGUAGE_ENV)
     if source is None:
-        source = _saved_ui_language(user_path=user_path) or "en"
+        source = _saved_ui_language(user_path=user_path, project_path=project_path)
+    if source is None:
+        source = "en"
     return normalize_ui_language(source), cleaned
 
 
-def _saved_ui_language(*, user_path: Path | None) -> str | None:
+def _saved_ui_language(*, user_path: Path | None, project_path: Path | None = None) -> str | None:
     if user_path is None:
         from mojilex_cli.config import default_user_config_path
 
         user_path = default_user_config_path()
-    if not user_path.is_file():
-        return None
-    try:
-        with user_path.open("rb") as stream:
-            value = tomllib.load(stream).get("ui_language")
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    return value if isinstance(value, str) else None
+    project_path = Path.cwd() / ".mojilex.toml" if project_path is None else project_path
+    for path in (project_path, user_path):
+        if not path.is_file():
+            continue
+        try:
+            with path.open("rb") as stream:
+                value = tomllib.load(stream).get("ui_language")
+        except (OSError, tomllib.TOMLDecodeError):
+            # Keep help and diagnostics usable; load_config reports invalid config later.
+            continue
+        if isinstance(value, str):
+            return value
+    return None
 
 
 @contextmanager
@@ -782,6 +813,16 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
         _localize_rich_framework(language)
         _group_root_commands(command, language)
     _localize_usage(command)
+    original_help_option = command.get_help_option
+
+    @wraps(original_help_option)
+    def help_option(context: Any) -> Any:
+        option = original_help_option(context)
+        if option is not None:
+            option.help = _PARAMETER_HELP["help"][1 if language == "ru" else 0]
+        return option
+
+    command.get_help_option = help_option
     key = " ".join(path) if path else "mojilex"
     if key in _COMMAND_HELP:
         command.help = _COMMAND_HELP[key][1 if language == "ru" else 0]
@@ -812,6 +853,20 @@ def _group_root_commands(command: Any, language: UiLanguage) -> None:
     for name, child in commands.items():
         if name not in ordered:
             ordered[name] = child
+    basic = {
+        "list",
+        "show",
+        "gallery",
+        "import",
+        "describe",
+        "publish",
+        "resume",
+        "settings",
+        "init",
+        "doctor",
+    }
+    for name, child in ordered.items():
+        child.hidden = name not in basic
     command.commands = ordered
 
 

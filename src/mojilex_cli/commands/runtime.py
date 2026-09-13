@@ -1,5 +1,7 @@
 """Shared command execution, output, and stable error handling."""
 
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
@@ -16,13 +18,15 @@ from typing import Any, TypeVar, get_args
 import typer
 from pydantic import BaseModel, ValidationError
 from pydantic_core.core_schema import ErrorType
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
+from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
 from mojilex_cli.config import ConfigError, redact_text
 from mojilex_cli.dataset import DatasetLoadError, DatasetValidationError
 from mojilex_cli.i18n import confirm as ui_confirm
+from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import (
     ERROR_EXIT_CODES,
@@ -44,6 +48,11 @@ class _CommandContext:
     quiet: bool = False
     verbose: bool = False
     no_color: bool = False
+    json_output: bool = False
+    live: Live | None = None
+    progress_view: RenderableType | None = None
+    progress_note: str = ""
+    progress_paused: bool = False
 
 
 _COMMAND_CONTEXT: ContextVar[_CommandContext | None] = ContextVar(
@@ -66,8 +75,80 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or (verbose and not context.verbose):
         return
+    if (
+        context.progress_paused
+        and context.progress_view is not None
+        and message.startswith(("AI batch ", "AI-пачка "))
+    ):
+        context.progress_note = ui_text(str(redact(message)))
+        return
+    if context.live is not None and not context.progress_paused:
+        safe_message = ui_text(str(redact(message)))
+        if message.startswith(("AI batch ", "AI-пачка ")):
+            context.progress_note = safe_message
+            _refresh_live(context)
+        else:
+            # Keep disclosures and exceptional diagnostics in scrollback.
+            context.live.console.print(safe_message, markup=False)
+        return
     console = Console(stderr=True, no_color=context.no_color)
-    console.print(f"[{context.run_id}] {ui_text(str(redact(message)))}", markup=False)
+    prefix = f"[{context.run_id}] " if context.verbose or not console.is_terminal else ""
+    console.print(f"{prefix}{ui_text(str(redact(message)))}", markup=False)
+
+
+def _refresh_live(context: _CommandContext) -> None:
+    if context.live is not None and context.progress_view is not None:
+        context.live.update(Group(context.progress_view, Text(context.progress_note)), refresh=True)
+
+
+def update_live_progress(view: RenderableType) -> bool:
+    """Use one terminal panel; retain ordinary logs for pipes and JSON callers."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.quiet or context.json_output:
+        return False
+    console = Console(stderr=True, no_color=context.no_color)
+    if not console.is_terminal or console.is_dumb_terminal:
+        return False
+    context.progress_view = view
+    if context.progress_paused:
+        return True
+    if context.live is None:
+        context.live = Live(
+            view,
+            console=console,
+            auto_refresh=False,
+            transient=True,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        )
+        context.live.start(refresh=True)
+    _refresh_live(context)
+    return True
+
+
+def pause_live_progress(paused: bool) -> None:
+    """Keep confirmation prompts visible and free of terminal redraws."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None:
+        return
+    context.progress_paused = paused
+    if paused and context.live is not None:
+        context.live.stop()
+        context.live = None
+
+
+def finish_live_progress() -> None:
+    context = _COMMAND_CONTEXT.get()
+    if context is None:
+        return
+    if context.live is not None:
+        context.live.stop()
+        context.live = None
+    if context.progress_view is not None:
+        Console(stderr=True, no_color=context.no_color).print(context.progress_view)
+    context.progress_view = None
+    context.progress_note = ""
+    context.progress_paused = False
 
 
 class CommandError(RuntimeError):
@@ -106,6 +187,22 @@ class CommandResult:
     errors: list[StructuredError] = field(default_factory=list)
     status: RunStatus = RunStatus.SUCCEEDED
     run_id: str | None = None
+
+
+_RESULT_COLLECTOR: ContextVar[list[CommandResult] | None] = ContextVar(
+    "mojilex_result_collector", default=None
+)
+
+
+@contextmanager
+def capture_command_results() -> Iterator[list[CommandResult]]:
+    """Pass exact completed command identities to an enclosing interactive flow."""
+    results: list[CommandResult] = []
+    token = _RESULT_COLLECTOR.set(results)
+    try:
+        yield results
+    finally:
+        _RESULT_COLLECTOR.reset(token)
 
 
 def new_run_id() -> str:
@@ -316,10 +413,15 @@ def execute(
 
     effective_json = json_output or _MACHINE_JSON_MODE.get()
     run_id = new_run_id()
-    context = _CommandContext(run_id, quiet=quiet, verbose=verbose, no_color=no_color)
+    context = _CommandContext(
+        run_id, quiet=quiet, verbose=verbose, no_color=no_color, json_output=effective_json
+    )
     context_token = _COMMAND_CONTEXT.set(context)
     try:
         command_result = action()
+        collector = _RESULT_COLLECTOR.get()
+        if collector is not None:
+            collector.append(command_result)
         envelope = OutputEnvelope(
             ok=not command_result.errors,
             command=command,
@@ -369,19 +471,23 @@ def execute(
             errors=[error],
         )
     finally:
+        finish_live_progress()
         _COMMAND_CONTEXT.reset(context_token)
 
     if effective_json:
         typer.echo(envelope.to_json())
     elif not quiet or not envelope.ok:
-        _render_human(envelope, no_color=no_color)
+        _render_human(envelope, no_color=no_color, detailed=debug or verbose)
     _ENVELOPE_EMITTED.set(True)
     if envelope.exit_code:
         raise typer.Exit(code=int(envelope.exit_code))
 
 
-def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
+def _render_human(
+    envelope: OutputEnvelope, *, no_color: bool = False, detailed: bool = False
+) -> None:
     console = Console(stderr=not envelope.ok, no_color=no_color)
+    ru = current_ui_language() == "ru"
     if envelope.ok:
         raw_label = str(envelope.status).replace("RunStatus.", "").lower()
         label = ui_text(raw_label)
@@ -400,6 +506,24 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
             console.print(table)
         publication = redact(envelope.publication)
         if isinstance(publication, Mapping):
+            if publication.get("mode") in {"local", "staging"}:
+                console.print(
+                    Text(
+                        "Результат сохранён локально. Эта команда не отправляла его на GitHub."
+                        if ru
+                        else "Results saved locally. This command did not send them to GitHub."
+                    )
+                )
+            elif publication.get("mode") == "pr" and any(
+                publication.get(key) for key in ("pr_url", "pull_request_url", "url")
+            ):
+                console.print(
+                    Text(
+                        "Изменения отправлены в pull request. Слияние на GitHub — отдельный шаг."
+                        if ru
+                        else "Changes sent as a pull request. Merging on GitHub is a separate step."
+                    )
+                )
             for key in ("pr_url", "pull_request_url", "url"):
                 if isinstance(publication.get(key), str):
                     console.print(str(publication[key]), markup=False)
@@ -421,13 +545,128 @@ def _render_human(envelope: OutputEnvelope, *, no_color: bool = False) -> None:
         safe_error = error.as_dict()
         message = ui_text(str(safe_error["message"]))
         hint = ui_text(str(safe_error["hint"]))
+        if error.code == "AI_OUTPUT_INVALID" and not detailed:
+            message = (
+                "Не удалось получить корректное описание от модели."
+                if ru
+                else "The model could not produce a valid description."
+            )
+            hint = (
+                "Откройте список паков: mojilex list. Продолжите нужный пак: mojilex resume ИМЯ."
+                if ru
+                else "Open your packs: mojilex list. Continue a pack: mojilex resume NAME."
+            )
         console.print(f"{error.code}: {message}", style="red", markup=False)
         console.print(f"{ui_text('Hint')}: {hint}", markup=False)
-    console.print(f"{ui_text('Run ID')}: {envelope.run_id}", markup=False)
+    if detailed or not console.is_terminal:
+        console.print(f"{ui_text('Run ID')}: {envelope.run_id}", markup=False)
+    else:
+        console.print(
+            Text(
+                "Подробности ошибки: повторите команду с --debug."
+                if ru
+                else "Error details: rerun the command with --debug."
+            )
+        )
 
 
 def _render_pack_result(console: Console, command: str, result: Mapping[str, Any]) -> bool:
     """Render pack data as readable text, never Python dicts or Rich markup."""
+    ru = current_ui_language() == "ru"
+    if result.get("view") == "settings":
+        table = Table()
+        for label in (
+            ("Настройка", "Значение", "Что означает") if ru else ("Setting", "Value", "Meaning")
+        ):
+            table.add_column(label)
+        for setting in result.get("settings", []):
+            value = setting["value"]
+            display = str(value)
+            if value is None:
+                display = "не задан" if ru else "not set"
+            elif value == "":
+                display = "не настроено" if ru else "not configured"
+            table.add_row(
+                Text(str(setting["label"])),
+                Text(display),
+                Text(str(setting["description"])),
+            )
+        console.print(table)
+        for note in result.get("notes", []):
+            console.print(Text(str(note)))
+        return True
+    if result.get("view") == "setting_updated":
+        console.print(Text(f"{result['label']}: {result['value']}"))
+        console.print(Text("Настройка сохранена." if ru else "Setting saved."))
+        return True
+    if "gallery_path" in result:
+        opened = bool(result.get("browser_opened"))
+        console.print(
+            Text(
+                ("Галерея открыта в браузере." if ru else "Gallery opened in your browser.")
+                if opened
+                else (
+                    "Галерея сохранена. Откройте файл:" if ru else "Gallery saved. Open this file:"
+                )
+            )
+        )
+        counts = result.get("counts", {})
+        if "ready" in counts:
+            console.print(Text(f"{'Описаний' if ru else 'Descriptions'}: {counts['ready']}"))
+        if not opened:
+            console.print(Text(str(result["gallery_path"])))
+        return True
+    if command in {"add", "import", "describe", "resume"} and any(
+        key in result for key in ("sources_processed", "collections_imported", "message")
+    ):
+        if result.get("message"):
+            console.print(Text(ui_text(str(result["message"]))))
+        for key, label in (
+            ("collections_imported", "Загружено паков" if ru else "Packs downloaded"),
+            ("sources_processed", "Обработано паков" if ru else "Packs processed"),
+            ("items_added", "Добавлено эмодзи" if ru else "Emojis added"),
+            ("items_updated", "Обновлено эмодзи" if ru else "Emojis updated"),
+            ("items_unchanged", "Уже готовы" if ru else "Already up to date"),
+            ("ai_requests", "Использовано запросов к ИИ" if ru else "AI requests used"),
+            ("ai_cache_hits", "Взято из кеша" if ru else "Reused cached results"),
+        ):
+            if key in result:
+                console.print(Text(f"{label}: {result[key]}"))
+        if result.get("next"):
+            console.print(Text(str(result["next"])))
+        elif isinstance(result.get("pack_name"), str) and result["pack_name"]:
+            name = result["pack_name"]
+            selector = (
+                name
+                if all(char.isalnum() or char == "_" for char in name)
+                else ("'" + name.replace("'", "''") + "'")
+            )
+            if command == "import":
+                console.print(
+                    Text(
+                        f"{'Создать описания' if ru else 'Create descriptions'}: "
+                        f"mojilex describe {selector}"
+                    )
+                )
+            else:
+                console.print(
+                    Text(f"{'Посмотреть' if ru else 'View results'}: mojilex show {selector}")
+                )
+                console.print(
+                    Text(
+                        f"{'Отправить на GitHub' if ru else 'Send to GitHub'}: "
+                        f"mojilex publish {selector}"
+                    )
+                )
+        else:
+            console.print(
+                Text(
+                    "Паки и следующие действия: mojilex list"
+                    if ru
+                    else "Packs and next steps: mojilex list"
+                )
+            )
+        return True
     if command == "publish":
         if result.get("validated"):
             console.print(ui_text("Validation passed."))
