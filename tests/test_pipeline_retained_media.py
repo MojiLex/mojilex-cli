@@ -109,10 +109,15 @@ async def test_interrupted_media_run_reuses_only_exact_retained_frames(
                     cache_alias_scope=scope,
                     on_item_completed=persist,
                 )
-        assert calls == [item.native_id for item in items[:3]]
-        assert rendered == completed == [item.native_id for item in items[:2]]
+        # A recoverable download failure must not prevent the later valid item
+        # from being processed and durably retained before the run reports it.
+        successful = [items[index].native_id for index in (0, 1, 3)]
+        assert calls == [item.native_id for item in items]
+        assert rendered == completed == successful
         assert all(not path.exists() for path in original_frame_paths)
-        assert set(checkpoint.elements) == {item.native_id for item in items[:2]}
+        assert set(checkpoint.elements) == set(successful)
+        assert progress_objects[-1].completed == 3
+        assert progress_objects[-1].failed == 1
 
         # Reopen durable storage after the original temporary run is gone.
         cache.close()
@@ -120,7 +125,7 @@ async def test_interrupted_media_run_reuses_only_exact_retained_frames(
         retained_root = (
             cache.path.parent / "resume-media" / hashlib.sha256(scope.encode()).hexdigest()
         )
-        assert len(list(retained_root.glob("*/manifest.json"))) == 2
+        assert len(list(retained_root.glob("*/manifest.json"))) == 3
         assert not retained_root.is_relative_to(snapshot.root)
         if change == "tampered_frame":
             key = runner._source_descriptor_sha256(collection.items[0])
@@ -134,7 +139,7 @@ async def test_interrupted_media_run_reuses_only_exact_retained_frames(
         rendered.clear()
         completed.clear()
         adapter.fail_id = None
-        expected_ready = 2 if change == "none" else 1
+        expected_ready = 3 if change == "none" else 2
         first_media_progress_count = []
         original_enter = original_progress.__aenter__
 
@@ -159,13 +164,14 @@ async def test_interrupted_media_run_reuses_only_exact_retained_frames(
                 },
                 on_item_completed=persist,
             )
-            expected_work = [item.native_id for item in items[2:]]
+            expected_work = [items[2].native_id]
             if change != "none":
                 expected_work.insert(0, items[0].native_id)
             assert calls == rendered == completed == expected_work
             assert set(processed) == {item.native_id for item in items}
             assert all(path.is_file() for value in processed.values() for path in value.frame_paths)
             assert processed[items[1].native_id].frame_paths[0].is_relative_to(retained_root)
+            assert processed[items[3].native_id].frame_paths[0].is_relative_to(retained_root)
         assert first_media_progress_count == [expected_ready]
         assert progress_objects[-1].completed == 4
         assert progress_objects[-1].failed == 0
