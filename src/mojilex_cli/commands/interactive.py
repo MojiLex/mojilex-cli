@@ -267,6 +267,9 @@ def _pack_state(selector: str) -> dict[str, Any]:
         "target": checkpoint.target_repository,
         "publishable": checkpoint.command == "describe"
         and checkpoint.status in {"succeeded", "noop"},
+        "analyzable": checkpoint.command == "import"
+        and checkpoint.status in {"succeeded", "noop"}
+        and bool(checkpoint.elements),
         "run_id": checkpoint.run_id,
         "sources": checkpoint.safe_parameters.get("sources", []),
     }
@@ -299,6 +302,11 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                 f"\nСвязанные группы фрагментов: {count}. Сборки — в галерее.",
                 f"\nRelated fragment groups: {count}. Open gallery to view assemblies.",
             )
+        if state["analyzable"]:
+            detail += label(
+                "\nМедиа сохранены. Можно запустить анализ ИИ из этого импорта.",
+                "\nMedia are saved. AI analysis can start from this import.",
+            )
         active = state["unfinished"]
         if active:
             detail += label(
@@ -317,6 +325,11 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
             actions.append("resume")
             titles.append(
                 label("Продолжить незавершённую обработку", "Continue unfinished processing")
+            )
+        if state["analyzable"]:
+            actions.append("describe")
+            titles.append(
+                label("Проанализировать сохранённый импорт с ИИ", "Analyze saved import with AI")
             )
         if state["publishable"]:
             actions.extend(["check", "publish"])
@@ -351,6 +364,10 @@ def _pack_page(selector: str, dispatch: Dispatch) -> None:
                 _invoke(dispatch, ["publish", state["run_id"], "--yes"])
         elif action == "resume":
             _invoke(dispatch, ["resume", active["run_id"]])
+            selector = active["run_id"]
+        elif action == "describe":
+            # The describe command owns the single batch-wide AI approval.
+            _invoke(dispatch, ["describe", state["run_id"]])
             return
         elif action == "refresh":
             sources = state["sources"]
@@ -397,6 +414,11 @@ def _analyze(source: str, dispatch: Dispatch, *, repository: str | None = None) 
     with capture_command_results() as results:
         success = dispatch(arguments)
     if not success:
+        pause()
+        return
+    if results and results[-1].run_id is None and results[-1].status == "noop":
+        # A policy may skip every requested official pack before creating a run.
+        # Its command output already explains the skip; there is nothing to analyze.
         pause()
         return
     if not results or results[-1].run_id is None:

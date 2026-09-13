@@ -59,7 +59,12 @@ class SafeMediaWorker:
             )
         source = source.resolve(strict=True)
         validate_input_file(source, self.limits)
-        if sniff_format(source) != expected_format:
+        actual_format = sniff_format(source)
+        # Telegram's static flag does not distinguish PNG uploads from WebP.
+        # Preserve the actual format and original hash, never relabel its bytes.
+        if expected_format == "webp" and actual_format == "png":
+            expected_format = "png"
+        if actual_format != expected_format:
             raise MediaError("media content does not match its expected format")
         if output_dir.exists():
             raise MediaError("worker output directory must not already exist")
@@ -164,7 +169,7 @@ class SafeMediaWorker:
             tile = payload.get("composition_tile")
             if tile is not None:
                 if (
-                    expected_format != "webp"
+                    expected_format not in {"webp", "png"}
                     or needs_repainting
                     or not isinstance(tile, dict)
                     or set(tile) != {"path", "sha256"}
@@ -180,7 +185,7 @@ class SafeMediaWorker:
                     raise ValueError("composition tile checksum mismatch")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise MediaRenderError("media worker returned an invalid manifest") from exc
-        expected_count = 1 if expected_format == "webp" else self.limits.frames
+        expected_count = 1 if expected_format in {"webp", "png"} else self.limits.frames
         if len(frames) != expected_count or (dark_frames and len(dark_frames) != expected_count):
             raise MediaRenderError("media worker returned an unexpected frame count")
         if expected_dark_render is not None and bool(dark_frames) is not expected_dark_render:

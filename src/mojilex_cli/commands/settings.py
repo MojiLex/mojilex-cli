@@ -50,6 +50,22 @@ class Setting:
 
 
 SETTINGS: dict[str, Setting] = {
+    "official_pack_policy": Setting(
+        ("processing", "official_pack_policy"),
+        "Packs already in the official repository",
+        "ask: one confirmation, Enter means No; skip: omit silently; allow: do not check.",
+        "MOJILEX_OFFICIAL_PACK_POLICY",
+        choices=("ask", "skip", "allow"),
+    ),
+    "render_concurrency": Setting(
+        ("processing", "render_concurrency"),
+        "Parallel media decoders",
+        "CPU-heavy decoders run separately from downloads. Too many can cause timeouts.",
+        "MOJILEX_RENDER_CONCURRENCY",
+        "integer",
+        1,
+        8,
+    ),
     "provider": Setting(
         ("ai", "provider"),
         "AI provider",
@@ -124,6 +140,14 @@ SETTINGS: dict[str, Setting] = {
 }
 
 _RUSSIAN: dict[str, tuple[str, str]] = {
+    "official_pack_policy": (
+        "Паки из официального репозитория",
+        "ask — спросить один раз, Enter означает Нет; skip — пропускать; allow — не проверять.",
+    ),
+    "render_concurrency": (
+        "Параллельные декодеры медиа",
+        "Тяжёлая обработка отдельно от скачиваний. Слишком много декодеров вызывает таймауты.",
+    ),
     "provider": ("Сервис ИИ", "Сервис, который создаёт описания эмодзи."),
     "model": ("Модель ИИ", "Точное название модели; программа не выбирает модель автоматически."),
     "ai_concurrency": (

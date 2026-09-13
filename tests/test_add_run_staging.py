@@ -52,7 +52,7 @@ def saved_add(tmp_path, monkeypatch):
         runs_dir=tmp_path / "runs",
         cache_dir=tmp_path / "cache",
         ai=AIConfig(model="primary-model", max_ai_requests=100),
-        processing=ProcessingConfig(static_batch_size=1),
+        processing=ProcessingConfig(static_batch_size=1, official_pack_policy="allow"),
     )
     source = _collection((_item("stage-cached", unique_id="unique", file_id="file"),))
     options = runner.PipelineOptions(
@@ -64,6 +64,7 @@ def saved_add(tmp_path, monkeypatch):
         max_cost_usd=Decimal("5"),
         ai_concurrency=4,
         download_concurrency=8,
+        official_approved_sources=(source.canonical_url,),
     )
     checkpoint = new_checkpoint(
         command="add",

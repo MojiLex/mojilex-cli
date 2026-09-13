@@ -14,7 +14,7 @@ from mojilex_cli.media import worker as worker_module
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="FFmpeg system prerequisite is not installed",
 )
-@pytest.mark.parametrize("transparent_frames", [1, 20])
+@pytest.mark.parametrize("transparent_frames", [0, 1, 20])
 def test_render_only_alpha_webm_preserves_cached_render_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transparent_frames: int
 ) -> None:
@@ -65,7 +65,9 @@ def test_render_only_alpha_webm_preserves_cached_render_context(
         ffprobe="ffprobe",
         rlottie_renderer="unused",
     )
-    assert initial["analysis"]["rendering"]["alpha_mode"] == "translucent"
+    assert initial["analysis"]["rendering"]["alpha_mode"] == (
+        "translucent" if transparent_frames else "opaque"
+    )
 
     def fail_analysis(*args: object, **kwargs: object) -> object:
         pytest.fail("render-only resume must not recompute full-stream analysis")

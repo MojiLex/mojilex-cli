@@ -19,9 +19,21 @@ class SourceChangedDuringRunError(MediaError):
 
 
 class MediaProcessor:
-    def __init__(self, run: TemporaryMediaRun, worker: SafeMediaWorker | None = None) -> None:
+    def __init__(
+        self,
+        run: TemporaryMediaRun,
+        worker: SafeMediaWorker | None = None,
+        *,
+        render_concurrency: int = 2,
+    ) -> None:
+        if type(render_concurrency) is not int or not 1 <= render_concurrency <= 8:
+            raise ValueError("render concurrency must be between 1 and 8")
         self.run = run
         self.worker = worker or SafeMediaWorker(run.limits)
+        # Downloads can overlap freely within the pipeline's network limit. Only
+        # isolated decoder processes occupy these slots, so queued work does not
+        # consume its worker wall-time budget or spawn extra Python processes.
+        self._render_slots = asyncio.Semaphore(render_concurrency)
 
     async def verify_stream(
         self,
@@ -109,6 +121,22 @@ class MediaProcessor:
         needs_repainting: bool,
         cached: ProcessedMedia | None = None,
     ) -> ProcessedMedia:
+        async with self._render_slots:
+            return await self._render_source(
+                source,
+                expected_format=expected_format,
+                needs_repainting=needs_repainting,
+                cached=cached,
+            )
+
+    async def _render_source(
+        self,
+        source: Path,
+        *,
+        expected_format: str,
+        needs_repainting: bool,
+        cached: ProcessedMedia | None,
+    ) -> ProcessedMedia:
         worker_task = asyncio.create_task(
             asyncio.to_thread(
                 self.worker.process,
@@ -127,10 +155,17 @@ class MediaProcessor:
             # owns files below the run directory. On cancellation we reap it below.
             processed = await asyncio.shield(worker_task)
         except BaseException:
-            try:
-                await asyncio.shield(worker_task)
-            except BaseException:
-                pass
+            # Keep the slot and private files until the actual worker is reaped,
+            # even when the caller receives another cancellation while waiting.
+            while not worker_task.done():
+                try:
+                    await asyncio.shield(worker_task)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if worker_task.done() and not worker_task.cancelled():
+                worker_task.exception()
             raise
         tile_paths = (
             (processed.composition_tile_path,)

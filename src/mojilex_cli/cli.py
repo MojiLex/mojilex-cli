@@ -154,6 +154,18 @@ def _help_all_callback(ctx: typer.Context, value: bool) -> None:
         raise typer.Exit()
 
 
+def _official_confirmation_callback(
+    *, non_interactive: bool, json_output: bool, quiet: bool
+) -> Callable[[str], bool]:
+    def confirm_official(message: str) -> bool:
+        # General --yes never bypasses this separate, explicitly negative default.
+        if non_interactive or json_output or quiet or not sys.stdin.isatty():
+            return False
+        return ui_confirm(message, default=False)
+
+    return confirm_official
+
+
 def _confirmation_callback(
     *, yes: bool, non_interactive: bool, json_output: bool, default: bool = False
 ) -> Callable[[str], bool]:
@@ -372,6 +384,9 @@ def add(
     sources: Annotated[list[str] | None, typer.Argument(help="Public source URLs.")] = None,
     repo: Annotated[str | None, typer.Option("--repo", help="Dataset path or OWNER/REPO.")] = None,
     from_file: Annotated[Path | None, typer.Option("--from-file")] = None,
+    official_packs: Annotated[
+        str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
+    ] = None,
     stdin: Annotated[bool, typer.Option("--stdin", help="Read one source per stdin line.")] = False,
     platform: Annotated[str, typer.Option("--platform")] = "auto",
     provider: Annotated[str | None, typer.Option("--provider")] = None,
@@ -422,6 +437,10 @@ def add(
         )
         return add_command(
             selected,
+            official_pack_policy=official_packs,
+            official_confirmation=_official_confirmation_callback(
+                non_interactive=non_interactive, json_output=json_output, quiet=quiet
+            ),
             repo=repo,
             platform=platform,
             provider=provider,
@@ -488,6 +507,9 @@ def import_sources(
         list[str] | None, typer.Argument(help="Public source URLs or a text file path.")
     ] = None,
     from_file: Annotated[Path | None, typer.Option("--from-file")] = None,
+    official_packs: Annotated[
+        str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
+    ] = None,
     repo: Annotated[str | None, typer.Option("--repo")] = None,
     platform: Annotated[str, typer.Option("--platform")] = "auto",
     max_items: Annotated[int | None, typer.Option("--max-items", min=1)] = None,
@@ -511,6 +533,10 @@ def import_sources(
         return _pack_action(
             lambda: import_command(
                 selected,
+                official_pack_policy=official_packs,
+                official_confirmation=_official_confirmation_callback(
+                    non_interactive=False, json_output=json_output, quiet=quiet
+                ),
                 repo=repo,
                 platform=platform,
                 max_items=max_items,
@@ -541,6 +567,9 @@ def import_sources(
 @app.command("describe")
 def describe(
     selectors: Annotated[list[str], typer.Argument(help="Run ID or entity selectors.")],
+    official_packs: Annotated[
+        str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
+    ] = None,
     provider: Annotated[str | None, typer.Option("--provider")] = None,
     model: Annotated[str | None, typer.Option("--model")] = None,
     max_ai_requests: Annotated[int | None, typer.Option("--max-ai-requests", min=0)] = None,
@@ -563,6 +592,10 @@ def describe(
             lambda: _pack_action(
                 lambda: describe_command(
                     selectors,
+                    official_pack_policy=official_packs,
+                    official_confirmation=_official_confirmation_callback(
+                        non_interactive=non_interactive, json_output=json_output, quiet=quiet
+                    ),
                     provider=provider,
                     model=model,
                     ai_concurrency=ai_concurrency,
@@ -759,6 +792,10 @@ def update(
     all_collections: Annotated[bool, typer.Option("--all")] = False,
     repo: Annotated[str | None, typer.Option("--repo")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    official_packs: Annotated[
+        str | None, typer.Option("--official-packs", help="Official packs: ask, skip, or allow.")
+    ] = None,
+    non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
@@ -768,7 +805,14 @@ def update(
     execute(
         "update",
         lambda: update_command(
-            selector, all_collections=all_collections, repo=repo, dry_run=dry_run
+            selector,
+            all_collections=all_collections,
+            repo=repo,
+            dry_run=dry_run,
+            official_pack_policy=official_packs,
+            official_confirmation=_official_confirmation_callback(
+                non_interactive=non_interactive, json_output=json_output, quiet=quiet
+            ),
         ),
         json_output=json_output,
         quiet=quiet,
@@ -1021,6 +1065,9 @@ def dedupe_review(
 @app.command("resume")
 def resume(
     run_id: Annotated[str, typer.Argument()],
+    official_packs: Annotated[
+        str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
+    ] = None,
     ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
     download_concurrency: Annotated[
         int | None, typer.Option("--download-concurrency", min=1, max=32)
@@ -1051,6 +1098,10 @@ def resume(
         return _with_runtime_secrets(
             lambda: resume_command(
                 selected_run_id,
+                official_pack_policy=official_packs,
+                official_confirmation=_official_confirmation_callback(
+                    non_interactive=non_interactive, json_output=json_output, quiet=quiet
+                ),
                 ai_concurrency=ai_concurrency,
                 download_concurrency=download_concurrency,
                 confirmation=_confirmation_callback(
@@ -1064,7 +1115,11 @@ def resume(
                     json_output=json_output,
                 ),
             ),
-            names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
+            names=(
+                ("TELEGRAM_BOT_TOKEN",)
+                if checkpoint.command == "import"
+                else ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY")
+            ),
             prompt=_secret_prompt(
                 non_interactive=non_interactive,
                 json_output=json_output,

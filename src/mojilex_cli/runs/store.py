@@ -28,6 +28,9 @@ _AI_ITEM_LABEL = re.compile(r"E[0-9]{3}\Z")
 _SAFE_REMOTE = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _TELEGRAM_TOKEN = re.compile(r"\b[0-9]{5,12}:[A-Za-z0-9_-]{20,}\b")
+# A multi-pack run retains exact request identities for every emoji. Keep the
+# reader and writer bound identical so every saved checkpoint remains resumable.
+_MAX_CHECKPOINT_BYTES = 128 * 1024 * 1024
 _FORBIDDEN_FIELDS = frozenset(
     {
         "file_id",
@@ -367,7 +370,9 @@ class RunStore:
             raise RunStoreError("checkpoints are disabled in dry-run mode")
         _assert_safe(checkpoint.model_dump(mode="json"))
         destination = self._checkpoint_path(checkpoint.run_id)
-        serialized = checkpoint.model_dump_json(indent=2).encode("utf-8") + b"\n"
+        serialized = checkpoint.model_dump_json().encode("utf-8") + b"\n"
+        if len(serialized) > _MAX_CHECKPOINT_BYTES:
+            raise RunStoreError("checkpoint exceeds the safe size limit")
         with self.run_lock(checkpoint.run_id, timeout=5):
             _atomic_write(destination, serialized)
         return destination
@@ -377,10 +382,11 @@ class RunStore:
         try:
             if path.is_symlink():
                 raise RunStoreError("checkpoint symlinks are forbidden")
-            payload = path.read_bytes()
+            with path.open("rb") as stream:
+                payload = stream.read(_MAX_CHECKPOINT_BYTES + 1)
         except OSError as exc:
             raise RunStoreError(f"cannot read checkpoint {run_id}") from exc
-        if len(payload) > 8 * 1024 * 1024:
+        if len(payload) > _MAX_CHECKPOINT_BYTES:
             raise RunStoreError("checkpoint exceeds the safe size limit")
         try:
             checkpoint = RunCheckpoint.model_validate_json(payload)

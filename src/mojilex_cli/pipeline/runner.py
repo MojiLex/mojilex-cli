@@ -155,6 +155,7 @@ from mojilex_cli.sources import (
 )
 
 from .reapply import reapply_candidate
+from .schema_upgrade import upgrade_private_staging_schema
 from .transform import (
     PROMPT_VERSION,
     IdentityConflictError,
@@ -216,6 +217,12 @@ class PipelineOptions:
     check_media: bool = False
     fail_fast: bool = False
     explicit_verification: bool = False
+    official_pack_policy: str | None = None
+    official_approved_sources: tuple[str, ...] = ()
+    official_excluded_sources: tuple[str, ...] = ()
+    official_confirmation: Callable[[str], bool] | None = field(
+        default=None, repr=False, compare=False
+    )
     confirmation: Callable[[str], bool] | None = field(default=None, repr=False, compare=False)
     unknown_cost_confirmation: Callable[[int], bool] | None = field(
         default=None, repr=False, compare=False
@@ -384,6 +391,8 @@ def run_resume_sync(
     download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
@@ -395,6 +404,8 @@ def run_resume_sync(
                 download_concurrency=download_concurrency,
                 confirmation=confirmation,
                 unknown_cost_confirmation=unknown_cost_confirmation,
+                official_pack_policy=official_pack_policy,
+                official_confirmation=official_confirmation,
             )
         )
 
@@ -473,6 +484,14 @@ async def _run_add(
         config.repository.base_branch,
         isolated=isolated_publication,
     ) as workspace:
+        if stage_only and resume_checkpoint is not None:
+            upgrade_private_staging_schema(
+                workspace.root,
+                runs_dir=cast(Path, config.runs_dir),
+                run_id=resume_checkpoint.run_id,
+                base_revision=resume_checkpoint.base_revision,
+                target_repository=resume_checkpoint.target_repository,
+            )
         initial_report = validate_dataset(workspace.root, strict=True)
         if not initial_report.valid and not (
             stage_only and _only_staging_review_issues(initial_report)
@@ -515,7 +534,11 @@ async def _run_add(
                 "A remote publication checkpoint cannot resume in a local-only workflow.",
                 hint="Resume with the publication mode recorded by the original run.",
             )
-        source_entries = _remaining_source_entries(all_sources, completed_source_indexes)
+        source_entries = _remaining_source_entries(
+            all_sources,
+            completed_source_indexes,
+            excluded_sources=options.official_excluded_sources,
+        )
         sources = tuple(source for _, source in source_entries)
         checkpoint = None
         if not options.dry_run:
@@ -760,8 +783,8 @@ async def _run_add(
                             continue
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
-                            f"download/verification concurrency="
-                            f"{config.telegram.download_concurrency}."
+                            f"download concurrency={config.telegram.download_concurrency}; "
+                            f"decoder concurrency={config.processing.render_concurrency}."
                         )
                         imported_members = (
                             expected_memberships.get(source.native_id)
@@ -801,7 +824,9 @@ async def _run_add(
                             successful_source_indexes.add(source_index)
                             continue
                         with TemporaryMediaRun(limits=_media_limits(config)) as temporary:
-                            processor = MediaProcessor(temporary)
+                            processor = MediaProcessor(
+                                temporary, render_concurrency=config.processing.render_concurrency
+                            )
                             verified_resume_outcomes: dict[str, _SemanticOutcome] = {}
                             source, processed = await _prepare_collection_media(
                                 current,
@@ -1397,8 +1422,8 @@ async def _run_import(
                         source = await adapter.fetch_collection(adapter.canonicalize(source_text))
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
-                            f"download/verification concurrency="
-                            f"{config.telegram.download_concurrency}."
+                            f"download concurrency={config.telegram.download_concurrency}; "
+                            f"decoder concurrency={config.processing.render_concurrency}."
                         )
                         current_members = tuple(item.native_id for item in source.items)
                         imported_members = (
@@ -1441,7 +1466,10 @@ async def _run_import(
                                 initial,
                                 adapter,
                                 source,
-                                MediaProcessor(temporary),
+                                MediaProcessor(
+                                    temporary,
+                                    render_concurrency=config.processing.render_concurrency,
+                                ),
                                 concurrency=config.telegram.download_concurrency,
                                 expected_hashes=expected_hashes,
                                 cache=cache,
@@ -1555,6 +1583,38 @@ async def _run_describe(
         store.save(checkpoint)
     else:
         staging = _staging_path_from_checkpoint(checkpoint)
+    from mojilex_cli.commands.official_packs import select_sources
+
+    selection = select_sources(
+        sources,
+        platform=options.platform,
+        policy=(
+            overrides.official_pack_policy
+            if overrides is not None and overrides.official_pack_policy is not None
+            else config.processing.official_pack_policy
+        ),
+        confirmation=overrides.official_confirmation if overrides is not None else None,
+        approved_sources=options.official_approved_sources,
+    )
+    options = replace(
+        options,
+        official_approved_sources=selection.approved_sources,
+        official_excluded_sources=selection.skipped,
+    )
+    checkpoint = checkpoint.model_copy(
+        update={
+            "safe_parameters": {
+                **checkpoint.safe_parameters,
+                "official_approved_sources": list(selection.approved_sources),
+                "official_excluded_sources": list(selection.skipped),
+            }
+        }
+    )
+    store.save(checkpoint)
+    if not selection.selected:
+        result = selection.empty_result()
+        result.run_id = run_id
+        return result
     if overrides is not None:
         options = replace(
             options,
@@ -1591,7 +1651,7 @@ async def _run_describe(
         if element.media_sha256
     }
     memberships = _membership_map(checkpoint.safe_parameters.get("source_memberships"))
-    return await _run_add(
+    result = await _run_add(
         sources,
         options,
         resume_id=run_id,
@@ -1600,6 +1660,7 @@ async def _run_describe(
         resume_checkpoint=checkpoint,
         stage_only=True,
     )
+    return selection.annotate(result)
 
 
 async def run_resume(
@@ -1609,6 +1670,8 @@ async def run_resume(
     download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
@@ -1638,6 +1701,47 @@ async def run_resume(
         if element.media_sha256
     }
     memberships = _membership_map(parameters.get("source_memberships"))
+    if (
+        checkpoint.command in {"describe", "add"}
+        and getattr(checkpoint, "publication", None) is None
+        and sources
+        and ("official_excluded_sources" not in parameters or official_pack_policy is not None)
+    ):
+        # Old description checkpoints predate the official-pack decision. A
+        # resume uses a dedicated decision, never an unrelated publication
+        # confirmation, as approval to spend on AI.
+        from mojilex_cli.commands.official_packs import select_sources
+
+        selection = select_sources(
+            sources,
+            platform=options.platform,
+            policy=(
+                official_pack_policy
+                if official_pack_policy is not None
+                else config.processing.official_pack_policy
+            ),
+            confirmation=official_confirmation,
+            approved_sources=options.official_approved_sources,
+        )
+        options = replace(
+            options,
+            official_approved_sources=selection.approved_sources,
+            official_excluded_sources=selection.skipped,
+        )
+        checkpoint = checkpoint.model_copy(
+            update={
+                "safe_parameters": {
+                    **checkpoint.safe_parameters,
+                    "official_approved_sources": list(selection.approved_sources),
+                    "official_excluded_sources": list(selection.skipped),
+                }
+            }
+        )
+        store.save(checkpoint)
+        if not selection.selected:
+            result = selection.empty_result()
+            result.run_id = run_id
+            return result
     if checkpoint.command == "import":
         return await _run_import(
             sources,
@@ -2677,12 +2781,14 @@ def _restore_deterministic_cache_entry(
             or backgrounds not in (["light"], ["light", "dark"])
         ):
             return None
-        expected_frames = 1 if source.media_format == "webp" else processor.worker.limits.frames
-        expected_animated = source.media_format != "webp"
+        static = source.media_format in {"webp", "png"}
+        expected_frames = 1 if static else processor.worker.limits.frames
+        expected_animated = not static
+        accepted_formats = {"webp", "png"} if static else {source.media_format}
         if (
             frame_count != expected_frames
             or metadata.sha256 != checkpoint.media_sha256[0]
-            or metadata.format != source.media_format
+            or metadata.format not in accepted_formats
             or metadata.width != source.width
             or metadata.height != source.height
             or metadata.animated is not expected_animated
@@ -2701,7 +2807,7 @@ def _restore_deterministic_cache_entry(
             or analysis.dedupe_profile != dedupe_profile.profile_id
             or analysis.dedupe_profile_sha256 != dedupe_profile.sha256
             or not _decoder_backend_is_current(
-                source.media_format, analysis, processor, backend_candidates=backend_candidates
+                metadata.format, analysis, processor, backend_candidates=backend_candidates
             )
         ):
             return None
@@ -2739,6 +2845,8 @@ def _decoder_backend_candidates(media_format: str, processor: MediaProcessor) ->
     candidates: tuple[str, ...]
     if media_format == "webp":
         candidates = (decoder_backend_fingerprint("webp"),)
+    elif media_format == "png":
+        candidates = (decoder_backend_fingerprint("png"),)
     elif media_format == "tgs":
         candidates = (decoder_backend_fingerprint("tgs", rlottie_renderer=worker.rlottie_renderer),)
     elif media_format == "webm":
@@ -2796,14 +2904,22 @@ async def _process_media(
         if defer_expected_ids is not None and item.native_id in defer_expected_ids:
             expected = None
         async with semaphore:
-            if first_failure is not None:
+            if first_failure is not None and (
+                isinstance(first_failure, asyncio.CancelledError)
+                or structured_exception(first_failure).code in _TERMINAL_ERROR_CODES
+            ):
                 raise first_failure
             try:
                 return await process_item(item, expected)
             except BaseException as exc:
-                if not isinstance(exc, asyncio.CancelledError):
+                if isinstance(exc, asyncio.CancelledError):
+                    first_failure = exc
+                else:
                     progress.finish(item.native_id, failed=True)
-                    if first_failure is None:
+                    if first_failure is None or (
+                        not isinstance(first_failure, asyncio.CancelledError)
+                        and structured_exception(exc).code in _TERMINAL_ERROR_CODES
+                    ):
                         first_failure = exc
                         report_progress(
                             f"{structured_exception(exc).code}: {structured_exception(exc).message}"
@@ -2853,6 +2969,8 @@ async def _process_media(
             *(process_one(item) for item in collection.items if item.native_id not in ready),
             return_exceptions=True,
         )
+    if first_failure is not None:
+        raise first_failure
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -3552,7 +3670,8 @@ async def _preview_ai_plan(
         ):
             for adaptive in (False, True):
                 count = sum(
-                    (item.media_format != "webp") is animated and item.needs_repainting is adaptive
+                    (item.media_format not in {"webp", "png"}) is animated
+                    and item.needs_repainting is adaptive
                     for item in candidates
                 )
                 plan["ai_batches_planned"] += (count + size - 1) // size
@@ -5489,12 +5608,16 @@ def _validation_warnings(report: Any) -> list[dict[str, str]]:
 
 
 def _remaining_source_entries(
-    sources: Sequence[str], completed_source_indexes: set[int]
+    sources: Sequence[str],
+    completed_source_indexes: set[int],
+    *,
+    excluded_sources: Sequence[str] = (),
 ) -> tuple[tuple[int, str], ...]:
+    excluded = set(excluded_sources)
     return tuple(
         (index, source)
         for index, source in enumerate(sources)
-        if index not in completed_source_indexes
+        if index not in completed_source_indexes and source not in excluded
     )
 
 
@@ -5986,6 +6109,8 @@ def _safe_parameters(sources: Sequence[str], options: PipelineOptions) -> dict[s
         "check_media": options.check_media,
         "fail_fast": options.fail_fast,
         "explicit_verification": options.explicit_verification,
+        "official_approved_sources": list(options.official_approved_sources),
+        "official_excluded_sources": list(options.official_excluded_sources),
     }
 
 
@@ -6043,6 +6168,8 @@ def _options_from_safe(value: Mapping[str, object]) -> PipelineOptions:
         check_media=bool(value.get("check_media", False)),
         fail_fast=bool(value.get("fail_fast", False)),
         explicit_verification=bool(value.get("explicit_verification", False)),
+        official_approved_sources=_string_sequence(value.get("official_approved_sources", ())),
+        official_excluded_sources=_string_sequence(value.get("official_excluded_sources", ())),
     )
 
 

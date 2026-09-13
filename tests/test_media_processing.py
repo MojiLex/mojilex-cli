@@ -146,8 +146,9 @@ def test_tgs_analysis_consumes_the_full_renderer_timeline(
     assert not tuple(output.iterdir())
 
 
+@pytest.mark.parametrize("frame_count", [1, 2])
 def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame_count: int
 ) -> None:
     executable = tmp_path / "mojilex-rlottie-rgba.exe"
     executable.write_bytes(b"synthetic lossless renderer")
@@ -157,7 +158,7 @@ def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
         "v": "5.7",
         "fr": 2,
         "ip": 0,
-        "op": 2,
+        "op": frame_count,
         "w": 2,
         "h": 2,
         "assets": [],
@@ -169,7 +170,7 @@ def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
         observed.extend(command)
         return _FakeRendererProcess(
             _rgba_stream(
-                [bytes((255, 0, 0, 128)) * 4, bytes((0, 0, 255, 255)) * 4],
+                [bytes((255, 0, 0, 128)) * 4, bytes((0, 0, 255, 255)) * 4][:frame_count],
                 width=2,
                 height=2,
             )
@@ -189,11 +190,39 @@ def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
         needs_repainting=False,
     )
     try:
-        assert observed[2:5] == ["2", "2", "2"]
+        assert observed[2:5] == ["2", "2", str(frame_count)]
         assert analysis.rendering.alpha_mode == "translucent"
+        assert analysis.analysis_scope == "full-decoded-stream"
+        assert len(frames) == 4
     finally:
         for frame in frames:
             frame.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "frame_count"),
+    [(2, 2, 0), (2, 2, 601), (512, 512, 1500), (4000, 4000, 24)],
+)
+def test_tgs_single_frame_support_retains_stream_safety_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    width: int,
+    height: int,
+    frame_count: int,
+) -> None:
+    monkeypatch.setattr(worker_module.shutil, "which", lambda value: value)
+    monkeypatch.setattr(
+        worker_module.subprocess, "Popen", lambda *a, **kw: pytest.fail("unsafe renderer launch")
+    )
+    with pytest.raises(RuntimeError, match="full-stream analysis limits"):
+        worker_module._render_tgs(
+            tmp_path / "source.tgs",
+            tmp_path,
+            {"w": width, "h": height, "ip": 0, "op": frame_count, "fr": 60},
+            MediaLimits(),
+            "renderer",
+            needs_repainting=False,
+        )
 
 
 @pytest.mark.parametrize(

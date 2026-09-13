@@ -39,11 +39,12 @@ def test_import_forwards_download_concurrency(monkeypatch) -> None:
         download_concurrency=8,
         check_media=True,
         fail_fast=False,
+        official_pack_policy="allow",
     )
 
     options = captured["options"]
     assert result.status is RunStatus.SUCCEEDED
-    assert captured["sources"] == ["https://t.me/addemoji/NewsEmoji"]
+    assert captured["sources"] == ("https://t.me/addemoji/NewsEmoji",)
     assert options.download_concurrency == 8  # type: ignore[union-attr]
 
 

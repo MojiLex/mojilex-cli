@@ -70,7 +70,9 @@ def test_update_selector_propagates_cache_location_and_readonly_preview(
     monkeypatch.setattr(workflow, "load_config", lambda **_kwargs: config)
     monkeypatch.setattr(workflow, "_sources_for_selectors", sources)
     monkeypatch.setattr(workflow, "run_add", lambda *_args: CommandResult())
-    workflow.update_command("some-id", all_collections=False, repo=None, dry_run=dry_run)
+    workflow.update_command(
+        "some-id", all_collections=False, repo=None, dry_run=dry_run, official_pack_policy="allow"
+    )
     assert calls == [
         {
             "base_branch": "main",

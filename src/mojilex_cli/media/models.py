@@ -67,8 +67,8 @@ class MediaMetadata(BaseModel):
 
     role: Literal["primary"] = "primary"
     kind: Literal["static", "animation", "video"]
-    format: Literal["webp", "tgs", "webm"]
-    mime_type: Literal["image/webp", "application/x-tgsticker", "video/webm"]
+    format: Literal["webp", "png", "tgs", "webm"]
+    mime_type: Literal["image/webp", "image/png", "application/x-tgsticker", "video/webm"]
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     byte_size: int = Field(ge=1, le=HARD_MAX_FILE_BYTES)
     width: int = Field(gt=0)
@@ -80,6 +80,7 @@ class MediaMetadata(BaseModel):
     def validate_shape(self) -> MediaMetadata:
         expected = {
             "webp": ("static", "image/webp", False),
+            "png": ("static", "image/png", False),
             "tgs": ("animation", "application/x-tgsticker", True),
             "webm": ("video", "video/webm", True),
         }[self.format]

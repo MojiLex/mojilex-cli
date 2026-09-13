@@ -14,7 +14,7 @@ from PIL import features
 
 from .models import AnalysisError
 
-DecoderKind = Literal["in-memory-rgba", "webp", "tgs", "webm"]
+DecoderKind = Literal["in-memory-rgba", "webp", "png", "tgs", "webm"]
 _WEBM_CODECS = frozenset({"av1", "vp8", "vp9"})
 
 
@@ -35,7 +35,7 @@ def decoder_backend_fingerprint(
     executable digest alone cannot fully identify.
     """
 
-    if kind not in {"in-memory-rgba", "webp", "tgs", "webm"}:
+    if kind not in {"in-memory-rgba", "webp", "png", "tgs", "webm"}:
         raise AnalysisError("unknown decoder backend kind")
 
     descriptor: dict[str, object] = {
@@ -49,6 +49,8 @@ def decoder_backend_fingerprint(
     }
     if kind in {"webp", "tgs"}:
         descriptor["pillow_webp"] = features.version("webp")
+    if kind == "png":
+        descriptor["pillow_zlib"] = features.version("zlib")
     if kind == "tgs":
         descriptor["rlottie_rgba_executable_sha256"] = _executable_sha256(rlottie_renderer)
     elif kind == "webm":

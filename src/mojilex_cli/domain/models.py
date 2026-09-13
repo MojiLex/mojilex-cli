@@ -178,6 +178,7 @@ class MediaKind(StrEnum):
 
 class MediaFormat(StrEnum):
     WEBP = "webp"
+    PNG = "png"
     TGS = "tgs"
     WEBM = "webm"
 
@@ -427,7 +428,7 @@ class Media(StrictModel):
     ) = None
     kind: MediaKind
     format: MediaFormat
-    mime_type: Literal["image/webp", "application/x-tgsticker", "video/webm"]
+    mime_type: Literal["image/webp", "image/png", "application/x-tgsticker", "video/webm"]
     sha256: Sha256
     byte_size: Annotated[int, Field(ge=1, le=20 * 1024 * 1024, strict=True)]
     width: Annotated[int, Field(ge=1, strict=True)]
@@ -444,6 +445,7 @@ class Media(StrictModel):
     def validate_media(self) -> Media:
         expected = {
             MediaFormat.WEBP: (MediaKind.STATIC, "image/webp", False),
+            MediaFormat.PNG: (MediaKind.STATIC, "image/png", False),
             MediaFormat.TGS: (MediaKind.ANIMATION, "application/x-tgsticker", True),
             MediaFormat.WEBM: (MediaKind.VIDEO, "video/webm", True),
         }[self.format]

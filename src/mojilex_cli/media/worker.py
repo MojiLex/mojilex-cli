@@ -29,7 +29,13 @@ from mojilex_cli.analysis import (
 )
 from mojilex_cli.analysis.engine import sample_frame_indexes
 from mojilex_cli.analysis.profiles import load_analysis_profile
-from mojilex_cli.media.inspect import inspect_tgs, inspect_webm, inspect_webp, sniff_format
+from mojilex_cli.media.inspect import (
+    inspect_png,
+    inspect_tgs,
+    inspect_webm,
+    inspect_webp,
+    sniff_format,
+)
 from mojilex_cli.media.models import MediaLimits
 
 _LIGHT = (242, 242, 242, 255)
@@ -56,11 +62,18 @@ def process(
 ) -> dict[str, Any]:
     if render_only != (expected_dark_render is not None):
         raise ValueError("render-only mode requires an exact background render marker")
-    if sniff_format(source) != expected_format:
+    actual_format = sniff_format(source)
+    if expected_format == "webp" and actual_format == "png":
+        expected_format = "png"
+    if actual_format != expected_format:
         raise ValueError("media signature does not match the expected Telegram format")
     output_dir.mkdir(parents=False, exist_ok=False)
-    if expected_format == "webp":
-        info = inspect_webp(source, limits)
+    if expected_format in {"webp", "png"}:
+        info = (
+            inspect_png(source, limits)
+            if expected_format == "png"
+            else inspect_webp(source, limits)
+        )
         rgba_frames = [_load_rgba(source)]
         analysis = (
             None
@@ -69,10 +82,12 @@ def process(
                 rgba_frames,
                 loop_mode="once",
                 needs_repainting=needs_repainting,
-                backend_fingerprint=decoder_backend_fingerprint("webp"),
+                backend_fingerprint=decoder_backend_fingerprint(
+                    "png" if expected_format == "png" else "webp"
+                ),
             )
         )
-        kind, mime, animated = "static", "image/webp", False
+        kind, mime, animated = "static", f"image/{expected_format}", False
     elif expected_format == "tgs":
         info, document = inspect_tgs(source, limits)
         rgba_frames, analysis = _render_tgs(
@@ -123,7 +138,11 @@ def process(
         raise ValueError("unsupported media format")
 
     composition_tile = None
-    if expected_format == "webp" and not needs_repainting and max(rgba_frames[0].size) <= 256:
+    if (
+        expected_format in {"webp", "png"}
+        and not needs_repainting
+        and max(rgba_frames[0].size) <= 256
+    ):
         tile_path = output_dir / "composition-tile.png"
         rgba_frames[0].save(tile_path, format="PNG", optimize=False)
         composition_tile = {"path": str(tile_path), "sha256": _sha256(tile_path)}
@@ -139,7 +158,10 @@ def process(
     # against the downloaded bytes. Its absence here is intentional; sampled
     # frames can all be opaque even when other frames contain transparency.
     if not render_only and declared_alpha and not analyzed_alpha:
-        raise RuntimeError("ffmpeg did not preserve the WebM alpha channel")
+        # AlphaMode advertises an alpha plane, not necessarily transparent
+        # pixels. Verify an apparently opaque plane before accepting it: merely
+        # dropping this check would also accept a decoder that lost alpha.
+        _verify_opaque_webm_alpha(source, info, limits, ffmpeg=ffmpeg, ffprobe=ffprobe)
     observed_dark_requirement = (
         needs_repainting
         or declared_alpha
@@ -231,7 +253,7 @@ def _render_tgs(
         ]
     )
     frame_bytes = expected_width * expected_height * 4
-    if total < 2 or total > maximum_frames or frame_bytes * total > maximum_bytes:
+    if total < 1 or total > maximum_frames or frame_bytes * total > maximum_bytes:
         raise RuntimeError("TGS renderer timeline exceeds the full-stream analysis limits")
     json_path = output_dir / "validated-lottie.json"
     # Re-serialize the already validated object; never give gzip quirks to the renderer.
@@ -451,6 +473,24 @@ def _render_webm(
                     for previous in frames:
                         previous.close()
                     return repeated
+            else:
+                held_index = _held_webm_frame_index(
+                    source,
+                    timestamp=timestamp,
+                    duration_ms=duration_ms,
+                    ffprobe=ffprobe,
+                    timeout=limits.worker_timeout_seconds,
+                )
+                completed = _decode_webm_frame(
+                    source,
+                    rendered,
+                    timestamp,
+                    limits,
+                    executable,
+                    codec=codec,
+                    preserve_alpha=preserve_alpha,
+                    frame_index=held_index,
+                )
         if completed.returncode != 0 or not rendered.is_file():
             raise RuntimeError("ffmpeg failed to decode a deterministic WebM frame")
         try:
@@ -469,15 +509,20 @@ def _decode_webm_frame(
     *,
     codec: str,
     preserve_alpha: bool,
+    frame_index: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     command = [
         executable,
         "-v",
         "error",
         "-nostdin",
-        "-ss",
-        f"{timestamp:.6f}",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
     ]
+    if frame_index is None:
+        command.extend(["-ss", f"{timestamp:.6f}"])
     if preserve_alpha and codec in {"vp8", "vp9"}:
         command.extend(["-c:v", "libvpx" if codec == "vp8" else "libvpx-vp9"])
     command.extend(
@@ -487,7 +532,9 @@ def _decode_webm_frame(
             "-frames:v",
             "1",
             "-vf",
-            "format=rgba",
+            "format=rgba" if frame_index is None else f"select=eq(n\\,{frame_index}),format=rgba",
+            "-threads",
+            "1",
             "-y",
             str(rendered),
         ]
@@ -554,7 +601,7 @@ def _analyze_webm_full_stream(
     sample_indexes = sample_frame_indexes(durations, 16)
     required_indexes = set(sample_indexes)
     sampled: dict[int, Image.Image] = {}
-    command = [ffmpeg, "-v", "error", "-nostdin"]
+    command = [ffmpeg, "-v", "error", "-nostdin", "-threads", "1", "-filter_threads", "1"]
     if preserve_alpha and codec in {"vp8", "vp9"}:
         command.extend(["-c:v", "libvpx" if codec == "vp8" else "libvpx-vp9"])
     command.extend(
@@ -569,6 +616,8 @@ def _analyze_webm_full_stream(
             "rawvideo",
             "-pix_fmt",
             "rgba",
+            "-threads",
+            "1",
             "pipe:1",
         ]
     )
@@ -620,9 +669,82 @@ def _analyze_webm_full_stream(
             process.kill()
 
 
-def _webm_frame_durations(
-    source: Path, *, ffprobe: str, duration_ms: int, timeout: float
-) -> tuple[int, ...]:
+def _verify_opaque_webm_alpha(
+    source: Path,
+    info: Mapping[str, object],
+    limits: MediaLimits,
+    *,
+    ffmpeg: str,
+    ffprobe: str,
+) -> None:
+    """Prove a declared alpha plane is opaque without manufacturing an alpha plane."""
+    width, height, codec = info["width"], info["height"], info["codec"]
+    duration = info["duration_ms"]
+    if (
+        not isinstance(width, int)
+        or not isinstance(height, int)
+        or not isinstance(codec, str)
+        or not isinstance(duration, int)
+    ):
+        raise RuntimeError("WebM alpha verification metadata is incomplete")
+    durations = _webm_frame_durations(
+        source, ffprobe=ffprobe, duration_ms=duration, timeout=limits.worker_timeout_seconds
+    )
+    command = [ffmpeg, "-v", "error", "-nostdin", "-threads", "1", "-filter_threads", "1"]
+    if codec in {"vp8", "vp9"}:
+        command.extend(["-c:v", "libvpx" if codec == "vp8" else "libvpx-vp9"])
+    # alphaextract fails on a decoder output without alpha. In particular, do
+    # not insert format=rgba here: that could fabricate an all-opaque plane.
+    command.extend(
+        [
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-vsync",
+            "0",
+            "-vf",
+            "alphaextract",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-threads",
+            "1",
+            "pipe:1",
+        ]
+    )
+    try:
+        decoder = subprocess.Popen(
+            command,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RuntimeError("WebM native alpha verification could not start") from exc
+    try:
+        if decoder.stdout is None:
+            raise RuntimeError("WebM native alpha verification has no output stream")
+        expected = bytes((255,)) * (width * height)
+        for _ in durations:
+            if _read_exact(decoder.stdout, len(expected)) != expected:
+                raise RuntimeError("ffmpeg did not preserve the WebM alpha channel")
+        if decoder.stdout.read(1):
+            raise RuntimeError("WebM native alpha timeline differs from the decoded stream")
+        if decoder.wait(timeout=limits.worker_timeout_seconds) != 0:
+            raise RuntimeError("ffmpeg could not verify the native WebM alpha channel")
+    finally:
+        if decoder.poll() is None:
+            decoder.kill()
+        try:
+            decoder.communicate(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            decoder.kill()
+
+
+def _webm_frame_metadata(source: Path, *, ffprobe: str, timeout: float) -> list[Mapping[str, Any]]:
     command = [
         ffprobe,
         "-v",
@@ -661,6 +783,41 @@ def _webm_frame_durations(
         raise AnalysisError("WebM full-frame metadata is malformed") from exc
     if not isinstance(raw_frames, list) or not raw_frames:
         raise AnalysisError("WebM full-frame timeline is empty")
+    maximum_frames = profile_limits.get("max_full_frames")
+    if not isinstance(maximum_frames, int) or len(raw_frames) > maximum_frames:
+        raise AnalysisError("WebM full-frame timeline exceeds the analysis profile limits")
+    if any(not isinstance(frame, Mapping) for frame in raw_frames):
+        raise AnalysisError("WebM frame metadata entry is invalid")
+    return cast(list[Mapping[str, Any]], raw_frames)
+
+
+def _held_webm_frame_index(
+    source: Path, *, timestamp: float, duration_ms: int, ffprobe: str, timeout: float
+) -> int:
+    """Select an actual held frame only on a proven contiguous presentation timeline."""
+    frames = _webm_frame_metadata(source, ffprobe=ffprobe, timeout=timeout)
+    wanted = _seconds_to_microseconds(timestamp)
+    previous_end = 0
+    selected = None
+    for index, frame in enumerate(frames):
+        start = _seconds_to_microseconds(frame.get("best_effort_timestamp_time"))
+        duration = _seconds_to_microseconds(
+            frame.get("pkt_duration_time") or frame.get("duration_time")
+        )
+        if start != previous_end or duration is None or duration <= 0:
+            raise RuntimeError("WebM held-frame presentation interval cannot be proven exactly")
+        previous_end = start + duration
+        if wanted is not None and start <= wanted < previous_end:
+            selected = index
+    if previous_end != duration_ms * 1000 or selected is None:
+        raise RuntimeError("WebM held-frame presentation interval cannot be proven exactly")
+    return selected
+
+
+def _webm_frame_durations(
+    source: Path, *, ffprobe: str, duration_ms: int, timeout: float
+) -> tuple[int, ...]:
+    raw_frames = _webm_frame_metadata(source, ffprobe=ffprobe, timeout=timeout)
     timestamps: list[int | None] = []
     durations: list[int | None] = []
     for raw_frame in raw_frames:
@@ -749,7 +906,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--source", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--format", choices=("webp", "tgs", "webm"), required=True)
+    parser.add_argument("--format", choices=("webp", "png", "tgs", "webm"), required=True)
     parser.add_argument("--limits", required=True)
     parser.add_argument("--needs-repainting", action="store_true")
     parser.add_argument("--render-only", action="store_true")

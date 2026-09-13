@@ -722,6 +722,8 @@ def _config_toml(config: MojiLexConfig) -> str:
             f"profile = {_quoted(config.dedupe.profile)}",
             "",
             "[processing]",
+            f"official_pack_policy = {_quoted(config.processing.official_pack_policy)}",
+            f"render_concurrency = {config.processing.render_concurrency}",
             f"static_batch_size = {config.processing.static_batch_size}",
             f"animated_batch_size = {config.processing.animated_batch_size}",
             f"keyframes = {config.processing.keyframes}",

@@ -214,6 +214,28 @@
                           "const": "static"
                         },
                         "format": {
+                          "const": "png"
+                        },
+                        "mime_type": {
+                          "const": "image/png"
+                        },
+                        "animated": {
+                          "const": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "format",
+                        "mime_type",
+                        "animated"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "kind": {
+                          "const": "static"
+                        },
+                        "format": {
                           "const": "webp"
                         },
                         "mime_type": {

@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Sequence
 from decimal import Decimal
 from pathlib import Path
-from typing import TextIO, cast
+from typing import TextIO, TypedDict, cast
 
 from mojilex_cli.cache import CacheStore
 from mojilex_cli.config import load_config
@@ -24,6 +24,13 @@ from mojilex_cli.pipeline.runner import (
 from .runtime import CommandError, CommandResult
 
 _MAX_SOURCE_FILE_BYTES = 1024 * 1024
+
+
+class _ResumeOverrides(TypedDict, total=False):
+    ai_concurrency: int
+    download_concurrency: int
+    official_pack_policy: str
+    official_confirmation: Callable[[str], bool]
 
 
 def collect_sources(
@@ -135,9 +142,21 @@ def add_command(
     fail_fast: bool,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
-    return run_add(
+    from .official_packs import select_sources
+
+    selection = select_sources(
         sources,
+        platform=platform,
+        policy=official_pack_policy,
+        confirmation=official_confirmation,
+    )
+    if not selection.selected:
+        return selection.empty_result()
+    result = run_add(
+        selection.selected,
         PipelineOptions(
             repository=repo,
             platform=platform,
@@ -167,8 +186,10 @@ def add_command(
             fail_fast=fail_fast,
             confirmation=confirmation,
             unknown_cost_confirmation=unknown_cost_confirmation,
+            official_approved_sources=selection.approved_sources,
         ),
     )
+    return selection.annotate(result)
 
 
 def import_command(
@@ -180,10 +201,22 @@ def import_command(
     download_concurrency: int | None,
     check_media: bool,
     fail_fast: bool,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
-    del check_media  # import always verifies bytes; the option remains explicit in the CLI contract
-    return run_import(
+    from .official_packs import select_sources
+
+    selection = select_sources(
         sources,
+        platform=platform,
+        policy=official_pack_policy,
+        confirmation=official_confirmation,
+    )
+    if not selection.selected:
+        return selection.empty_result()
+    del check_media  # import always verifies bytes; the option remains explicit in the CLI contract
+    result = run_import(
+        selection.selected,
         PipelineOptions(
             repository=repo,
             platform=platform,
@@ -192,8 +225,10 @@ def import_command(
             check_media=True,
             fail_fast=fail_fast,
             publish="local",
+            official_approved_sources=selection.approved_sources,
         ),
     )
+    return selection.annotate(result)
 
 
 def describe_command(
@@ -206,6 +241,8 @@ def describe_command(
     allow_unknown_cost: bool,
     ai_concurrency: int | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     saved_run = selectors[0] if len(selectors) == 1 and selectors[0].startswith("mlxrun_") else None
     if (
@@ -232,6 +269,8 @@ def describe_command(
                 max_cost_usd=max_cost_usd,
                 allow_unknown_cost=allow_unknown_cost,
                 unknown_cost_confirmation=unknown_cost_confirmation,
+                official_pack_policy=official_pack_policy,
+                official_confirmation=official_confirmation,
             ),
         )
     config = load_config(
@@ -252,8 +291,18 @@ def describe_command(
         base_branch=config.repository.base_branch,
         cache_dir=config.cache_dir,
     )
-    return run_add(
+    from .official_packs import select_sources
+
+    selection = select_sources(
         sources,
+        platform="auto",
+        policy=official_pack_policy,
+        confirmation=official_confirmation,
+    )
+    if not selection.selected:
+        return selection.empty_result()
+    result = run_add(
+        selection.selected,
         PipelineOptions(
             repository=config.repository.target,
             provider=config.ai.provider,
@@ -265,8 +314,10 @@ def describe_command(
             unknown_cost_confirmation=unknown_cost_confirmation,
             redescribe="all",
             publish="local",
+            official_approved_sources=selection.approved_sources,
         ),
     )
+    return selection.annotate(result)
 
 
 def update_command(
@@ -275,6 +326,8 @@ def update_command(
     all_collections: bool,
     repo: str | None,
     dry_run: bool,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     if (selector is None) == (not all_collections):
         raise CommandError(
@@ -302,15 +355,31 @@ def update_command(
             cache_dir=config.cache_dir,
             read_only=dry_run,
         )
-    return run_add(
-        sources,
+    from .official_packs import SourceSelection, select_sources
+
+    selection = (
+        SourceSelection(tuple(sources))
+        if dry_run
+        else select_sources(
+            sources,
+            platform="auto",
+            policy=official_pack_policy,
+            confirmation=official_confirmation,
+        )
+    )
+    if not selection.selected:
+        return selection.empty_result()
+    result = run_add(
+        selection.selected,
         PipelineOptions(
             repository=config.repository.target,
             dry_run=dry_run,
             check_media=dry_run,
             explicit_verification=True,
+            official_approved_sources=selection.approved_sources,
         ),
     )
+    return selection.annotate(result)
 
 
 def submit_command(
@@ -339,6 +408,8 @@ def resume_command(
     download_concurrency: int | None = None,
     confirmation: Callable[[str], bool] | None = None,
     unknown_cost_confirmation: Callable[[int], bool] | None = None,
+    official_pack_policy: str | None = None,
+    official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     from .packs import resolve_pack_run
 
@@ -355,16 +426,20 @@ def resume_command(
                 "next": f"mojilex {next_command} {selector}",
             },
         )
+    overrides: _ResumeOverrides = {}
+    if ai_concurrency is not None:
+        overrides["ai_concurrency"] = ai_concurrency
+    if download_concurrency is not None:
+        overrides["download_concurrency"] = download_concurrency
+    if official_pack_policy is not None:
+        overrides["official_pack_policy"] = official_pack_policy
+    if official_confirmation is not None:
+        overrides["official_confirmation"] = official_confirmation
     return run_resume_sync(
         run_id,
         confirmation=confirmation,
         unknown_cost_confirmation=unknown_cost_confirmation,
-        **({"ai_concurrency": ai_concurrency} if ai_concurrency is not None else {}),
-        **(
-            {"download_concurrency": download_concurrency}
-            if download_concurrency is not None
-            else {}
-        ),
+        **overrides,
     )
 
 

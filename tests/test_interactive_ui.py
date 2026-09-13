@@ -187,6 +187,7 @@ def state():
         "github": "Not checked",
         "target": "example/data",
         "publishable": True,
+        "analyzable": False,
         "run_id": RUN,
         "sources": ["https://t.me/addemoji/NewsEmoji"],
     }
@@ -198,6 +199,83 @@ def test_resume_from_page_targets_visible_unfinished_run(navigation, monkeypatch
     calls = []
     ui._pack_page(RUN, lambda args: calls.append(args) or True)
     assert calls == [["resume", UNFINISHED]]
+
+
+@pytest.mark.parametrize(
+    "command,status,has_elements,expected",
+    [
+        ("import", "succeeded", True, True),
+        ("import", "noop", True, True),
+        ("import", "succeeded", False, False),
+        ("import", "partial", True, False),
+        ("import", "interrupted", True, False),
+        ("import", "failed", True, False),
+        ("describe", "succeeded", True, False),
+    ],
+)
+def test_pack_state_exposes_ai_only_for_completed_saved_import(
+    monkeypatch, command, status, has_elements, expected
+):
+    checkpoint = SimpleNamespace(
+        command=command,
+        status=status,
+        elements={"one": object()} if has_elements else {},
+        publication=None,
+        run_id=RUN,
+        target_repository="example/data",
+        safe_parameters={"sources": ["https://t.me/addemoji/NewsEmoji"]},
+    )
+    monkeypatch.setattr(ui, "load_config", lambda: object())
+    monkeypatch.setattr(ui, "_resolve", lambda *args, **kwargs: checkpoint)
+    monkeypatch.setattr(ui, "_runs", lambda config: ([checkpoint], 0))
+    monkeypatch.setattr(ui, "_summary", lambda run, config: {"run_id": run.run_id})
+    monkeypatch.setattr(ui, "show_pack_command", lambda selector: view())
+    result = ui._pack_state(RUN)
+    assert result["analyzable"] is expected
+    assert result["publishable"] is (command == "describe" and status == "succeeded")
+
+
+def test_saved_import_analysis_uses_exact_id_without_import_or_extra_approval(
+    navigation, monkeypatch
+):
+    navigation(3)
+    imported = state() | {"unfinished": None, "publishable": False, "analyzable": True}
+    monkeypatch.setattr(ui, "_pack_state", lambda selector: imported)
+    monkeypatch.setattr(ui, "confirm", lambda *a, **kw: pytest.fail("extra menu approval"))
+    calls = []
+    ui._pack_page(RUN, lambda args: calls.append(args) or True)
+    assert calls == [["describe", RUN]]
+
+
+def test_resume_import_reopens_same_run_and_offers_ai_without_automatically_starting_it(
+    navigation, monkeypatch
+):
+    navigation(3, None)
+    partial = state() | {"publishable": False, "analyzable": False}
+    completed = partial | {"unfinished": None, "analyzable": True, "run_id": UNFINISHED}
+    states = iter([partial, completed])
+    selectors = []
+
+    def read(selector):
+        selectors.append(selector)
+        return next(states)
+
+    monkeypatch.setattr(ui, "_pack_state", read)
+    calls = []
+    ui._pack_page(RUN, lambda args: calls.append(args) or True)
+    assert calls == [["resume", UNFINISHED]]
+    assert selectors == [RUN, UNFINISHED]
+
+
+def test_resume_import_can_then_analyze_from_explicit_action(navigation, monkeypatch):
+    navigation(3, 3)
+    partial = state() | {"publishable": False, "analyzable": False}
+    completed = partial | {"unfinished": None, "analyzable": True, "run_id": UNFINISHED}
+    states = iter([partial, completed])
+    monkeypatch.setattr(ui, "_pack_state", lambda selector: next(states))
+    calls = []
+    ui._pack_page(RUN, lambda args: calls.append(args) or True)
+    assert calls == [["resume", UNFINISHED], ["describe", UNFINISHED]]
 
 
 @pytest.mark.parametrize("accept", [True, False])
@@ -214,6 +292,30 @@ def test_failed_import_does_not_start_ai(navigation):
     calls = []
     ui._analyze("https://t.me/addemoji/NewsEmoji", lambda args: calls.append(args) or False)
     assert calls == [["import", "https://t.me/addemoji/NewsEmoji"]]
+
+
+def test_all_official_packs_skipped_is_successful_without_starting_ai(navigation, monkeypatch):
+    from contextlib import contextmanager
+
+    from mojilex_cli.commands import runtime
+
+    @contextmanager
+    def captured():
+        yield [
+            CommandResult(
+                status="noop",
+                result={
+                    "official_packs_skipped": ["https://t.me/addemoji/NewsEmoji"],
+                    "message": "Every pack is already in the official repository.",
+                },
+            )
+        ]
+
+    monkeypatch.setattr(runtime, "capture_command_results", captured)
+    monkeypatch.setattr(ui, "_notice", lambda message: pytest.fail(message))
+    calls = []
+    ui._analyze(r"C:\packs\links.txt", lambda args: calls.append(args) or True)
+    assert calls == [["import", r"C:\packs\links.txt"]]
 
 
 @pytest.mark.parametrize("source", ["https://t.me/addemoji/NewsEmoji", r"C:\packs\links.txt"])

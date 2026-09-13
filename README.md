@@ -137,6 +137,21 @@ All URLs share one import and analysis run, with one AI cost approval rather tha
 one per URL. The configured AI request limit still applies to the entire run.
 AI cost and publication confirmations default to **Yes**; Enter accepts it.
 
+The **Packs already in the official repository** setting (`mojilex settings`)
+applies to individual links and lists. The official `MojiLex/mojilex` main branch
+is checked once per operation; local drafts and pending PRs do not count.
+
+| Mode | Behavior |
+|---|---|
+| `ask` — default | One combined question for matching packs. **Enter means No**; only an explicit yes permits processing them again. New packs continue. |
+| `skip` | Skip matching official packs without asking. |
+| `allow` | Disable the official-list check; normal cache and reanalysis rules still apply. |
+
+Use `--official-packs ask|skip|allow` with `import`, `add`, `describe`, `update`, or `resume` for a
+one-time override. General `--yes` does not approve this separate question.
+Without interactive input, `ask` skips matching packs. If the official list
+cannot be checked, processing stops before analysis; bypass requires explicit `allow`.
+
 Choose **Sync all new completed packs to GitHub**, or run:
 
 ```console
@@ -152,6 +167,26 @@ A pending PR does not add packs to the base branch until it is merged.
 You can also use `mojilex import "C:\path\packs.txt"` or
 `mojilex import --from-file "C:\path\packs.txt"`, followed by
 `mojilex describe RUN_ID` using the combined import's printed run ID.
+
+### Pause and continue a large batch
+
+Import and AI analysis are saved separately. Each completed media item durably
+records its checksum, verification results, and prepared frames; completed AI
+results are also saved as they arrive. Stopping does not delete this work. An
+ordinary media failure no longer prevents processing other files in the pack.
+
+Choose **My packs → Continue**, or run `mojilex resume RUN_ID`. Importing the TXT
+again creates a new run. Valid retained frames are reused; missing or damaged
+cache entries may require downloading the file again for verification. Changed
+source media never silently replaces the saved input.
+
+After import completes, its page offers **Analyze saved import with AI**.
+Resuming downloads does not itself start paid analysis.
+
+Settings separate **Parallel media downloads** from **Parallel media decoders**.
+Two decoders run by default; downloads can continue while waiting for a decoder
+without consuming its timeout. Increase decoder concurrency gradually: too many
+processes can make processing slower.
 
 ## Everyday commands
 

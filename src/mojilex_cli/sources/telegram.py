@@ -204,7 +204,7 @@ class TelegramBotAPI(SourceAdapter):
     def capabilities(self) -> SourceCapabilities:
         return SourceCapabilities(
             platform="telegram",
-            media_formats=("webp", "tgs", "webm"),
+            media_formats=("webp", "png", "tgs", "webm"),
             stable_collection_ids=True,
             stable_emoji_ids=True,
             supports_collection_availability=True,

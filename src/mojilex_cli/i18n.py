@@ -374,6 +374,16 @@ _TEXT: dict[str, tuple[str, str]] = {
 }
 
 _RUSSIAN_MESSAGES = {
+    "ask, skip, or allow official packs.": (
+        "Паки из официальной базы: ask — спросить, skip — пропустить, allow — не проверять."
+    ),
+    "All selected packs are already in the official repository; skipped.": (
+        "Все выбранные паки уже есть в официальном репозитории и пропущены."
+    ),
+    "Unknown official pack policy.": "Неизвестный режим проверки официальных паков.",
+    "Choose ask, skip, or allow with --official-packs or settings.": (
+        "Выберите ask, skip или allow через --official-packs или настройки."
+    ),
     "The default repository folder is occupied by unrelated or incomplete data.": (
         "В стандартной папке репозитория находятся посторонние или неполные данные."
     ),
@@ -628,9 +638,10 @@ _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"Checking source (?P<index>\d+/\d+): (?P<source>.+)", "Проверка источника {index}: {source}"),
     (
         r"Source (?P<source>.+): (?P<count>\d+) media item\(s\); "
-        r"download/verification concurrency=(?P<concurrency>\d+)\.",
+        r"download concurrency=(?P<concurrency>\d+); "
+        r"decoder concurrency=(?P<decoders>\d+)\.",
         "Источник {source}: медиафайлов — {count}; "
-        "параллельных скачиваний и проверок — {concurrency}.",
+        "параллельных скачиваний — {concurrency}; декодеров — {decoders}.",
     ),
     (r"Media verified: (?P<item>.+)", "Медиафайл проверен: {item}"),
     (

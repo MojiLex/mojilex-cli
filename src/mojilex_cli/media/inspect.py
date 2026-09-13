@@ -43,11 +43,41 @@ def sniff_format(path: Path) -> str:
         header = stream.read(16)
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "webp"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
     if header[:2] == b"\x1f\x8b":
         return "tgs"
     if header[:4] == b"\x1aE\xdf\xa3":
         return "webm"
     raise MediaError("unsupported or malformed media signature")
+
+
+def inspect_png(path: Path, limits: MediaLimits) -> dict[str, object]:
+    """Validate a bounded static PNG while retaining its original encoded bytes."""
+    validate_input_file(path, limits)
+    try:
+        with Image.open(path) as image:
+            if image.format != "PNG":
+                raise MediaError("content is not PNG")
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > limits.max_pixels:
+                raise MediaLimitError("decoded PNG exceeds the pixel limit")
+            if getattr(image, "is_animated", False) or getattr(image, "n_frames", 1) != 1:
+                raise MediaError("animated PNG is not a supported static Telegram media type")
+            image.verify()
+        with Image.open(path) as decoded:
+            decoded.load()
+            oriented = ImageOps.exif_transpose(decoded)
+            try:
+                width, height = oriented.size
+            finally:
+                if oriented is not decoded:
+                    oriented.close()
+    except Image.DecompressionBombError as exc:
+        raise MediaLimitError("decoded PNG exceeds the pixel limit") from exc
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise MediaError("PNG cannot be decoded") from exc
+    return {"width": width, "height": height, "duration_ms": None}
 
 
 def inspect_webp(path: Path, limits: MediaLimits) -> dict[str, object]:

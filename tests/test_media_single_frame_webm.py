@@ -31,6 +31,11 @@ def test_only_proven_single_frame_can_repeat(
     monkeypatch.setattr(worker.shutil, "which", lambda value: value)
     monkeypatch.setattr(worker, "_decode_webm_frame", decode)
     monkeypatch.setattr(worker, "_webm_frame_durations", durations)
+
+    def unproven_interval(*args, **kwargs):
+        raise RuntimeError("ffmpeg failed to decode a deterministic WebM frame")
+
+    monkeypatch.setattr(worker, "_held_webm_frame_index", unproven_interval)
     kwargs = dict(codec="vp9", preserve_alpha=True, ffprobe="selected-probe")
     if frame_count == 1:
         frames = worker._render_webm(

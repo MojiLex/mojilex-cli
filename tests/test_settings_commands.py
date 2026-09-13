@@ -184,6 +184,7 @@ def test_russian_settings_are_localized(tmp_path: Path) -> None:
         saved = update_setting_command(
             "ai_concurrency", "4", **paths(tmp_path), environment={}
         ).result
-    assert result["settings"][0]["label"] == "Сервис ИИ"
+    provider = next(row for row in result["settings"] if row["key"] == "provider")
+    assert provider["label"] == "Сервис ИИ"
     assert "Приоритет" in result["notes"][0]
     assert "Сохранено" in saved["note"]
