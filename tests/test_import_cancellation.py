@@ -76,7 +76,7 @@ async def test_cancelled_import_preserves_completed_item_and_resumes(tmp_path_fa
             async for chunk in super().fetch_media(item):
                 yield chunk
 
-    def processor(temporary):
+    def processor(temporary, **_kwargs):
         value = _CountingProcessor(temporary, _analysis(snapshot))
         processors.append(value)
         return value
