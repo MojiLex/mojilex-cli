@@ -82,7 +82,9 @@ def snapshot_at_revision(repository: Path, revision: str) -> Iterator[Path]:
     """Yield a detached read-only-by-convention checkout for one recorded commit."""
 
     with tempfile.TemporaryDirectory(prefix="mojilex-base-") as raw:
-        root = Path(raw) / "repository"
+        # Canonicalize our own temporary parent (e.g. macOS /var -> /private/var)
+        # before cloning; dataset paths and their descendants still reject links.
+        root = Path(raw).resolve(strict=True) / "repository"
         _git(
             "-c",
             f"safe.directory={_local_git_directory(repository).as_posix()}",

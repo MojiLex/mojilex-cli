@@ -123,3 +123,34 @@ def test_local_clones_scope_safe_directory_to_the_exact_git_dir(
     expected_staging = f"safe.directory={(staging / '.git').resolve().as_posix()}"
     assert clone_commands[0][:2] == ("-c", expected_source)
     assert clone_commands[1][:2] == ("-c", expected_staging)
+
+
+def test_revision_snapshot_canonicalizes_its_own_temporary_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mojilex_cli.dataset.layout import assert_no_link_or_reparse
+
+    tmp_path = tmp_path.resolve()
+    source, revision = _source_repository(tmp_path)
+    parent = tmp_path / "real-temp"
+    parent.mkdir()
+    alias = tmp_path / "temp-alias"
+    try:
+        alias.symlink_to(parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+    real_temporary_directory = workspaces.tempfile.TemporaryDirectory
+
+    def temporary_directory(**kwargs):
+        return real_temporary_directory(dir=alias, **kwargs)
+
+    monkeypatch.setattr(workspaces.tempfile, "TemporaryDirectory", temporary_directory)
+    with snapshot_at_revision(source, revision) as base:
+        assert base == base.resolve()
+        assert base.is_relative_to(parent)
+        assert_no_link_or_reparse(base)
+        assert (base / "dataset.json").read_text(encoding="utf-8") == "{}\n"
+        # Public dataset path validation must still reject the original alias.
+        with pytest.raises(ValueError, match="link or reparse"):
+            assert_no_link_or_reparse(alias / base.relative_to(parent))
+    assert not base.exists()
