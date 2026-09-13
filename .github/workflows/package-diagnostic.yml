@@ -48,7 +48,12 @@ jobs:
           git -C "$RLOTTIE_SOURCE" checkout 683bbaa39dd0d366cf6b4bc300b4dfbee677ea6b
           # Upstream's formatting script shadows libc++ <format> through its root include path.
           mv "$RLOTTIE_SOURCE/format" "$RLOTTIE_SOURCE/format.sh"
-          meson setup "$RLOTTIE_BUILD" "$RLOTTIE_SOURCE" -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release
+          RLOTTIE_PLATFORM_ARGS=()
+          if [[ "$RUNNER_OS" == "macOS" && "$RUNNER_ARCH" == "ARM64" ]]; then
+            # Pinned upstream only ships 32-bit ARM NEON assembly; use its portable C++ path.
+            RLOTTIE_PLATFORM_ARGS+=(-Dcpp_args=-U__ARM_NEON__)
+          fi
+          meson setup "$RLOTTIE_BUILD" "$RLOTTIE_SOURCE" -Dexample=false -Dtest=false -Dmodule=false -Ddefault_library=static --buildtype=release "${RLOTTIE_PLATFORM_ARGS[@]}"
           meson compile -C "$RLOTTIE_BUILD"
           c++ -std=c++14 -O2 -Wall -Wextra -Werror \
             -I"$RLOTTIE_SOURCE/inc" tools/rlottie_rgba_renderer.cpp \
