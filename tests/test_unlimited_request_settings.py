@@ -106,7 +106,10 @@ def test_cli_request_limit_reaches_workflow_without_losing_zero_or_unlimited(
         packs,
         "resolve_pack_run",
         lambda *_args, **_kwargs: SimpleNamespace(
-            run_id="saved", status="interrupted", command="add"
+            run_id="saved",
+            status="interrupted",
+            command="add",
+            safe_parameters={"sources": ["https://t.me/addemoji/SamplePack"]},
         ),
     )
     selector = "https://t.me/addemoji/SamplePack" if command == "add" else "saved"
