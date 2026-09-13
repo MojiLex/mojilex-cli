@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from mojilex_cli import cli
@@ -126,6 +128,55 @@ def test_view_search_and_language_switch_are_read_only(navigation, monkeypatch):
         result = ui.browse_descriptions("NewsEmoji")
     assert result.result["items"][0]["content"]["warnings"] == ["flashing"]
     assert seen == ["en"]
+
+
+def test_details_stay_visible_until_explicit_return(navigation, monkeypatch):
+    navigation(0, None)
+    output = StringIO()
+    monkeypatch.setattr(ui, "Console", lambda: Console(file=output, width=100, height=30))
+    monkeypatch.setattr(Console, "pager", lambda *a, **kw: pytest.fail("system pager used"))
+    reads = []
+
+    def key():
+        assert "Explosion" in output.getvalue()
+        assert "flashing" in output.getvalue()
+        assert "Enter/Esc" in output.getvalue()
+        reads.append(True)
+        return "\r"
+
+    monkeypatch.setattr(ui.typer, "getchar", key)
+    ui._browse_item(view().result["items"][0], "ru")
+    assert reads == [True]
+
+
+@pytest.mark.parametrize(
+    "down,up,end,home",
+    [("\xe0Q", "\xe0I", "\xe0O", "\xe0G"), ("\x1b[6~", "\x1b[5~", "\x1b[F", "\x1b[H")],
+)
+def test_details_scroll_pages_and_keep_last_page_open(monkeypatch, down, up, end, home):
+    output = StringIO()
+    console = Console(file=output, width=100, height=10)
+    monkeypatch.setattr(ui, "Console", lambda: console)
+    monkeypatch.setattr(console, "clear", lambda: (output.seek(0), output.truncate()))
+    steps = iter(
+        [
+            ("ROW-00", down),
+            ("ROW-06", up),
+            ("ROW-00", end),
+            ("ROW-19", down),
+            ("ROW-19", home),
+            ("ROW-00", "\x1b"),
+        ]
+    )
+
+    def key():
+        expected, key = next(steps)
+        assert expected in output.getvalue()
+        return key
+
+    monkeypatch.setattr(ui.typer, "getchar", key)
+    ui._read_text("Details", "\n".join(f"ROW-{index:02}" for index in range(20)))
+    assert next(steps, None) is None
 
 
 def state():

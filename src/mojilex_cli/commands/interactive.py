@@ -153,6 +153,51 @@ def browse_descriptions(selector: str) -> CommandResult:
             _browse_item(filtered[selected - 2], language)
 
 
+def _read_text(title: str, text: str) -> None:
+    """Keep details visible without depending on a system pager or its exit policy."""
+    console = Console()
+    offset = 0
+    while True:
+        lines = Text(text).wrap(console, max(1, console.size.width))
+        page_size = max(1, console.size.height - 4)
+        last_offset = max(0, len(lines) - page_size)
+        offset = min(offset, last_offset)
+        console.clear()
+        console.print(Text(title, style="bold cyan"), no_wrap=True, overflow="ellipsis")
+        for line in lines[offset : offset + page_size]:
+            console.print(line, no_wrap=True, overflow="crop")
+        console.print(
+            Text(
+                label(
+                    "\n↑↓ Прокрутка · PgUp/PgDn Страница · Enter/Esc Назад",
+                    "\n↑↓ Scroll · PgUp/PgDn Page · Enter/Esc Back",
+                )
+                + f" · {offset + 1}–{min(offset + page_size, len(lines))}/{len(lines)}",
+                style="dim",
+            ),
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        try:
+            key = typer.getchar()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if key in {"\r", "\n", "\x1b", "q", "Q"}:
+            return
+        if key in {"\x1b[A", "\xe0H", "\x00H", "k"}:
+            offset = max(0, offset - 1)
+        elif key in {"\x1b[B", "\xe0P", "\x00P", "j"}:
+            offset = min(last_offset, offset + 1)
+        elif key in {"\x1b[5~", "\xe0I", "\x00I"}:
+            offset = max(0, offset - page_size)
+        elif key in {"\x1b[6~", "\xe0Q", "\x00Q", " "}:
+            offset = min(last_offset, offset + page_size)
+        elif key in {"\x1b[H", "\x1b[1~", "\xe0G", "\x00G"}:
+            offset = 0
+        elif key in {"\x1b[F", "\x1b[4~", "\xe0O", "\x00O"}:
+            offset = last_offset
+
+
 def _browse_item(item: dict[str, Any], language: str) -> None:
     detailed = False
     while True:
@@ -176,9 +221,10 @@ def _browse_item(item: dict[str, Any], language: str) -> None:
             for key, value in item.get("facets", {}).items():
                 if value:
                     lines.append(f"{key}: {value}")
-            console = Console()
-            with console.pager():
-                console.print(Text("\n\n".join(lines)))
+            _read_text(
+                label("Все поля и английский текст", "All fields and English text"),
+                "\n\n".join(lines),
+            )
             detailed = False
             continue
         choice = select(
