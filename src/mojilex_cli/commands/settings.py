@@ -57,10 +57,19 @@ SETTINGS: dict[str, Setting] = {
         "MOJILEX_OFFICIAL_PACK_POLICY",
         choices=("ask", "skip", "allow"),
     ),
+    "pack_concurrency": Setting(
+        ("processing", "pack_concurrency"),
+        "Parallel packs",
+        "Maximum active packs. Downloads, decoders and AI share the run's global limits.",
+        "MOJILEX_PACK_CONCURRENCY",
+        "integer",
+        1,
+        8,
+    ),
     "render_concurrency": Setting(
         ("processing", "render_concurrency"),
         "Parallel media decoders",
-        "CPU-heavy decoders run separately from downloads. Too many can cause timeouts.",
+        "Shared by all active packs. Too many CPU-heavy decoders can cause timeouts.",
         "MOJILEX_RENDER_CONCURRENCY",
         "integer",
         1,
@@ -82,7 +91,7 @@ SETTINGS: dict[str, Setting] = {
     "ai_concurrency": Setting(
         ("ai", "ai_concurrency"),
         "Parallel AI requests",
-        "More requests at once can speed up analysis, within provider rate limits.",
+        "Shared by all active packs, within provider rate limits and the saved run budget.",
         "MOJILEX_AI_CONCURRENCY",
         "integer",
         1,
@@ -107,7 +116,7 @@ SETTINGS: dict[str, Setting] = {
     "download_concurrency": Setting(
         ("telegram", "download_concurrency"),
         "Parallel media downloads",
-        "Number of media files downloaded and processed at once.",
+        "Maximum simultaneous media downloads across all active packs.",
         "MOJILEX_DOWNLOAD_CONCURRENCY",
         "integer",
         1,
@@ -144,15 +153,19 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
         "Паки из официального репозитория",
         "ask — спросить один раз, Enter означает Нет; skip — пропускать; allow — не проверять.",
     ),
+    "pack_concurrency": (
+        "Параллельные паки",
+        "Максимум активных паков. Лимиты скачиваний, декодеров и ИИ общие для всего запуска.",
+    ),
     "render_concurrency": (
         "Параллельные декодеры медиа",
-        "Тяжёлая обработка отдельно от скачиваний. Слишком много декодеров вызывает таймауты.",
+        "Общий предел для всех активных паков. Слишком много декодеров вызывает таймауты.",
     ),
     "provider": ("Сервис ИИ", "Сервис, который создаёт описания эмодзи."),
     "model": ("Модель ИИ", "Точное название модели; программа не выбирает модель автоматически."),
     "ai_concurrency": (
         "Параллельные запросы к ИИ",
-        "Несколько запросов одновременно ускоряют анализ в пределах ограничений сервиса.",
+        "Общий предел для всех активных паков, с учётом квот сервиса и бюджета запуска.",
     ),
     "max_ai_requests": (
         "Лимит запросов на запуск",
@@ -164,7 +177,7 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
     ),
     "download_concurrency": (
         "Параллельные скачивания",
-        "Сколько файлов скачивается и обрабатывается одновременно.",
+        "Максимум одновременных скачиваний файлов суммарно во всех активных паках.",
     ),
     "download_attempts": (
         "Попытки подключения при скачивании",

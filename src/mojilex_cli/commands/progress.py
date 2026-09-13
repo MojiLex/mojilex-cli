@@ -64,14 +64,14 @@ class BatchProgress:
             with suppress(asyncio.CancelledError):
                 await self._heartbeat
         self._report(interrupted=exc_type is not None)
-        finish_live_progress()
+        finish_live_progress(key=self)
 
     def phase(self, key: str, phase: str, *, count: int | None = None) -> None:
         if phase in {"retry", "transport_retry", "recovery"}:
             self.retry_events += 1
         self.active[key] = phase
         self.active_counts[key] = count if count is not None else self.active_counts.get(key, 1)
-        pause_live_progress("approval" in self.active.values())
+        pause_live_progress("approval" in self.active.values(), key=self)
         self._report_live()
 
     def stop_queue(self) -> None:
@@ -87,7 +87,7 @@ class BatchProgress:
     def finish(self, key: str, *, count: int = 1, failed: bool = False) -> None:
         self.active.pop(key, None)
         self.active_counts.pop(key, None)
-        pause_live_progress("approval" in self.active.values())
+        pause_live_progress("approval" in self.active.values(), key=self)
         if failed:
             self.failed += count
         else:
@@ -188,4 +188,4 @@ class BatchProgress:
             table.add_row(Text("Остановлено" if ru else "Stopped", style="yellow"), Text(""))
         elif self.completed == self.total:
             table.add_row(Text("Готово" if ru else "Done", style="green"), Text(""))
-        return update_live_progress(Panel(table, title=Text(self.label), expand=False))
+        return update_live_progress(Panel(table, title=Text(self.label), expand=False), key=self)

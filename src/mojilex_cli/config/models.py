@@ -85,6 +85,7 @@ class ProcessingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     official_pack_policy: Literal["ask", "skip", "allow"] = "ask"
+    pack_concurrency: int = Field(default=3, ge=1, le=8)
     render_concurrency: int = Field(default=2, ge=1, le=8)
     static_batch_size: int = Field(default=16, ge=1, le=16)
     animated_batch_size: int = Field(default=8, ge=1, le=16)

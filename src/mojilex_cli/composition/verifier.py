@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mojilex_cli.ai.base import CostEstimate, RequestBudget
 from mojilex_cli.ai.gemini import GeminiVisionProvider, _disable_interaction_retries
 from mojilex_cli.ai.transport_schema import gemini_transport_schema
+from mojilex_cli.concurrency import ai_slot
 
 _TIMEOUT_SECONDS = 30
 _PROMPT = """Judge this proposed assembly of square emoji tiles conservatively.
@@ -118,43 +119,44 @@ async def verify_composition(
         )
         interactions = provider._client.aio.interactions
         _disable_interaction_retries(interactions)
-        await budget.reserve(
-            CostEstimate(
-                upper_bound_usd=None, note="Optional composition veto has no price record."
+        async with ai_slot():
+            await budget.reserve(
+                CostEstimate(
+                    upper_bound_usd=None, note="Optional composition veto has no price record."
+                )
             )
-        )
-        response = await asyncio.wait_for(
-            interactions.create(
-                model=model,
-                api_version="v1beta",
-                input=[
-                    {
-                        "type": "user_input",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
-                            },
-                            {
-                                "type": "image",
-                                "mime_type": "image/png",
-                                "data": base64.b64encode(image_png).decode("ascii"),
-                            },
-                        ],
-                    }
-                ],
-                store=False,
-                background=False,
-                stream=False,
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": gemini_transport_schema(_Verdict.model_json_schema()),
-                },
-                generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
-            ),
-            timeout=_TIMEOUT_SECONDS,
-        )
+            response = await asyncio.wait_for(
+                interactions.create(
+                    model=model,
+                    api_version="v1beta",
+                    input=[
+                        {
+                            "type": "user_input",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
+                                },
+                                {
+                                    "type": "image",
+                                    "mime_type": "image/png",
+                                    "data": base64.b64encode(image_png).decode("ascii"),
+                                },
+                            ],
+                        }
+                    ],
+                    store=False,
+                    background=False,
+                    stream=False,
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": gemini_transport_schema(_Verdict.model_json_schema()),
+                    },
+                    generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
+                ),
+                timeout=_TIMEOUT_SECONDS,
+            )
         if response.status != "completed" or response.model not in (model, f"models/{model}"):
             return False
         if not isinstance(response.output_text, str) or len(response.output_text) > 16_384:

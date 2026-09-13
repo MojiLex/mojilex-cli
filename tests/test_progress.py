@@ -85,7 +85,7 @@ def test_progress_preserves_json_stdout_and_quiet(capsys, quiet):
 async def test_live_panel_counts_items_and_distinguishes_retries_from_failures(monkeypatch):
     views = []
 
-    def capture(view):
+    def capture(view, *, key=None):
         output = StringIO()
         Console(file=output, width=100).print(view)
         views.append(output.getvalue())
@@ -156,4 +156,66 @@ def test_live_rendering_never_starts_for_json_or_quiet(monkeypatch, json_output,
         assert not runtime.update_live_progress(Text("hidden"))
         assert context.live is None
     finally:
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_parallel_panels_finish_independently_and_preserve_other_approval(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Console(file=StringIO(), force_terminal=True, width=100)
+    monkeypatch.setattr(runtime, "Console", lambda **kwargs: terminal)
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.update_live_progress(Text("pack A"), key="a")
+        runtime.update_live_progress(Text("pack B"), key="b")
+        assert set(context.progress_views) == {"a", "b"}
+        runtime.pause_live_progress(True, key="a")
+        runtime.pause_live_progress(False, key="b")
+        assert context.progress_paused
+        with runtime.suspend_progress():
+            assert context.progress_paused
+        assert context.progress_pause_keys == {"a"}
+        runtime.finish_live_progress(key="b")
+        assert set(context.progress_views) == {"a"}
+        assert context.progress_paused
+        runtime.pause_live_progress(False, key="a")
+        runtime.update_live_progress(Text("pack A done"), key="a")
+        assert context.live is not None
+        runtime.finish_live_progress(key="a")
+        assert context.live is None
+        assert context.progress_view is None
+        assert context.progress_views == {}
+    finally:
+        runtime.finish_live_progress()
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_finishing_one_parallel_panel_does_not_stop_live_peer(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Console(file=StringIO(), force_terminal=True, width=100)
+    monkeypatch.setattr(runtime, "Console", lambda **kwargs: terminal)
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.update_live_progress(Text("pack A"), key="a")
+        live = context.live
+        runtime.update_live_progress(Text("pack B"), key="b")
+        runtime.finish_live_progress(key="a")
+        assert context.live is live
+        assert set(context.progress_views) == {"b"}
+    finally:
+        runtime.finish_live_progress()
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_finishing_nonterminal_peer_keeps_other_approval_paused():
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.pause_live_progress(True, key="a")
+        runtime.finish_live_progress(key="b")
+        assert context.progress_paused
+        assert context.progress_pause_keys == {"a"}
+    finally:
+        runtime.finish_live_progress()
         runtime._COMMAND_CONTEXT.reset(token)

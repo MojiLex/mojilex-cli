@@ -76,6 +76,7 @@ from mojilex_cli.commands.runtime import (
     report_run_id,
     structured_exception,
 )
+from mojilex_cli.concurrency import OrderedTurns, PackDependencies, batch_limits, bounded_map
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
     DatasetSnapshot,
@@ -117,7 +118,7 @@ from mojilex_cli.media import (
     build_contact_sheets,
     expected_labels,
 )
-from mojilex_cli.media.resume import RetainedMediaStore
+from mojilex_cli.media.resume import RetainedMediaStore, get_retained_store
 from mojilex_cli.output.models import RunStatus, StructuredError
 from mojilex_cli.policy import (
     ROUTING_POLICY_VERSION,
@@ -694,6 +695,7 @@ async def _run_add(
                 report_progress(f"Media verified: {item.native_id}", verbose=True)
 
         async def record_ai_chunk_completion(
+            source: SourceCollection,
             items: Sequence[SourceEmoji],
             outcomes: Mapping[str, _SemanticOutcome],
         ) -> None:
@@ -751,7 +753,12 @@ async def _run_add(
                 max_download_bytes=config.processing.max_download_bytes,
             ) as adapter:
                 await adapter.validate_credentials()
-                for source_index, source_text in source_entries:
+                merge_turns = OrderedTurns()
+                dependencies = PackDependencies()
+
+                async def process_source(entry: tuple[int, tuple[int, str]]) -> None:
+                    nonlocal current, checkpoint
+                    position, (source_index, source_text) = entry
                     collection_lock: Any | None = None
                     lock_entered = False
                     try:
@@ -760,17 +767,17 @@ async def _run_add(
                             f"Checking source {source_index + 1}/{len(all_sources)}: "
                             f"{reference.native_id}"
                         )
-                        if not options.dry_run:
-                            collection_lock = run_store.collection_lock(
-                                reference.platform, reference.native_id
-                            )
-                            collection_lock.__enter__()
-                            lock_entered = True
                         try:
                             source = await adapter.fetch_collection(reference)
                         except SourceNotFoundError:
                             if not options.explicit_verification:
                                 raise
+                            if not options.dry_run:
+                                collection_lock = run_store.collection_lock(
+                                    reference.platform, reference.native_id
+                                )
+                                collection_lock.__enter__()
+                                lock_entered = True
                             current, availability_updates = await _mark_missing_collection(
                                 current,
                                 adapter,
@@ -780,7 +787,7 @@ async def _run_add(
                             totals["collections_updated"] += int(availability_updates > 0)
                             totals["items_updated"] += max(0, availability_updates - 1)
                             successful_source_indexes.add(source_index)
-                            continue
+                            return
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
                             f"download concurrency={config.telegram.download_concurrency}; "
@@ -813,6 +820,22 @@ async def _run_add(
                                 ),
                                 source=source.canonical_url,
                             )
+                        await dependencies.wait(
+                            position,
+                            (
+                                f"collection:{source.platform}:{source.native_id}",
+                                *(
+                                    f"emoji:{source.platform}:{item.native_id}"
+                                    for item in source.items
+                                ),
+                            ),
+                        )
+                        if not options.dry_run:
+                            collection_lock = run_store.collection_lock(
+                                reference.platform, reference.native_id
+                            )
+                            collection_lock.__enter__()
+                            lock_entered = True
                         if options.dry_run and not options.check_media:
                             _accumulate_preview(totals, current, source)
                             preview_plan = await _preview_ai_plan(
@@ -822,7 +845,7 @@ async def _run_add(
                                 preview_ai[key] += value
                             source_collections.append(source)
                             successful_source_indexes.add(source_index)
-                            continue
+                            return
                         with TemporaryMediaRun(limits=_media_limits(config)) as temporary:
                             processor = MediaProcessor(
                                 temporary, render_concurrency=config.processing.render_concurrency
@@ -867,7 +890,7 @@ async def _run_add(
                                     preview_ai[key] += value
                                 source_collections.append(source)
                                 successful_source_indexes.add(source_index)
-                                continue
+                                return
                             assert cache is not None
                             _cache_deterministic_analyses(cache, source, processed)
                             checkpoint_request_traces = _request_traces_from_checkpoint(
@@ -900,7 +923,9 @@ async def _run_add(
                                 verified_resume_outcomes=verified_resume_outcomes,
                                 request_traces_out=request_traces,
                                 resume_request_traces=checkpoint_request_traces,
-                                on_chunk_completed=record_ai_chunk_completion,
+                                on_chunk_completed=lambda items, outcomes: (
+                                    record_ai_chunk_completion(source, items, outcomes)
+                                ),
                             )
                             analyses = _bind_deterministic_analyses(processed)
                             if checkpoint is not None:
@@ -914,6 +939,12 @@ async def _run_add(
                                     processed,
                                     previous=evidence.get(source.native_id),
                                 )
+                                # Other packs can checkpoint composition candidates while
+                                # this pack awaits preparation; merge into the latest evidence.
+                                evidence = checkpoint.safe_parameters.get(
+                                    "composition_evidence", {}
+                                )
+                                evidence = dict(evidence) if isinstance(evidence, dict) else {}
                                 evidence[source.native_id] = [
                                     group.model_dump(mode="json") for group in groups
                                 ]
@@ -941,6 +972,9 @@ async def _run_add(
                                 )
                                 checkpoint = _checkpoint_budget(checkpoint, budget)
                                 run_store.save(checkpoint)
+                            # Only canonical assembly waits for input order. Network,
+                            # decoding and AI for other non-overlapping packs keep running.
+                            await merge_turns.wait(position)
                             plan = plan_collection_merge(
                                 current,
                                 source,
@@ -1056,8 +1090,37 @@ async def _run_add(
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
+                        dependencies.finish(position)
+                        merge_turns.finish(position)
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)
+
+                # Operations which ask about a sensitive change or refresh a
+                # canonical entity before planning retain their serial semantics.
+                pack_concurrency = (
+                    1
+                    if options.dry_run
+                    or options.explicit_verification
+                    or options.overwrite_reviewed
+                    or options.new_identity
+                    or options.same_identity
+                    else config.processing.pack_concurrency
+                )
+                report_progress(
+                    f"Pack pipeline: up to {pack_concurrency} active packs; shared limits: "
+                    f"downloads={config.telegram.download_concurrency}, "
+                    f"decoders={config.processing.render_concurrency}, "
+                    f"AI={config.ai.ai_concurrency}."
+                )
+                with batch_limits(
+                    downloads=config.telegram.download_concurrency,
+                    renders=config.processing.render_concurrency,
+                    ai=config.ai.ai_concurrency,
+                    max_temp_bytes=config.processing.max_temp_bytes,
+                ):
+                    await bounded_map(
+                        enumerate(source_entries), process_source, concurrency=pack_concurrency
+                    )
             if options.dry_run:
                 status = RunStatus.DRY_RUN
                 if errors:
@@ -1417,7 +1480,11 @@ async def _run_import(
                 max_download_bytes=config.processing.max_download_bytes,
             ) as adapter:
                 await adapter.validate_credentials()
-                for source_text in sources:
+                dependencies = PackDependencies()
+
+                async def import_source(entry: tuple[int, str]) -> None:
+                    nonlocal checkpoint, imported
+                    position, source_text = entry
                     try:
                         source = await adapter.fetch_collection(adapter.canonicalize(source_text))
                         report_progress(
@@ -1445,6 +1512,16 @@ async def _run_import(
                                 hint="Raise the explicit item budget and retry.",
                                 source=source.canonical_url,
                             )
+                        await dependencies.wait(
+                            position,
+                            (
+                                f"collection:{source.platform}:{source.native_id}",
+                                *(
+                                    f"emoji:{source.platform}:{item.native_id}"
+                                    for item in source.items
+                                ),
+                            ),
+                        )
                         memberships = _membership_map(
                             checkpoint.safe_parameters.get("source_memberships")
                         )
@@ -1495,6 +1572,25 @@ async def _run_import(
                         store.save(checkpoint)
                         if options.fail_fast or terminal_error:
                             raise
+                    finally:
+                        dependencies.finish(position)
+
+                report_progress(
+                    f"Pack pipeline: up to {config.processing.pack_concurrency} active packs; "
+                    f"shared limits: downloads={config.telegram.download_concurrency}, "
+                    f"decoders={config.processing.render_concurrency}, AI=0."
+                )
+                with batch_limits(
+                    downloads=config.telegram.download_concurrency,
+                    renders=config.processing.render_concurrency,
+                    ai=config.ai.ai_concurrency,
+                    max_temp_bytes=config.processing.max_temp_bytes,
+                ):
+                    await bounded_map(
+                        enumerate(sources),
+                        import_source,
+                        concurrency=config.processing.pack_concurrency,
+                    )
             status = "succeeded" if not failures else "partial" if imported else "failed"
             checkpoint = _finish_checkpoint(checkpoint, status, 0, Decimal("0"))
             store.save(checkpoint)
@@ -2157,13 +2253,11 @@ async def _prepare_collection_media(
             / hashlib.sha256(cache_alias_scope.encode()).hexdigest()
         )
         if not retained_root.resolve().is_relative_to(snapshot.root.resolve()):
-            retained = RetainedMediaStore(
+            retained = get_retained_store(
                 retained_root,
                 max_bytes=media_run.limits.max_run_temp_bytes,
-                reserve=media_run.reserve_retained_bytes,
-                release=media_run.release_retained_bytes,
+                run=media_run,
             )
-            media_run.reserve_retained_bytes(retained.size_bytes)
     force_direct_ids = {
         native_id
         for native_id, existing in guarded.items()

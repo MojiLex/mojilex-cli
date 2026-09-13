@@ -13,6 +13,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
+from mojilex_cli.concurrency import ai_slot
+
 SEMANTIC_VALIDATION_CODES = frozenset(
     {
         "motion_presence_mismatch",
@@ -618,11 +620,14 @@ async def describe_with_recovery(
 
     async def request_with_transport_retries(target: DescriptionRequest) -> DescriptionResult:
         for transport_attempt in range(3):
-            progress("approval")
-            await budget.reserve(provider.estimate(target))
-            progress("request")
             try:
-                return await provider.describe(target)
+                # Reserve only when an actual request slot is available. Retries
+                # release their slot during backoff, and escalation shares it too.
+                async with ai_slot():
+                    progress("approval")
+                    await budget.reserve(provider.estimate(target))
+                    progress("request")
+                    return await provider.describe(target)
             except AITransientError:
                 if transport_attempt == 2:
                     raise

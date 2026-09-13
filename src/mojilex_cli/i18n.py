@@ -637,6 +637,12 @@ _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (r"Checking source (?P<index>\d+/\d+): (?P<source>.+)", "Проверка источника {index}: {source}"),
     (
+        r"Pack pipeline: up to (?P<packs>\d+) active packs; shared limits: "
+        r"downloads=(?P<downloads>\d+), decoders=(?P<decoders>\d+), AI=(?P<ai>\d+)\.",
+        "Одновременно паков: до {packs}. Общие лимиты: скачивания — {downloads}, "
+        "декодеры — {decoders}, запросы ИИ — {ai}.",
+    ),
+    (
         r"Source (?P<source>.+): (?P<count>\d+) media item\(s\); "
         r"download concurrency=(?P<concurrency>\d+); "
         r"decoder concurrency=(?P<decoders>\d+)\.",

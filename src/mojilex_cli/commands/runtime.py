@@ -52,6 +52,8 @@ class _CommandContext:
     json_output: bool = False
     live: Live | None = None
     progress_view: RenderableType | None = None
+    progress_views: dict[object, RenderableType] = field(default_factory=dict)
+    progress_pause_keys: set[object] = field(default_factory=set)
     progress_note: str = ""
     progress_paused: bool = False
     operations: list[tuple[str, float]] = field(default_factory=list)
@@ -142,7 +144,7 @@ def suspend_progress() -> Iterator[None]:
     if context is None:
         yield
         return
-    previous = context.progress_paused
+    previous = None in context.progress_pause_keys
     context.prompt_depth += 1
     pause_live_progress(True)
     try:
@@ -215,7 +217,7 @@ def _refresh_live(context: _CommandContext) -> None:
         context.live.update(Group(context.progress_view, Text(context.progress_note)), refresh=True)
 
 
-def update_live_progress(view: RenderableType) -> bool:
+def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
     """Use one terminal panel; retain ordinary logs for pipes and JSON callers."""
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or context.json_output:
@@ -223,7 +225,8 @@ def update_live_progress(view: RenderableType) -> bool:
     console = Console(stderr=True, no_color=context.no_color)
     if not console.is_terminal or console.is_dumb_terminal:
         return False
-    context.progress_view = view
+    context.progress_views[key] = view
+    context.progress_view = Group(*context.progress_views.values())
     if context.progress_paused:
         return True
     _stop_operation_live(context)
@@ -241,12 +244,16 @@ def update_live_progress(view: RenderableType) -> bool:
     return True
 
 
-def pause_live_progress(paused: bool) -> None:
+def pause_live_progress(paused: bool, *, key: object = None) -> None:
     """Keep confirmation prompts visible and free of terminal redraws."""
     context = _COMMAND_CONTEXT.get()
     if context is None:
         return
-    context.progress_paused = paused or context.prompt_depth > 0
+    if paused:
+        context.progress_pause_keys.add(key)
+    else:
+        context.progress_pause_keys.discard(key)
+    context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
     if context.progress_paused:
         _stop_operation_live(context)
     if context.progress_paused and context.live is not None:
@@ -256,18 +263,39 @@ def pause_live_progress(paused: bool) -> None:
         _resume_operation_live(context)
 
 
-def finish_live_progress() -> None:
+def finish_live_progress(*, key: object = None) -> None:
+    """Finish one active batch, or flush every panel at command shutdown."""
     context = _COMMAND_CONTEXT.get()
     if context is None:
         return
+    if key is not None:
+        finished = context.progress_views.pop(key, None)
+        context.progress_pause_keys.discard(key)
+        context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
+        if context.progress_views:
+            context.progress_view = Group(*context.progress_views.values())
+            if finished is not None:
+                console = (
+                    context.live.console
+                    if context.live is not None
+                    else Console(stderr=True, no_color=context.no_color)
+                )
+                console.print(finished)
+            if context.live is not None:
+                _refresh_live(context)
+            return
+        context.progress_view = finished
     if context.live is not None:
         context.live.stop()
         context.live = None
     if context.progress_view is not None:
         Console(stderr=True, no_color=context.no_color).print(context.progress_view)
+    context.progress_views.clear()
     context.progress_view = None
     context.progress_note = ""
-    context.progress_paused = False
+    if key is None:
+        context.progress_pause_keys.clear()
+    context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
     _resume_operation_live(context)
 
 

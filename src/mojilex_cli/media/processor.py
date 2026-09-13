@@ -6,6 +6,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from mojilex_cli.concurrency import current_batch_limits
+
 from .models import MediaError, ProcessedMedia
 from .sandbox import SafeMediaWorker
 from .temporary import TemporaryMediaRun
@@ -33,7 +35,10 @@ class MediaProcessor:
         # Downloads can overlap freely within the pipeline's network limit. Only
         # isolated decoder processes occupy these slots, so queued work does not
         # consume its worker wall-time budget or spawn extra Python processes.
-        self._render_slots = asyncio.Semaphore(render_concurrency)
+        batch = current_batch_limits()
+        self._render_slots = (
+            batch.render_slots if batch is not None else asyncio.Semaphore(render_concurrency)
+        )
 
     async def verify_stream(
         self,

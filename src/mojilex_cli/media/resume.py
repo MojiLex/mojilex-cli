@@ -21,11 +21,61 @@ from typing import Any
 
 from PIL import Image
 
-from .models import HARD_MAX_FILE_BYTES, HARD_MAX_FRAMES, PIPELINE_VERSION, ProcessedMedia
+from mojilex_cli.concurrency import ByteBudgetExceeded, current_batch_limits
+
+from .models import (
+    HARD_MAX_FILE_BYTES,
+    HARD_MAX_FRAMES,
+    PIPELINE_VERSION,
+    MediaLimitError,
+    ProcessedMedia,
+)
+from .temporary import TemporaryMediaRun
 
 _KEY = re.compile(r"[0-9a-f]{64}\Z")
 _MANIFEST_LIMIT = 32 * 1024
 _MAX_ENTRIES = 100_000
+
+
+def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) -> RetainedMediaStore:
+    """Reuse one retained store and one disk reservation across concurrent packs.
+
+    Retained frames outlive temporary pack directories: shared reservations belong
+    to the whole operation and are never released by the first pack's cleanup.
+    """
+    batch = current_batch_limits()
+    if batch is None:
+        store = RetainedMediaStore(
+            root,
+            max_bytes,
+            reserve=run.reserve_retained_bytes,
+            release=run.release_retained_bytes,
+        )
+        run.reserve_retained_bytes(store.size_bytes)
+        return store
+    key = os.path.normcase(os.path.abspath(root))
+    with batch.retained_lock:
+        existing = batch.retained_stores.get(key)
+        if isinstance(existing, RetainedMediaStore):
+            if existing.max_bytes != max_bytes:
+                raise ValueError("shared retained media limit changed during the operation")
+            return existing
+
+        def reserve(count: int) -> None:
+            try:
+                batch.temp_budget.adjust(count)
+            except ByteBudgetExceeded as exc:
+                raise MediaLimitError(str(exc)) from exc
+
+        def release(count: int) -> None:
+            batch.temp_budget.adjust(-count)
+
+        store = RetainedMediaStore(root, max_bytes, reserve=reserve, release=release)
+        if store.size_bytes > max_bytes:
+            raise MediaLimitError("run temporary disk limit exceeded")
+        reserve(store.size_bytes)
+        batch.retained_stores[key] = store
+        return store
 
 
 def _safe_path(path: Path) -> None:

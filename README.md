@@ -183,10 +183,22 @@ source media never silently replaces the saved input.
 After import completes, its page offers **Analyze saved import with AI**.
 Resuming downloads does not itself start paid analysis.
 
-Settings separate **Parallel media downloads** from **Parallel media decoders**.
+For large lists, **Settings → Parallel packs** controls how many packs can be
+active together: three by default, from one to eight. Downloading and preparing
+one pack can overlap with AI analysis of another. Set this to one for sequential
+pack processing. The same setting is available as `processing.pack_concurrency`
+in TOML or `MOJILEX_PACK_CONCURRENCY` in the environment.
+
+**Parallel media downloads**, **Parallel media decoders**, and **Parallel AI
+requests** are shared limits for the entire operation, not separate allowances
+for every pack. The saved AI request and cost budgets and the temporary media
+storage limit are shared too. Increasing the number of active packs does not
+multiply these limits. Shared repository updates and Git writes remain ordered.
+
 Two decoders run by default; downloads can continue while waiting for a decoder
 without consuming its timeout. Increase decoder concurrency gradually: too many
-processes can make processing slower.
+processes can make processing slower. Overlapping stages reduces idle time, but
+the speedup depends on CPU capacity, network speed and provider quotas.
 
 ## Everyday commands
 
@@ -280,7 +292,7 @@ block submission; invalid data still fails validation.
 | Question | What to do or expect |
 |---|---|
 | Does analysis cost money? | It may, depending on your Gemini account and model. The default limit is **100 requests per run**, including retries. Resume retains the consumed count. Review the plan before approving unknown pricing. |
-| Can it run faster? | Adjust AI parallelism in **Settings**. For an existing run, use `mojilex resume NewsEmoji --ai-concurrency 4`. Speed depends on provider quotas; this does not increase the request budget. |
+| Can it run faster? | **Settings → Parallel packs** overlaps work on several packs within shared download, decoder and AI limits. Adjust those limits separately for your computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
 | The connection dropped or I stopped it | Use `mojilex resume NewsEmoji`. Completed work is reused; missing/corrupt media may need downloading again. Budget or access errors need resolving first. |
 | Why is the count not moving? | A batch may be waiting for a response or validation. Watch the stage, retries and elapsed time. Time spent is not completed work. |
 | Where are English descriptions? | Switch languages in `show` or open item details. Interface language is separate, under **Settings**. |

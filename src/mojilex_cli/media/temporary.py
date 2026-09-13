@@ -11,6 +11,8 @@ import uuid
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 
+from mojilex_cli.concurrency import BatchLimits, ByteBudgetExceeded, current_batch_limits
+
 from .models import HARD_MAX_FILE_BYTES, MediaLimitError, MediaLimits
 
 
@@ -24,8 +26,12 @@ class TemporaryMediaRun:
         self._reserved_bytes = 0
         self._retained_bytes = 0
         self._account_lock = threading.RLock()
+        self._batch: BatchLimits | None = None
+        self._batch_bytes = 0
 
     def __enter__(self) -> TemporaryMediaRun:
+        if self.path is not None:
+            raise RuntimeError("temporary media run is already active")
         base = None
         if self._requested_root is not None:
             base = str(self._requested_root.resolve(strict=True))
@@ -34,6 +40,8 @@ class TemporaryMediaRun:
         self.bytes_written = 0
         self._reserved_bytes = 0
         self._retained_bytes = 0
+        self._batch = current_batch_limits()
+        self._batch_bytes = 0
         try:
             os.chmod(self.path, 0o700)
         except OSError:
@@ -46,11 +54,23 @@ class TemporaryMediaRun:
     def cleanup(self) -> None:
         if self.path is not None and self.path.exists():
             shutil.rmtree(self.path)
-        self.path = None
-        self._accounted.clear()
-        self.bytes_written = 0
-        self._reserved_bytes = 0
-        self._retained_bytes = 0
+        with self._account_lock:
+            self._adjust_batch(-self._batch_bytes)
+            self._batch = None
+            self.path = None
+            self._accounted.clear()
+            self.bytes_written = 0
+            self._reserved_bytes = 0
+            self._retained_bytes = 0
+
+    def _adjust_batch(self, delta: int, *, observed: bool = False) -> None:
+        """Called under the per-run lock; rejected reservations leave both budgets intact."""
+        if self._batch is not None:
+            try:
+                self._batch.temp_budget.adjust(delta, observed=observed)
+            except ByteBudgetExceeded as exc:
+                raise MediaLimitError(str(exc)) from exc
+            self._batch_bytes += delta
 
     def reserve_retained_bytes(self, count: int) -> None:
         """Charge resumable frames against the same run disk budget."""
@@ -62,15 +82,25 @@ class TemporaryMediaRun:
                 > self.limits.max_run_temp_bytes
             ):
                 raise MediaLimitError("run temporary disk limit exceeded")
+            self._adjust_batch(count)
             self._retained_bytes += count
 
     def release_retained_bytes(self, count: int) -> None:
         with self._account_lock:
             if not 0 <= count <= self._retained_bytes:
                 raise ValueError("invalid retained byte release")
+            self._adjust_batch(-count)
             self._retained_bytes -= count
 
     async def write_stream(
+        self, chunks: AsyncIterator[bytes], *, expected_size: int | None = None
+    ) -> tuple[Path, str, int]:
+        if self._batch is not None:
+            async with self._batch.download_slots:
+                return await self._write_stream(chunks, expected_size=expected_size)
+        return await self._write_stream(chunks, expected_size=expected_size)
+
+    async def _write_stream(
         self, chunks: AsyncIterator[bytes], *, expected_size: int | None = None
     ) -> tuple[Path, str, int]:
         if self.path is None:
@@ -99,6 +129,7 @@ class TemporaryMediaRun:
                             > self.limits.max_run_temp_bytes
                         ):
                             raise MediaLimitError("run temporary disk limit exceeded")
+                        self._adjust_batch(len(chunk))
                         self._reserved_bytes += len(chunk)
                         reserved_size += len(chunk)
                     item_size = next_item_size
@@ -117,6 +148,7 @@ class TemporaryMediaRun:
             return destination, digest.hexdigest(), item_size
         except BaseException:
             with self._account_lock:
+                self._adjust_batch(-reserved_size)
                 self._reserved_bytes -= reserved_size
             partial.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
@@ -154,13 +186,20 @@ class TemporaryMediaRun:
             inspect(Path(value))
         with self._account_lock:
             delta = sum(size - self._accounted.get(path, 0) for path, size in observed.items())
-            if (
-                self.bytes_written + self._reserved_bytes + self._retained_bytes + delta
-                > self.limits.max_run_temp_bytes
-            ):
-                raise MediaLimitError("run temporary disk limit exceeded")
+            # These bytes already exist. Charge them even on failure so another
+            # pack cannot keep rendering into an incorrectly "free" disk budget.
+            self._adjust_batch(delta, observed=True)
             self.bytes_written += delta
             self._accounted.update(observed)
+            if (
+                self.bytes_written + self._reserved_bytes + self._retained_bytes
+                > self.limits.max_run_temp_bytes
+                or (
+                    self._batch is not None
+                    and self._batch.temp_budget.used > self._batch.temp_budget.maximum
+                )
+            ):
+                raise MediaLimitError("run temporary disk limit exceeded")
             return self.bytes_written
 
     def output_dir(self) -> Path:
