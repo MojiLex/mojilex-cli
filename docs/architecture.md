@@ -6,6 +6,10 @@ separate source files. Only supplied backgrounds with no variant ID can be bound
 alternate media, invented variants, and unavailable views remain invalid. The raw AI
 cache and prompt provenance remain unchanged. Duplicate references to the same source
 are collapsed without removing text or changing its recognition status.
+If an older cached response has an unsupported media reference, a fresh validated
+response may replace that exact rejected entry atomically with its request envelope.
+The original payload and generation instant are retained in a separate archive row;
+valid cache entries remain immutable.
 
 MojiLex is split into two repositories. `mojilex-cli` contains executable Python code;
 `MojiLex/mojilex` is the canonical, media-free data repository.

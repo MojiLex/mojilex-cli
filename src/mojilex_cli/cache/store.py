@@ -69,12 +69,13 @@ class CachedAIResult(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class AICacheWrite:
-    """One immutable row participating in an atomic AI request result write."""
+    """An atomic row write; replacement requires an exact context-rejected entry."""
 
     key: str
     result: DescriptionResult
     generated_at: str
     aliases: tuple[str, ...] = ()
+    expected_invalid_entry: CachedAIResult | None = None
 
 
 class CacheStore:
@@ -294,9 +295,15 @@ class CacheStore:
         stored: dict[str, CachedAIResult] = {}
         try:
             with self._connection:
+                # Compare-and-replace must see one write-locked snapshot, including
+                # when another cache connection is trying to repair the same row.
+                if not self._connection.in_transaction:
+                    self._connection.execute("BEGIN IMMEDIATE")
                 for write, candidate, serialized in prepared:
                     existing = self._connection.execute(
-                        "SELECT payload_json FROM ai_cache WHERE cache_key = ?", (write.key,)
+                        "SELECT payload_json, created_at, accessed_at "
+                        "FROM ai_cache WHERE cache_key = ?",
+                        (write.key,),
                     ).fetchone()
                     if existing is None:
                         self._connection.execute(
@@ -315,7 +322,42 @@ class CacheStore:
                             # remain fail-closed, but corruption must not permanently
                             # poison an otherwise recoverable cache key.
                             decoded = None
-                        if decoded is None:
+                        replacing_rejected = (
+                            decoded is not None
+                            and write.expected_invalid_entry is not None
+                            and decoded == write.expected_invalid_entry
+                        )
+                        if replacing_rejected:
+                            # Keep the exact old payload and its real timestamps.
+                            # The archive is not an alias and cannot mask this key.
+                            archive_key = (
+                                "rejected-ai-v1:"
+                                + hashlib.sha256(
+                                    (write.key + "\0" + existing["payload_json"]).encode("utf-8")
+                                ).hexdigest()
+                            )
+                            archive = self._connection.execute(
+                                "SELECT payload_json, created_at FROM ai_cache WHERE cache_key = ?",
+                                (archive_key,),
+                            ).fetchone()
+                            if archive is None:
+                                self._connection.execute(
+                                    """INSERT INTO ai_cache(
+                                         cache_key, payload_json, created_at, accessed_at
+                                       ) VALUES (?, ?, ?, ?)""",
+                                    (
+                                        archive_key,
+                                        existing["payload_json"],
+                                        existing["created_at"],
+                                        existing["accessed_at"],
+                                    ),
+                                )
+                            elif (
+                                archive["payload_json"] != existing["payload_json"]
+                                or archive["created_at"] != existing["created_at"]
+                            ):
+                                raise CacheError("context-rejected AI archive key collision")
+                        if decoded is None or replacing_rejected:
                             self._connection.execute(
                                 """UPDATE ai_cache
                                    SET payload_json = ?, created_at = ?, accessed_at = ?

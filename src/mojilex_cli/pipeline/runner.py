@@ -3674,6 +3674,7 @@ async def _load_or_describe_primary_batch(
         request_identity=request_identity,
         cache_alias_scope=cache_alias_scope,
         repair_request_envelope=True,
+        contexts=contexts,
     )
 
 
@@ -4117,6 +4118,7 @@ def _cache_ai_request_results(
     request_identity: _AIRequestIdentity,
     cache_alias_scope: str | None,
     repair_request_envelope: bool = False,
+    contexts: Mapping[str, VisionContext] | None = None,
 ) -> dict[str, tuple[CachedAIResult, _AICacheTrace]]:
     if not writes:
         raise ValueError("AI request cache write requires at least one item")
@@ -4136,12 +4138,36 @@ def _cache_ai_request_results(
         normalized_result = write.result.model_copy(
             update={"batch": DescriptionBatch(items=(normalized,))}
         )
+        expected_invalid_entry = None
+        if contexts is not None:
+            context = contexts[write.item.native_id]
+            _validate_actual_result(
+                normalized_result,
+                normalized_result.provider,
+                normalized_result.model,
+                contexts={"E001": context},
+            )
+            try:
+                existing = cache.get_ai_entry(write.storage_key)
+            except CacheError:
+                existing = None  # The store already repairs structurally corrupt rows.
+            if existing is not None:
+                try:
+                    _validate_actual_result(
+                        existing[1].result,
+                        normalized_result.provider,
+                        normalized_result.model,
+                        contexts={"E001": context},
+                    )
+                except AIOutputError:
+                    expected_invalid_entry = existing[1]
         cache_writes.append(
             AICacheWrite(
                 key=write.storage_key,
                 result=normalized_result,
                 generated_at=write.generated_at,
                 aliases=_cache_aliases(cache_alias_scope, write.lookup_key),
+                expected_invalid_entry=expected_invalid_entry,
             )
         )
         traces[write.item.native_id] = _AICacheTrace(
@@ -4195,6 +4221,13 @@ def _cache_ai_request_results(
             or cached.result.model_revision != trace.model_revision
         ):
             raise CacheError("immutable AI cache row differs from its request envelope")
+        if contexts is not None:
+            _validate_actual_result(
+                cached.result,
+                write.result.provider,
+                write.result.model,
+                contexts={"E001": contexts[write.item.native_id]},
+            )
         result[write.item.native_id] = (cached, trace)
     return result
 
@@ -4419,6 +4452,7 @@ async def _load_or_describe_single(
         request_identity=request_identity,
         cache_alias_scope=cache_alias_scope,
         repair_request_envelope=True,
+        contexts={source.native_id: context},
     )[source.native_id]
     if trace_out is not None:
         trace_out.append(trace)
