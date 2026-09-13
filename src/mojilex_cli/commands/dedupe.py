@@ -103,7 +103,7 @@ def dedupe_scan_command(
             )
         after, backfilled = asyncio.run(backfill_fingerprints(snapshot, selected_ids, config))
         changed: tuple[PurePosixPath, ...] = ()
-        before_files = snapshot.to_files()
+        before_files = snapshot.to_files(preserve_legacy_paths=True)
         after_files = after.to_files()
         needs_write = after_files != before_files
         if needs_write:

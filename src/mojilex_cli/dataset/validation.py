@@ -311,7 +311,7 @@ def _validate_ids_and_paths(
     canonical: bool,
 ) -> None:
     identities: dict[tuple[Any, ...], str] = {}
-    expected_files = snapshot.to_files()
+    expected_files = snapshot.to_files(preserve_legacy_paths=canonical)
     for collection in snapshot.collections.values():
         path = collection_path(collection.platform, collection.id)
         if namespace is not None:

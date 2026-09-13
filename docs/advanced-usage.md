@@ -20,6 +20,13 @@ mojilex publish NewsEmoji
 `publish --local` validates the completed draft without uploading it; `publish`
 creates or updates a GitHub pull request without repeating AI analysis.
 
+Previously saved descriptions remain compatible. Dataset writes use filenames
+with an 8-character hash prefix; this needs no new AI analysis. When `main` changes
+after publication, the repository's enabled **Refresh open data PRs** workflow
+updates PRs from branches in the same repository and starts validation. For a
+fork PR, repeat `mojilex publish NewsEmoji`. Incompatible edits to the same record
+still require resolving that record's conflict.
+
 `show` selects ready descriptions, `publish` selects a completed draft, and
 `resume` selects the latest unfinished run. If a name refers to multiple
 repositories or source groups, use the exact Run ID shown by `list`.

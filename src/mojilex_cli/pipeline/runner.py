@@ -5259,7 +5259,7 @@ def _utc_text() -> str:
 
 
 def _changed_paths(before: DatasetSnapshot, after: DatasetSnapshot) -> tuple[PurePosixPath, ...]:
-    old, new = before.to_files(), after.to_files()
+    old, new = before.to_files(preserve_legacy_paths=True), after.to_files()
     return tuple(
         sorted(
             (path for path in set(old) | set(new) if old.get(path) != new.get(path)),

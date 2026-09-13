@@ -9,7 +9,7 @@ from contextlib import closing
 import pytest
 
 from mojilex_cli.cache import lookup as module
-from mojilex_cli.dataset.layout import collection_path
+from mojilex_cli.dataset.layout import collection_path, emoji_bucket_path, legacy_bucket_path
 from test_dataset_helpers import write_fixture
 
 
@@ -85,6 +85,59 @@ def test_read_only_cold_miss_creates_nothing_and_never_loads(indexed_repo, monke
     monkeypatch.setattr(module, "load_dataset", lambda *_: pytest.fail("read-only cold miss"))
     assert _lookup(snapshot, index, read_only=True) is None
     assert not index.parent.exists()
+
+
+def test_legacy_bucket_cold_and_warm_lookup_preserve_saved_repository(indexed_repo, monkeypatch):
+    snapshot, index = indexed_repo
+    emoji = snapshot.emojis[_selector(snapshot)]
+    current = emoji_bucket_path(emoji.platform, emoji.id)
+    legacy = legacy_bucket_path(current)
+    assert legacy != current
+    (snapshot.root / current).rename(snapshot.root / legacy)
+    _commit(snapshot.root)
+    before = (snapshot.root / legacy).read_bytes()
+
+    first = _lookup(snapshot, index)
+    assert first is not None
+    assert first.emojis[emoji.id] == emoji
+    with closing(sqlite3.connect(index)) as connection:
+        payload = connection.execute(
+            "SELECT payload FROM entries WHERE id=?", (emoji.id,)
+        ).fetchone()[0]
+    assert json.loads(payload)["path"] == str(legacy)
+    monkeypatch.setattr(module, "load_dataset", lambda *_: pytest.fail("warm hit must not scan"))
+    second = _lookup(snapshot, index, read_only=True)
+    assert second is not None and second.emojis == first.emojis
+    assert (snapshot.root / legacy).read_bytes() == before
+    assert not (snapshot.root / current).exists()
+    assert _git(snapshot.root, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_cached_bucket_with_wrong_hash_prefix_is_rejected(indexed_repo, monkeypatch, legacy):
+    snapshot, index = indexed_repo
+    emoji = snapshot.emojis[_selector(snapshot)]
+    path = emoji_bucket_path(emoji.platform, emoji.id)
+    if legacy:
+        old = legacy_bucket_path(path)
+        (snapshot.root / path).rename(snapshot.root / old)
+        path = old
+        _commit(snapshot.root)
+    assert _lookup(snapshot, index) is not None
+    with closing(sqlite3.connect(index)) as connection, connection:
+        payload = connection.execute(
+            "SELECT payload FROM entries WHERE id=?", (emoji.id,)
+        ).fetchone()[0]
+        value = json.loads(payload)
+        wrong_digit = "0" if path.stem[0] != "0" else "1"
+        value["path"] = str(path.with_name(wrong_digit + path.name[1:]))
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        connection.execute(
+            "UPDATE entries SET payload=?,sha256=? WHERE id=?",
+            (payload, hashlib.sha256(payload.encode()).hexdigest(), emoji.id),
+        )
+    monkeypatch.setattr(module, "load_dataset", lambda *_: pytest.fail("invalid cache must miss"))
+    assert _lookup(snapshot, index, read_only=True) is None
 
 
 def test_read_only_warm_hit_has_no_sidecars_or_cache_writes(indexed_repo, monkeypatch):

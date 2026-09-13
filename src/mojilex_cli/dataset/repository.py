@@ -15,6 +15,7 @@ from .layout import (
     assert_no_link_or_reparse,
     collection_path,
     emoji_bucket_path,
+    legacy_bucket_path,
     memberships_path,
     tombstone_path,
     visual_relations_path,
@@ -63,7 +64,38 @@ class DatasetSnapshot:
             source_bytes=dict(self.source_bytes),
         )
 
-    def to_files(self) -> dict[PurePosixPath, bytes]:
+    def bucket_source_paths(self) -> dict[str, PurePosixPath]:
+        """Locate records in valid current or legacy buckets without rewriting input."""
+        locations: dict[str, PurePosixPath] = {}
+        for path, data in self.source_bytes.items():
+            if len(path.parts) != 5 or path.suffix != ".jsonl":
+                continue
+            if path.parts[0] != "data" or not (
+                path.parts[2] == "emojis" or path.parts[1:3] == ("relations", "visual")
+            ):
+                continue
+            try:
+                records = parse_jsonl(data, source=str(path))
+            except ValueError:
+                continue  # Canonical validation will report the malformed source bytes.
+            for raw in records:
+                identifier = raw.get("id")
+                if not isinstance(identifier, str):
+                    continue
+                emoji = self.emojis.get(identifier)
+                if emoji is not None:
+                    expected = emoji_bucket_path(emoji.platform, identifier)
+                elif identifier in self.relations:
+                    expected = visual_relations_path(identifier)
+                else:
+                    continue
+                if path in (expected, legacy_bucket_path(expected)):
+                    locations[identifier] = path
+        return locations
+
+    def to_files(self, *, preserve_legacy_paths: bool = False) -> dict[PurePosixPath, bytes]:
+        """Serialize new eight-hex buckets; optionally validate the original storage layout."""
+        source_paths = self.bucket_source_paths() if preserve_legacy_paths else {}
         files: dict[PurePosixPath, bytes] = {
             PurePosixPath("dataset.json"): pretty_json(self.manifest).encode("utf-8")
         }
@@ -81,12 +113,14 @@ class DatasetSnapshot:
             )
         buckets: dict[PurePosixPath, list[Emoji]] = {}
         for emoji in self.emojis.values():
-            buckets.setdefault(emoji_bucket_path(emoji.platform, emoji.id), []).append(emoji)
+            path = source_paths.get(emoji.id, emoji_bucket_path(emoji.platform, emoji.id))
+            buckets.setdefault(path, []).append(emoji)
         for path, emojis in buckets.items():
             files[path] = serialize_emojis(emojis)
         relation_buckets: dict[PurePosixPath, list[VisualRelation]] = {}
         for relation in self.relations.values():
-            relation_buckets.setdefault(visual_relations_path(relation.id), []).append(relation)
+            path = source_paths.get(relation.id, visual_relations_path(relation.id))
+            relation_buckets.setdefault(path, []).append(relation)
         for path, relations in relation_buckets.items():
             files[path] = serialize_visual_relations(relations)
         for tombstone in self.tombstones.values():

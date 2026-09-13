@@ -213,7 +213,7 @@ def _snapshot_sha256(snapshot: DatasetSnapshot) -> str:
 def _changed_snapshot_paths(
     before: DatasetSnapshot, after: DatasetSnapshot
 ) -> tuple[PurePosixPath, ...]:
-    old_files = before.to_files()
+    old_files = before.to_files(preserve_legacy_paths=True)
     new_files = after.to_files()
     return tuple(
         sorted(

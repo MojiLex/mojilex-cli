@@ -9,6 +9,18 @@ for the run. A repeated `submit RUN_ID` fetches and reuses that run branch by cr
 fast-forward descendant with the exact validated tree; it never rewrites the branch. Contributors
 publish from their fork when they lack upstream write access.
 
+Emoji and visual-relation writes use eight hex characters of SHA-256: a two-character
+directory and a six-character filename. Readers still accept the previous two-plus-two
+layout. Validated writes remove the old buckets atomically and preserve record contents.
+
+The data repository can enable **Refresh open data PRs** on changes to `main`. It uses
+trusted base code to merge data-only same-repository PRs by entity ID, validates the
+result, creates a normal merge commit, and explicitly starts CI. It does not merge the
+PR into `main`. Fork contributors can repeat publication to refresh their branch; the
+repository token cannot write another owner's fork. Actual incompatible edits to the
+same record remain conflicts. Deploy the updated data validator before using the new
+CLI writer, so new bucket paths are accepted by repository checks.
+
 `--direct-push` is a separate owner operation. The CLI:
 
 1. verifies write and branch-bypass capabilities;

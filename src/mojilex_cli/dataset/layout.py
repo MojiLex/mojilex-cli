@@ -18,7 +18,7 @@ def collection_shard(collection_id: str) -> str:
 
 def emoji_shards(emoji_id: str) -> tuple[str, str]:
     digest = _sha(emoji_id)
-    return digest[:2], digest[2:4]
+    return digest[:2], digest[2:8]
 
 
 def tombstone_shard(target_id: str) -> str:
@@ -27,7 +27,7 @@ def tombstone_shard(target_id: str) -> str:
 
 def visual_relation_shards(relation_id: str) -> tuple[str, str]:
     digest = _sha(relation_id)
-    return digest[:2], digest[2:4]
+    return digest[:2], digest[2:8]
 
 
 def collection_directory(platform: str, collection_id: str) -> PurePosixPath:
@@ -56,6 +56,11 @@ def tombstone_path(target_id: str) -> PurePosixPath:
 def visual_relations_path(relation_id: str) -> PurePosixPath:
     first, second = visual_relation_shards(relation_id)
     return PurePosixPath("data", "relations", "visual", first, f"{second}.jsonl")
+
+
+def legacy_bucket_path(path: PurePosixPath) -> PurePosixPath:
+    """The previous four-hex bucket for an already computed canonical bucket path."""
+    return path.with_name(f"{path.stem[:2]}.jsonl")
 
 
 def is_link_or_reparse_point(path: Path) -> bool:

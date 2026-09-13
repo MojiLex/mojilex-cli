@@ -23,6 +23,7 @@ from mojilex_cli.dataset.layout import (
     assert_no_link_or_reparse,
     collection_path,
     emoji_bucket_path,
+    legacy_bucket_path,
     memberships_path,
     safe_destination,
 )
@@ -177,6 +178,7 @@ def _index_rows(
     for member in snapshot.memberships.values():
         containing.setdefault(member.emoji_id, set()).add(member.collection_id)
     rows = []
+    bucket_sources = snapshot.bucket_source_paths()
     entities: Sequence[Collection | Emoji] = [
         *snapshot.collections.values(),
         *snapshot.emojis.values(),
@@ -186,7 +188,7 @@ def _index_rows(
             path = collection_path(entity.platform, entity.id)
             collection_ids = [entity.id]
         else:
-            path = emoji_bucket_path(entity.platform, entity.id)
+            path = bucket_sources.get(entity.id, emoji_bucket_path(entity.platform, entity.id))
             collection_ids = sorted(containing.get(entity.id, set()))
         payload = _json(
             {
@@ -286,9 +288,12 @@ def _check_entity_path(path: object, identifier: str) -> None:
         if identifier.startswith("mxc_")
         else emoji_bucket_path("p", identifier)
     )
-    suffix = str(relative).removeprefix("data/p/")
+    relatives = [relative]
+    if identifier.startswith("mxe_"):
+        relatives.append(legacy_bucket_path(relative))
+    suffixes = "|".join(re.escape(str(item).removeprefix("data/p/")) for item in relatives)
     if not isinstance(path, str) or not re.fullmatch(
-        r"data/[a-z][a-z0-9_-]{0,63}/" + re.escape(suffix), path
+        r"data/[a-z][a-z0-9_-]{0,63}/(?:" + suffixes + ")", path
     ):
         raise ValueError("indexed entity path is not canonical")
 
@@ -348,7 +353,12 @@ def _read_subset(
                 Emoji.model_validate(raw) for raw in parse_jsonl(data, source="lookup bucket")
             ]
             if len({item.id for item in emojis}) != len(emojis) or any(
-                str(emoji_bucket_path(item.platform, item.id)) != path for item in emojis
+                PurePosixPath(path)
+                not in {
+                    emoji_bucket_path(item.platform, item.id),
+                    legacy_bucket_path(emoji_bucket_path(item.platform, item.id)),
+                }
+                for item in emojis
             ):
                 raise ValueError("indexed emoji bucket is not canonical")
             matches = [item for item in emojis if item.id == identifier]

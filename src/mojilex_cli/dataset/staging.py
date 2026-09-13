@@ -153,7 +153,7 @@ def apply_snapshot(
         if not valid:
             issues = getattr(result, "issues", ())
             raise AtomicWriteError(f"staged dataset is invalid: {issues}")
-    old_files = before.to_files()
+    old_files = before.to_files(preserve_legacy_paths=True)
     new_files = after.to_files()
     expected_files = before.source_bytes if before.source_bytes else old_files
     writer = AtomicDatasetWriter(before.root, expected_files=expected_files)
