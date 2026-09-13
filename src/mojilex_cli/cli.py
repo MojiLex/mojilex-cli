@@ -61,7 +61,7 @@ register_read_commands(app)
 
 def init_command(
     *,
-    repo: str,
+    repo: str | None,
     provider: str,
     model: str,
     publish: str,
@@ -322,9 +322,7 @@ def machine_output_mode_requested() -> bool:
 
 @app.command("init")
 def initialize(
-    repo: Annotated[
-        str, typer.Option("--repo", help="Dataset path or OWNER/REPO.")
-    ] = "MojiLex/mojilex",
+    repo: Annotated[str | None, typer.Option("--repo", help="Dataset path or OWNER/REPO.")] = None,
     provider: Annotated[str, typer.Option("--provider")] = "gemini",
     model: Annotated[str, typer.Option("--model", help="Explicit provider model ID.")] = "",
     publish: Annotated[str, typer.Option("--publish", help="local or pr")] = "pr",

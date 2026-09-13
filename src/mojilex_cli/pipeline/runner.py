@@ -5880,6 +5880,14 @@ def repository_workspace(
     if github_token is None:
         github_token = load_credentials().github_token
     path = Path(target).expanduser()
+    from mojilex_cli.config.paths import default_repository_path
+    from mojilex_cli.pipeline.storage import ensure_default_repository
+
+    if path.absolute() == default_repository_path():
+        with _publication_progress(
+            "Подготовка рабочей папки MojiLex", "Preparing the MojiLex application folder"
+        ):
+            ensure_default_repository(path, base_branch, github_token)
     if path.is_dir() and not isolated:
         root = path.resolve()
         git = GitRunner(root)

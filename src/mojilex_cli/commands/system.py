@@ -25,6 +25,7 @@ from mojilex_cli.config.credential_store import (
     delete_stored_credentials,
     store_credentials,
 )
+from mojilex_cli.config.paths import default_repository_path
 from mojilex_cli.config.secrets import assert_no_secret_keys
 from mojilex_cli.github import GitHubCLI, GitHubError, RepositoryRef
 from mojilex_cli.media import probe_media_backends
@@ -102,7 +103,7 @@ def config_set_ui_language_command(language: str) -> CommandResult:
 
 def init_command(
     *,
-    repo: str,
+    repo: str | None,
     provider: str,
     model: str,
     publish: str,
@@ -124,6 +125,7 @@ def init_command(
                 "Use --force only to replace the reviewed non-secret configuration."
             ),
         )
+    repo = str(default_repository_path()) if repo is None else repo
     if prompt is not None:
         repo = prompt("Target dataset path or OWNER/REPO", repo).strip()
         provider = prompt("AI provider (MVP: gemini)", provider).strip()
@@ -151,6 +153,15 @@ def init_command(
             hint="Pass --model with the exact Gemini model ID you intend to use.",
         )
 
+    repository_path = Path(repo).expanduser()
+    if (
+        repository_path.is_dir()
+        or repository_path.is_absolute()
+        or repo.startswith((".", "~"))
+        or "\\" in repo
+    ):
+        # Store relative local selections relative to setup, not each future launch.
+        repo = os.path.abspath(repository_path)
     identity = _effective_git_identity(repo)
     configured_identity = False
     if identity is None and prompt is not None:
@@ -608,6 +619,8 @@ def _repository_ref(repository: str | None) -> RepositoryRef | None:
         return None
     value = repository
     candidate = Path(repository).expanduser()
+    if not candidate.exists() and candidate.absolute() == default_repository_path():
+        return RepositoryRef.parse("MojiLex/mojilex")
     if candidate.is_dir():
         completed = _run_git(
             ["remote", "get-url", "origin"],

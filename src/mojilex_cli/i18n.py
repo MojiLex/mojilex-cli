@@ -374,6 +374,32 @@ _TEXT: dict[str, tuple[str, str]] = {
 }
 
 _RUSSIAN_MESSAGES = {
+    "The default repository folder is occupied by unrelated or incomplete data.": (
+        "В стандартной папке репозитория находятся посторонние или неполные данные."
+    ),
+    "Choose an existing dataset with --repo. Files in this folder were preserved.": (
+        "Укажите существующую базу через --repo. Файлы в этой папке сохранены."
+    ),
+    "The default repository must not be a symlink.": (
+        "Стандартная папка репозитория не должна быть символической ссылкой."
+    ),
+    "Choose an existing dataset with --repo.": "Укажите существующую базу через --repo.",
+    "Could not initialize the default dataset repository.": (
+        "Не удалось подготовить стандартный репозиторий базы."
+    ),
+    "Check GitHub access and the configured base branch, then retry.": (
+        "Проверьте доступ к GitHub и указанную основную ветку, затем повторите попытку."
+    ),
+    "The repository folder became occupied.": "Папка репозитория уже занята.",
+    "Check other running MojiLex processes. Existing files were preserved.": (
+        "Проверьте другие запущенные процессы MojiLex. Существующие файлы сохранены."
+    ),
+    "Could not prepare the application's dataset folder.": (
+        "Не удалось подготовить папку базы в данных программы."
+    ),
+    "Check folder permissions, GitHub access, and other running MojiLex processes.": (
+        "Проверьте права доступа к папке, доступ к GitHub и другие запущенные процессы MojiLex."
+    ),
     "Use a pack name or an exact RunID.": "Укажите имя пака или Run ID.",
     "Run mojilex list to see saved packs.": "Посмотрите сохранённые паки командой mojilex list.",
     "This pack name matches different source groups or repositories.": (

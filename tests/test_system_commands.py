@@ -52,6 +52,39 @@ def test_init_requires_explicit_supported_model_before_writing(tmp_path: Path) -
     assert not target.exists()
 
 
+@pytest.mark.parametrize("repository", [None, "../dataset", "Someone/dataset"])
+def test_init_persists_default_or_absolute_local_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repository: str | None
+) -> None:
+    from mojilex_cli.config import paths
+
+    storage = tmp_path / "application-data"
+    monkeypatch.setattr(paths, "user_state_path", lambda *_args: storage)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(system, "_effective_git_identity", lambda _repository: None)
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: _checks())
+    target = tmp_path / "config.toml"
+    system.init_command(
+        repo=repository,
+        provider="gemini",
+        model="explicit-model",
+        publish="local",
+        config_path=target,
+        force=False,
+    )
+    parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+    expected = (
+        str(storage / "repository")
+        if repository is None
+        else str((tmp_path / repository).resolve())
+        if repository.startswith(".")
+        else repository
+    )
+    assert parsed["repository"]["target"] == expected
+    assert not storage.exists()
+
+
 def test_init_checks_runtime_and_writes_only_non_secret_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

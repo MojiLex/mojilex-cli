@@ -70,12 +70,22 @@ mojilex --ui-language en init
 
 The wizard asks for settings:
 
-- Keep `MojiLex/mojilex` as the target, `gemini` as the provider and `ru,en` as the description languages.
+- Keep the suggested local dataset path, `gemini` as the provider and `ru,en` as the description languages.
 - Enter the exact [Gemini model ID](https://ai.google.dev/gemini-api/docs/models) available to your account. No model is selected automatically.
 - You can keep the publication default. The **menu always analyzes locally** and offers sending separately; advanced commands also use this setting.
 - If asked for a Git author, enter the name and email to appear on contributions, or skip until publishing.
 
 Already configured? Use `mojilex settings` instead of repeating setup.
+
+By default, MojiLex automatically prepares a local copy of the public dataset in
+its per-user application data folder. On Windows this is
+`%LOCALAPPDATA%\MojiLex\mojilex\repository`; saved packs and run history remain in
+`%LOCALAPPDATA%\MojiLex\mojilex\runs`. No manual clone is needed, and the default
+location does not depend on the folder where you start the program. On macOS and
+Linux, the operating system's user application state folder is used. Existing
+custom repository and run storage settings remain in effect.
+The clean default checkout updates from GitHub before use; local edits, commits
+and manually selected branches are preserved.
 
 ### 4. Add access keys and check the tools
 

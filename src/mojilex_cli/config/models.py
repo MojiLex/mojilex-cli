@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .paths import default_repository_path
+
 
 class ConfigError(ValueError):
     """Raised when configuration is unsafe or invalid."""
@@ -20,7 +22,7 @@ class ConfigError(ValueError):
 class RepositoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    target: str = "MojiLex/mojilex"
+    target: str = Field(default_factory=lambda: str(default_repository_path()))
     base_branch: str = "main"
     publish: Literal["local", "pr"] = "pr"
 
@@ -109,7 +111,7 @@ class MojiLexConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     ui_language: Literal["en", "ru"] = "en"
-    repository: RepositoryConfig = RepositoryConfig()
+    repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
     telegram: TelegramConfig = TelegramConfig()
     ai: AIConfig = AIConfig()
     dedupe: DedupeConfig = DedupeConfig()
