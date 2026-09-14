@@ -154,7 +154,7 @@ def test_fallback_fingerprint_is_accepted_by_resume_cache(monkeypatch):
     from mojilex_cli.media.webm_alpha import separate_alpha_fingerprint
     from mojilex_cli.pipeline import runner
 
-    monkeypatch.setattr(runner, "decoder_backend_fingerprint", lambda *a, **kw: "a" * 64)
+    monkeypatch.setattr(runner, "webm_backend_fingerprints", lambda **kw: ("a" * 64,) * 6)
     processor = SimpleNamespace(worker=SimpleNamespace(ffmpeg="ffmpeg", ffprobe="ffprobe"))
     assert separate_alpha_fingerprint("a" * 64) in runner._decoder_backend_candidates(
         "webm", processor

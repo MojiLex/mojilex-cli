@@ -139,8 +139,13 @@ def test_revision_snapshot_canonicalizes_its_own_temporary_parent(
     alias = tmp_path / "temp-alias"
     try:
         alias.symlink_to(parent, target_is_directory=True)
+        # Some Windows hosts allow link creation but deny creating children
+        # through it with WinError 183. tempfile would retry that error indefinitely.
+        probe = alias / "write-probe"
+        probe.mkdir()
+        probe.rmdir()
     except OSError:
-        pytest.skip("directory symlinks are unavailable on this host")
+        pytest.skip("writable directory symlinks are unavailable on this host")
     real_temporary_directory = workspaces.tempfile.TemporaryDirectory
 
     def temporary_directory(**kwargs):

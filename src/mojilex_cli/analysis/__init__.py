@@ -1,6 +1,6 @@
 """Public deterministic media-analysis API."""
 
-from .backend import DecoderKind, decoder_backend_fingerprint
+from .backend import DecoderKind, decoder_backend_fingerprint, webm_backend_fingerprints
 from .engine import MediaAnalysisAccumulator, analyze_decoded_media, sample_frame_indexes
 from .models import (
     AnalysisError,
@@ -28,4 +28,5 @@ __all__ = [
     "load_analysis_profile",
     "profile_sha256",
     "sample_frame_indexes",
+    "webm_backend_fingerprints",
 ]

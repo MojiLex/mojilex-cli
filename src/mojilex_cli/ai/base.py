@@ -266,10 +266,12 @@ class SemanticTextItem(BaseModel):
     @field_validator("value")
     @classmethod
     def safe_literal_text(cls, value: str) -> str:
-        html = re.search(r"</?[A-Za-z][^>]*>", value) is not None
+        # The public literal-text contract excludes every angle bracket,
+        # including code symbols that are not recognizable HTML tags.
+        forbidden_brackets = "<" in value or ">" in value
         controls = any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
-        if unicodedata.normalize("NFC", value) != value or controls or html:
-            raise ValueError("literal text must be NFC and contain no controls or HTML")
+        if unicodedata.normalize("NFC", value) != value or controls or forbidden_brackets:
+            raise ValueError("literal text must be NFC and contain no controls or angle brackets")
         return value
 
     @field_validator("language")
@@ -773,8 +775,9 @@ def _validate_result_identity(
 
 def _unsafe_human_text(value: str) -> bool:
     return (
-        value != value.strip()
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        unicodedata.normalize("NFC", value) != value
+        or value != " ".join(value.split())
+        or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
         or "<" in value
         or ">" in value
     )

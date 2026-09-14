@@ -56,6 +56,7 @@ from mojilex_cli.analysis import (
     DeterministicMediaAnalysis,
     decoder_backend_fingerprint,
     load_analysis_profile,
+    webm_backend_fingerprints,
 )
 from mojilex_cli.cache import (
     AICacheWrite,
@@ -3592,17 +3593,7 @@ def _decoder_backend_candidates(media_format: str, processor: MediaProcessor) ->
     elif media_format == "tgs":
         candidates = (decoder_backend_fingerprint("tgs", rlottie_renderer=worker.rlottie_renderer),)
     elif media_format == "webm":
-        candidates = tuple(
-            decoder_backend_fingerprint(
-                "webm",
-                ffmpeg=worker.ffmpeg,
-                ffprobe=worker.ffprobe,
-                webm_codec=codec,
-                webm_preserve_alpha=preserve_alpha,
-            )
-            for codec in ("av1", "vp8", "vp9")
-            for preserve_alpha in (False, True)
-        )
+        candidates = webm_backend_fingerprints(ffmpeg=worker.ffmpeg, ffprobe=worker.ffprobe)
         from mojilex_cli.media.webm_alpha import separate_alpha_fingerprint
 
         candidates += (separate_alpha_fingerprint(candidates[-1]),)

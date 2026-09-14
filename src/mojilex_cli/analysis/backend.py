@@ -38,6 +38,44 @@ def decoder_backend_fingerprint(
     if kind not in {"in-memory-rgba", "webp", "png", "tgs", "webm"}:
         raise AnalysisError("unknown decoder backend kind")
 
+    descriptor = _base_descriptor(kind)
+    if kind == "tgs":
+        descriptor["rlottie_rgba_executable_sha256"] = _executable_sha256(rlottie_renderer)
+    elif kind == "webm":
+        variant = _webm_variant(webm_codec, webm_preserve_alpha)
+        descriptor.update(
+            {
+                "ffmpeg_executable_sha256": _executable_sha256(ffmpeg),
+                "ffprobe_executable_sha256": _executable_sha256(ffprobe),
+                **variant,
+            }
+        )
+    return _descriptor_fingerprint(descriptor)
+
+
+def webm_backend_fingerprints(
+    *, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"
+) -> tuple[str, ...]:
+    """Probe all codec/alpha variants, reading each executable once per call.
+
+    The descriptor bytes and variant order match six independent fingerprints.
+    No identity is cached across calls: every later probe rereads the binaries.
+    """
+    descriptor = _base_descriptor("webm")
+    descriptor.update(
+        {
+            "ffmpeg_executable_sha256": _executable_sha256(ffmpeg),
+            "ffprobe_executable_sha256": _executable_sha256(ffprobe),
+        }
+    )
+    return tuple(
+        _descriptor_fingerprint({**descriptor, **_webm_variant(codec, alpha)})
+        for codec in ("av1", "vp8", "vp9")
+        for alpha in (False, True)
+    )
+
+
+def _base_descriptor(kind: DecoderKind) -> dict[str, object]:
     descriptor: dict[str, object] = {
         "descriptor": "decoder-backend-v1",
         "kind": kind,
@@ -51,24 +89,22 @@ def decoder_backend_fingerprint(
         descriptor["pillow_webp"] = features.version("webp")
     if kind == "png":
         descriptor["pillow_zlib"] = features.version("zlib")
-    if kind == "tgs":
-        descriptor["rlottie_rgba_executable_sha256"] = _executable_sha256(rlottie_renderer)
-    elif kind == "webm":
-        if webm_codec not in _WEBM_CODECS or webm_preserve_alpha is None:
-            raise AnalysisError("WebM backend fingerprint requires codec and alpha mode")
-        descriptor.update(
-            {
-                "ffmpeg_executable_sha256": _executable_sha256(ffmpeg),
-                "ffprobe_executable_sha256": _executable_sha256(ffprobe),
-                "webm_codec": webm_codec,
-                "webm_decode_mode": (
-                    f"libvpx-{webm_codec}"
-                    if webm_preserve_alpha and webm_codec in {"vp8", "vp9"}
-                    else "ffmpeg-auto"
-                ),
-                "webm_preserve_alpha": webm_preserve_alpha,
-            }
-        )
+    return descriptor
+
+
+def _webm_variant(codec: str | None, preserve_alpha: bool | None) -> dict[str, object]:
+    if codec not in _WEBM_CODECS or preserve_alpha is None:
+        raise AnalysisError("WebM backend fingerprint requires codec and alpha mode")
+    return {
+        "webm_codec": codec,
+        "webm_decode_mode": (
+            f"libvpx-{codec}" if preserve_alpha and codec in {"vp8", "vp9"} else "ffmpeg-auto"
+        ),
+        "webm_preserve_alpha": preserve_alpha,
+    }
+
+
+def _descriptor_fingerprint(descriptor: dict[str, object]) -> str:
     payload = json.dumps(
         descriptor, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode("ascii")
