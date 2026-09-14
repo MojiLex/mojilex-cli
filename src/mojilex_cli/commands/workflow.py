@@ -216,7 +216,7 @@ def import_command(
     from .import_reuse import import_complete, reusable_imports
     from .official_packs import select_sources
     from .packs import _source_name
-    from .runtime import report_progress
+    from .runtime import begin_pack_queue, report_pack_stage, report_progress
 
     selection = select_sources(
         sources,
@@ -230,6 +230,11 @@ def import_command(
     config = load_config(cli={"repository": {"target": repo}})
     existing = {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
     if existing:
+        begin_pack_queue(list(selection.selected))
+        for checkpoint, saved_source in existing.values():
+            state = source_state(checkpoint, saved_source)
+            if state["phase"] == "describe" and state["status"] in {"succeeded", "noop"}:
+                report_pack_stage(saved_source, "ready")
         selectors: list[str] = []
         resumed: set[tuple[str, str]] = set()
         result = CommandResult(status="noop")  # type: ignore[arg-type]
@@ -354,6 +359,9 @@ def describe_command(
                 groups.append((checkpoint.run_id, []))
             values = groups[-1][1]
             values.extend(selected or _sources(checkpoint))
+        from .runtime import begin_pack_queue
+
+        begin_pack_queue([source for _, values in groups for source in values])
         approved: bool | None = None
 
         def approve_once(limit: int | None) -> bool:

@@ -13,6 +13,7 @@ from mojilex_cli.commands.runtime import CommandError, CommandResult
 from mojilex_cli.composition.publication import mark_saved_fragments
 from mojilex_cli.config import load_config
 from mojilex_cli.dataset import DatasetSnapshot, load_dataset, validate_dataset
+from mojilex_cli.domain import MembershipStatus, media_digest, telegram_set_fingerprint
 from mojilex_cli.git import GitRunner
 from mojilex_cli.github import RepositoryRef
 from mojilex_cli.i18n import current_ui_language
@@ -40,25 +41,83 @@ def _add_missing_packs(
     added: list[str] = []
     skipped: list[str] = []
     for identifier, collection in candidate.collections.items():
-        if base.collections.get(identifier) == collection:
-            continue
-        if identifier in result.collections or identifier in result.tombstones:
-            skipped.append(identifier)
-            continue
         memberships = [
             item for item in candidate.memberships.values() if item.collection_id == identifier
         ]
-        # A deleted shared entity must not be silently resurrected by synchronization.
-        if any(item.emoji_id in result.tombstones for item in memberships):
+        if base.collections.get(identifier) == collection and all(
+            base.memberships.get(item.id) == item
+            and base.emojis.get(item.emoji_id) == candidate.emojis.get(item.emoji_id)
+            for item in memberships
+        ):
+            continue
+        if identifier in result.tombstones:
             skipped.append(identifier)
             continue
-        result.collections[identifier] = collection.model_copy(deep=True)
-        for membership in memberships:
-            result.memberships[membership.id] = membership.model_copy(deep=True)
-            if membership.emoji_id not in result.emojis:
-                result.emojis[membership.emoji_id] = candidate.emojis[
-                    membership.emoji_id
-                ].model_copy(deep=True)
+        missing = [
+            item
+            for item in memberships
+            if item.id not in result.memberships
+            and item.id not in result.tombstones
+            and item.emoji_id not in result.tombstones
+        ]
+        descriptions = {
+            item.emoji_id: {
+                language: description.model_copy(deep=True)
+                for language, description in candidate.emojis[item.emoji_id].descriptions.items()
+                if language not in result.emojis[item.emoji_id].descriptions
+            }
+            for item in memberships
+            if item.emoji_id in result.emojis
+            and item.emoji_id not in result.tombstones
+            and media_digest(result.emojis[item.emoji_id].media)
+            == media_digest(candidate.emojis[item.emoji_id].media)
+        }
+        if identifier in result.collections and not missing and not any(descriptions.values()):
+            skipped.append(identifier)
+            continue
+        # Never resurrect deleted shared entities when adding a new collection.
+        if identifier not in result.collections and any(
+            item.emoji_id in result.tombstones or item.id in result.tombstones
+            for item in memberships
+        ):
+            skipped.append(identifier)
+            continue
+        if identifier not in result.collections:
+            result.collections[identifier] = collection.model_copy(deep=True)
+        occupied = {
+            item.position
+            for item in result.memberships.values()
+            if item.collection_id == identifier and item.status is MembershipStatus.ACTIVE
+        }
+        for membership in sorted(missing, key=lambda item: (item.position, item.id)):
+            member = membership.model_copy(deep=True)
+            if member.status is MembershipStatus.ACTIVE:
+                if member.position in occupied:
+                    member.position = max(occupied, default=-1) + 1
+                occupied.add(member.position)
+            result.memberships[member.id] = member
+            if member.emoji_id not in result.emojis:
+                result.emojis[member.emoji_id] = candidate.emojis[member.emoji_id].model_copy(
+                    deep=True
+                )
+        for emoji_identifier, missing_descriptions in descriptions.items():
+            result.emojis[emoji_identifier].descriptions.update(missing_descriptions)
+        merged_collection = result.collections[identifier]
+        active = [
+            result.emojis[item.emoji_id]
+            for item in result.memberships.values()
+            if item.collection_id == identifier and item.status is MembershipStatus.ACTIVE
+        ]
+        merged_collection.item_count = len(active)
+        if merged_collection.platform == "telegram":
+            merged_collection.extensions["telegram"]["set_fingerprint_sha256"] = (
+                telegram_set_fingerprint(
+                    [
+                        (item.native_id, item.extensions["telegram"]["file_unique_id"])
+                        for item in active
+                    ]
+                )
+            )
         added.append(identifier)
     new_emojis = result.emojis.keys() - latest.emojis.keys()
     for identifier, relation in candidate.relations.items():
@@ -71,6 +130,29 @@ def _add_missing_packs(
         ):
             result.relations[identifier] = relation.model_copy(deep=True)
     return result, added, skipped
+
+
+def _sync_identifier(
+    target: str, base_branch: str, packs: list[str], snapshot: DatasetSnapshot
+) -> str:
+    """Reuse an unchanged PR, but give later additions a new publication identity."""
+    identity = "\n".join(
+        [
+            target,
+            base_branch,
+            *sorted(packs),
+            *sorted(
+                member.id
+                + ":"
+                + hashlib.sha256(
+                    snapshot.emojis[member.emoji_id].model_dump_json().encode()
+                ).hexdigest()
+                for member in snapshot.memberships.values()
+                if member.collection_id in packs
+            ),
+        ]
+    )
+    return "mlxrun_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
 
 
 def sync_packs_command(
@@ -147,7 +229,7 @@ def sync_packs_command(
                     "Skipped a saved run whose staging workspace is unavailable or unsafe."
                 )
                 continue
-            added.extend(additions)
+            added.extend(item for item in additions if item not in added)
             skipped.update(omissions)
             if additions:
                 selected_runs.append(checkpoint.run_id)
@@ -180,8 +262,9 @@ def sync_packs_command(
                 hint="Run synchronization again when ready to publish.",
             )
         # A stable identity reuses the same pending PR on a repeated synchronization.
-        identity = "\n".join([str(workspace.target), config.repository.base_branch, *sorted(added)])
-        identifier = "mlxrun_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        identifier = _sync_identifier(
+            str(workspace.target), config.repository.base_branch, added, merged
+        )
         store = RunStore(cast(Path, config.runs_dir))
         with store.execution_lock(identifier):
             result = asyncio.run(

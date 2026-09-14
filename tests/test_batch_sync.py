@@ -249,3 +249,125 @@ def test_sync_git(tmp_path, monkeypatch):
     assert result.publication == {"mode": "local", "preview": True}
     assert validate_dataset(merged_root, strict=True).valid
     assert not _git(root, "status", "--porcelain")
+
+
+def test_sync_completes_existing_pack_preserving_remote_members_and_descriptions(tmp_path):
+    from mojilex_cli.dataset import validate_snapshot
+    from mojilex_cli.domain import emoji_id, membership_id, telegram_set_fingerprint
+
+    current = make_snapshot(tmp_path.resolve())
+    original_collection = next(iter(current.collections.values()))
+    original_emoji = next(iter(current.emojis.values()))
+    original_member = next(iter(current.memberships.values()))
+    base = current.clone()
+    candidate = current.clone()
+    collection = candidate.collections[original_collection.id]
+    collection.title = "staged title must not overwrite repository title"
+    candidate.emojis[original_emoji.id].semantic_tags.append("staged")
+    new_emoji = original_emoji.model_copy(deep=True)
+    new_emoji.native_id = "5368324170671202287"
+    new_emoji.id = emoji_id("telegram", "custom_emoji.id", "global", new_emoji.native_id)
+    new_emoji.extensions["telegram"]["file_unique_id"] = "AnotherUniqueId"
+    new_emoji.extensions["telegram"]["custom_emoji_id"] = new_emoji.native_id
+    member = original_member.model_copy(deep=True)
+    member.emoji_id = new_emoji.id
+    member.id = membership_id(collection.id, new_emoji.id)
+    # Candidate removed the original member; synchronization must preserve it,
+    # resolving the position collision without rewriting repository records.
+    candidate.memberships = {member.id: member}
+    candidate.emojis[new_emoji.id] = new_emoji
+    collection.extensions["telegram"]["set_fingerprint_sha256"] = telegram_set_fingerprint(
+        [(new_emoji.native_id, "AnotherUniqueId")]
+    )
+    merged, added, skipped = _add_missing_packs(current, base, candidate)
+    assert added == [collection.id] and not skipped
+    assert merged.collections[collection.id].title == original_collection.title
+    assert merged.collections[collection.id].item_count == 2
+    assert merged.emojis[original_emoji.id] == original_emoji
+    assert merged.memberships[original_member.id] == original_member
+    assert merged.memberships[member.id].position == 1
+    validate_snapshot(merged, schemas=False).raise_for_errors()
+    again, added, skipped = _add_missing_packs(merged, base, candidate)
+    assert not added and skipped == [collection.id]
+    assert again.to_files() == merged.to_files()
+
+
+def test_sync_detects_new_member_even_when_collection_metadata_is_unchanged(tmp_path):
+    current = make_snapshot(tmp_path.resolve())
+    candidate = current.clone()
+    base = candidate.clone()
+    base.memberships.clear()
+    current.memberships.clear()
+    current.emojis.clear()
+    merged, added, skipped = _add_missing_packs(current, base, candidate)
+    assert added == list(candidate.collections) and not skipped
+    assert merged.memberships == candidate.memberships
+    assert merged.emojis == candidate.emojis
+
+
+@pytest.mark.parametrize("entity_type", ["collection", "emoji", "membership"])
+def test_sync_does_not_restore_tombstoned_records(tmp_path, entity_type):
+    from mojilex_cli.domain import Tombstone
+    from test_dataset_helpers import NOW
+
+    candidate = make_snapshot(tmp_path.resolve())
+    base = candidate.clone()
+    base.collections.clear()
+    base.memberships.clear()
+    current = base.clone()
+    records = {
+        "collection": candidate.collections,
+        "emoji": candidate.emojis,
+        "membership": candidate.memberships,
+    }
+    target_id = next(iter(records[entity_type]))
+    current.emojis.pop(target_id, None)
+    current.tombstones[target_id] = Tombstone(
+        schema_version="1.0.0",
+        entity_type="tombstone",
+        target_entity_type=entity_type,
+        target_id=target_id,
+        reason_code="other",
+        withheld_at=NOW,
+        public_note="Removed.",
+    )
+    merged, added, skipped = _add_missing_packs(current, base, candidate)
+    assert not added and skipped == list(candidate.collections)
+    assert merged.to_files() == current.to_files()
+
+
+@pytest.mark.parametrize("same_media", [True, False])
+def test_sync_fills_missing_description_language_only_for_same_media(tmp_path, same_media):
+    current = make_snapshot(tmp_path.resolve())
+    original = next(iter(current.emojis.values()))
+    del original.descriptions["en"]
+    base = current.clone()
+    candidate = make_snapshot(tmp_path.resolve())
+    staged = next(iter(candidate.emojis.values()))
+    staged.descriptions["ru"].text = "Staged description must not replace the published value."
+    if not same_media:
+        staged.media[0].sha256 = "f" * 64
+    merged, added, skipped = _add_missing_packs(current, base, candidate)
+    result = merged.emojis[original.id]
+    assert result.descriptions["ru"] == original.descriptions["ru"]
+    assert result.facets == original.facets
+    if same_media:
+        assert added == list(candidate.collections) and not skipped
+        assert result.descriptions["en"] == staged.descriptions["en"]
+    else:
+        assert not added and skipped == list(candidate.collections)
+        assert result.descriptions == original.descriptions
+
+
+def test_later_pack_supplement_does_not_reuse_completed_pr_identity(tmp_path):
+    from mojilex_cli.pipeline.batch import _sync_identifier
+
+    snapshot = make_snapshot(tmp_path.resolve())
+    packs = list(snapshot.collections)
+    full = _sync_identifier("owner/repo", "main", packs, snapshot)
+    assert full == _sync_identifier("owner/repo", "main", packs, snapshot.clone())
+    next(iter(snapshot.emojis.values())).descriptions.pop("en")
+    assert full != _sync_identifier("owner/repo", "main", packs, snapshot)
+    partial = _sync_identifier("owner/repo", "main", packs, snapshot)
+    snapshot.memberships.clear()
+    assert partial != _sync_identifier("owner/repo", "main", packs, snapshot)

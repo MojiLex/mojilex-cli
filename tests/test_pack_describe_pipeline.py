@@ -453,3 +453,17 @@ async def test_explicit_missing_pack_keeps_collection_lock_during_mutation(pipel
     assert not result.errors
     assert observed == ["PackAlpha", "PackBeta"]
     assert not held
+
+
+async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        runner, "report_pack_stage", lambda source, phase: events.append((source, phase))
+    )
+    result = await pipeline.run()
+    assert not result.errors
+    for source in pipeline.sources:
+        phases = [phase for name, phase in events if name == source.canonical_url]
+        assert phases == ["download", "ai_wait", "ai", "finalize", "ready"]
+    first_ready = next(i for i, event in enumerate(events) if event[1] == "ready")
+    assert all(event[1] != "ai" for event in events[first_ready:])

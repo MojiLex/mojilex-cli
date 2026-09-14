@@ -38,6 +38,8 @@ from mojilex_cli.output.models import (
     redact,
 )
 
+from .queue_progress import SHARED, PackQueue
+
 _T = TypeVar("_T")
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _MACHINE_JSON_MODE: ContextVar[bool] = ContextVar("mojilex_machine_json_mode", default=False)
@@ -62,6 +64,8 @@ class _CommandContext:
     operation_spinner: Spinner = field(default_factory=lambda: Spinner("dots"))
     prompt_depth: int = 0
     pending_progress: list[RenderableType] = field(default_factory=list)
+    pack_queue: PackQueue | None = None
+    last_pack_refresh: float = 0.0
 
 
 class _ProgressDisplay:
@@ -218,11 +222,44 @@ def report_run_id(run_id: str) -> None:
         context.run_id = run_id
 
 
+def begin_pack_queue(sources: list[str]) -> None:
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.quiet or context.json_output:
+        return
+    console = Console(stderr=True, no_color=context.no_color)
+    if not console.is_terminal or console.is_dumb_terminal:
+        return
+    if context.pack_queue is None:
+        context.pack_queue = SHARED.get() or PackQueue()
+    context.pack_queue.register(sources)
+    update_live_progress(context.pack_queue, key="packs")
+
+
+def report_pack_stage(source: str, stage: str) -> None:
+    context = _COMMAND_CONTEXT.get()
+    if (
+        context is not None
+        and context.pack_queue is not None
+        and source in context.pack_queue.stages
+    ):
+        context.pack_queue.stages[source] = stage
+        update_live_progress(context.pack_queue, key="packs")
+
+
 def report_progress(message: str, *, verbose: bool = False) -> None:
     """Human diagnostics always go to stderr, leaving machine stdout untouched."""
 
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or (verbose and not context.verbose):
+        return
+    if (
+        context.pack_queue is not None
+        and not context.verbose
+        and not message.startswith(("Derived contact-sheet PNG", "Подготовленные PNG"))
+    ):
+        context.progress_note = ui_text(str(redact(message)))
+        if not context.progress_paused:
+            _refresh_live(context)
         return
     if context.progress_paused:
         safe_message = ui_text(str(redact(message)))
@@ -249,6 +286,11 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
 
 
 def _refresh_live(context: _CommandContext) -> None:
+    if context.pack_queue is not None:
+        now = time.monotonic()
+        if now - context.last_pack_refresh < 0.15:
+            return
+        context.last_pack_refresh = now
     if context.live is not None and context.progress_view is not None:
         context.live.update(
             Group(
@@ -267,7 +309,13 @@ def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
     console = Console(stderr=True, no_color=context.no_color)
     if not console.is_terminal or console.is_dumb_terminal:
         return False
-    context.progress_views[key] = view
+    if context.pack_queue is not None:
+        owner = getattr(key, "pack", None)
+        if owner is not None:
+            context.pack_queue.batches[key] = owner
+        context.progress_views = {"packs": context.pack_queue}
+    else:
+        context.progress_views[key] = view
     context.progress_view = _ProgressDisplay(context)
     if context.progress_paused:
         return True
@@ -314,6 +362,12 @@ def finish_live_progress(*, key: object = None) -> None:
     """Finish one active batch, or flush every panel at command shutdown."""
     context = _COMMAND_CONTEXT.get()
     if context is None:
+        return
+    if key is not None and context.pack_queue is not None:
+        context.pack_queue.batches.pop(key, None)
+        context.progress_pause_keys.discard(key)
+        context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
+        _refresh_live(context)
         return
     if key is not None:
         finished = context.progress_views.pop(key, None)
@@ -851,10 +905,16 @@ def _render_pack_result(console: Console, command: str, result: Mapping[str, Any
             console.print(Text(str(result["gallery_path"])))
         return True
     if command in {"add", "import", "describe", "resume"} and any(
-        key in result for key in ("sources_processed", "collections_imported", "message")
+        key in result
+        for key in ("sources_processed", "collections_imported", "message", "analysis_selectors")
     ):
         if result.get("message"):
             console.print(Text(ui_text(str(result["message"]))))
+        if "analysis_selectors" in result:
+            count = len(result["analysis_selectors"])
+            console.print(
+                Text(f"{'Паков для анализа' if ru else 'Packs queued for analysis'}: {count}")
+            )
         for key, label in (
             ("collections_imported", "Загружено паков" if ru else "Packs downloaded"),
             ("sources_processed", "Обработано паков" if ru else "Packs processed"),

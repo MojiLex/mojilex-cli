@@ -16,6 +16,7 @@ from rich.text import Text
 
 from mojilex_cli.i18n import current_ui_language
 
+from .queue_progress import PACK
 from .runtime import (
     finish_live_progress,
     pause_live_progress,
@@ -36,6 +37,7 @@ class BatchProgress:
         batch_total: int | None = None,
         request_budget: Callable[[], tuple[int, int | None]] | None = None,
     ) -> None:
+        self.pack = PACK.get()
         self.label = label
         self.total = total
         self.interval = interval

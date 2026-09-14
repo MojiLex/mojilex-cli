@@ -178,7 +178,11 @@ mojilex sync
 
 The first command validates without uploading. The second submits all saved,
 completed new packs for the configured repository in one PR after one confirmation.
-Packs already on the base branch are skipped and published descriptions are preserved.
+Packs whose saved members are already on the base branch are skipped. Incomplete packs
+receive only missing members and emoji records. Missing description languages are added
+when the media digest matches; published descriptions, other fields, and existing members
+are preserved. Removed records are not restored. Collection counts and fingerprints are
+updated for the resulting combined membership.
 A pending PR does not add packs to the base branch until it is merged.
 
 You can also use `mojilex import "C:\path\packs.txt"` or
@@ -219,6 +223,13 @@ When analyzing saved packs again through the file/link workflow, `fast` and
 media and completed descriptions are reused. `describe` uses the current queue
 mode and download concurrency; saved AI budgets and usage remain unchanged.
 An explicit `resume` keeps saved settings unless overridden.
+
+In an interactive terminal, one compact dashboard shows pack counts and active names
+for downloads, local processing, AI, and final validation. A pack can download and
+decode simultaneously. Completed local drafts are counted as ready only after saving;
+GitHub synchronization then compares them with the latest base branch and skips
+existing content. Prompts pause dashboard redraws. JSON output keeps the full
+analysis selectors; the human interface shows only their count.
 
 Transient media failures are retried automatically (six attempts by default).
 Every completed file and AI batch is checkpointed. In `download_all`, retained

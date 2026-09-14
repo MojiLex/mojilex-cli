@@ -68,10 +68,13 @@ from mojilex_cli.cache import (
     media_digest as cache_media_digest,
 )
 from mojilex_cli.commands.progress import BatchProgress
+from mojilex_cli.commands.queue_progress import PACK
 from mojilex_cli.commands.runtime import (
     CommandError,
     CommandResult,
+    begin_pack_queue,
     operation_progress,
+    report_pack_stage,
     report_progress,
     report_run_id,
     structured_exception,
@@ -821,6 +824,8 @@ async def _run_add(
                 async def process_source(entry: tuple[int, tuple[int, str]]) -> None:
                     nonlocal current, checkpoint
                     position, (source_index, source_text) = entry
+                    pack_token = PACK.set(source_text)
+                    report_pack_stage(source_text, "download")
                     collection_lock: Any | None = None
                     lock_entered = False
                     try:
@@ -986,12 +991,14 @@ async def _run_add(
                                 checkpoint.elements if checkpoint is not None else {},
                             )
                             request_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
+                            report_pack_stage(source_text, "ai_wait")
                             if file_mode == "fast":
                                 await analysis_turns.wait(position)
                                 if cancelled_queue.is_set() or any(
                                     failed < position for failed in failed_positions
                                 ):
                                     return
+                            report_pack_stage(source_text, "ai")
                             descriptions, generation_metadata = await _descriptions_for_collection(
                                 current,
                                 source,
@@ -1159,6 +1166,7 @@ async def _run_add(
                                     or before_emoji.as_dict() != after_emoji.as_dict()
                                 ):
                                     dedupe_emoji_ids.add(changed_id)
+                            report_pack_stage(source_text, "finalize")
                             current = plan.snapshot
                             source_collections.append(source)
                             if checkpoint is not None:
@@ -1170,10 +1178,12 @@ async def _run_add(
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
                     except asyncio.CancelledError:
+                        report_pack_stage(source_text, "failed")
                         if file_mode == "fast":
                             cancelled_queue.set()
                         raise
                     except Exception as exc:
+                        report_pack_stage(source_text, "failed")
                         error = structured_exception(exc)
                         errors.append(error)
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
@@ -1193,12 +1203,14 @@ async def _run_add(
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
+                        PACK.reset(pack_token)
                         dependencies.finish(position)
                         analysis_turns.finish(position)
                         merge_turns.finish(position)
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)
 
+                begin_pack_queue([source for _, source in source_entries])
                 report_progress(
                     f"Режим очереди: {file_mode}; скачивания="
                     f"{config.telegram.download_concurrency}, декодеры="
@@ -1486,6 +1498,8 @@ async def _run_add(
                         }
                     )
                 run_store.save(checkpoint)
+                for source_index in completed_source_indexes | successful_source_indexes:
+                    report_pack_stage(all_sources[source_index], "ready")
             return CommandResult(
                 run_id=run_identifier,
                 status=status,
@@ -1626,6 +1640,8 @@ async def _run_import(
                 async def import_source(entry: tuple[int, str]) -> None:
                     nonlocal checkpoint, imported
                     position, source_text = entry
+                    pack_token = PACK.set(source_text)
+                    report_pack_stage(source_text, "download")
                     try:
                         async with progress_lock:
                             checkpoint = record_source_state(
@@ -1750,11 +1766,21 @@ async def _run_import(
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
+                        PACK.reset(pack_token)
+                        if source_state(checkpoint, source_text)["status"] in {"succeeded", "noop"}:
+                            report_pack_stage(
+                                source_text,
+                                "waiting" if options.import_strategy == "metadata" else "ai_wait",
+                            )
+                        else:
+                            report_pack_stage(source_text, "failed")
                         dependencies.finish(position)
 
                 async def download_source(entry: tuple[int, str]) -> None:
                     nonlocal checkpoint
                     _position, source_text = entry
+                    pack_token = PACK.set(source_text)
+                    report_pack_stage(source_text, "download")
                     try:
                         async with progress_lock:
                             checkpoint = record_source_state(
@@ -1835,7 +1861,9 @@ async def _run_import(
                                 concurrency=config.telegram.download_concurrency,
                             )
                         prefetched_collections[source_text] = source
+                        report_pack_stage(source_text, "waiting")
                     except Exception as exc:
+                        report_pack_stage(source_text, "failed")
                         error = structured_exception(exc)
                         failures.append(error)
                         async with progress_lock:
@@ -1850,9 +1878,17 @@ async def _run_import(
                             store.save(checkpoint)
                         if options.fail_fast or error.code in _TERMINAL_ERROR_CODES:
                             raise
+                    finally:
+                        PACK.reset(pack_token)
 
                 mode = config.processing.file_analysis_mode
                 strategy = options.import_strategy
+                begin_pack_queue(
+                    [
+                        source
+                        for _, source in selected_source_entries(sources, options.selected_sources)
+                    ]
+                )
                 report_progress(
                     f"Режим очереди: {mode}; скачивания="
                     f"{config.telegram.download_concurrency}, "

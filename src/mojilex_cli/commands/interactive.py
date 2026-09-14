@@ -467,6 +467,15 @@ def _history(state: dict[str, Any]) -> None:
 def _analyze(
     source: str, dispatch: Dispatch, *, repository: str | None = None, refresh: bool = False
 ) -> None:
+    from .queue_progress import pack_queue_scope
+
+    with pack_queue_scope():
+        _analyze_impl(source, dispatch, repository=repository, refresh=refresh)
+
+
+def _analyze_impl(
+    source: str, dispatch: Dispatch, *, repository: str | None = None, refresh: bool = False
+) -> None:
     from .runtime import capture_command_results
 
     arguments = ["import", source]
