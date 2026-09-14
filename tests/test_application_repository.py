@@ -46,9 +46,15 @@ def clones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     calls: list[Path] = []
 
     def local_clone(args, **kwargs):
-        if len(args) > 5 and args[3] == "fetch":
-            assert args[5] == "origin"
-            return run([*args[:5], str(source), *args[6:]], **kwargs)
+        if "-C" in args:
+            command_index = args.index("-C") + 2
+            if len(args) > command_index + 2 and args[command_index] == "fetch":
+                remote_index = command_index + 2
+                assert args[remote_index] == "origin"
+                return run(
+                    [*args[:remote_index], str(source), *args[remote_index + 1 :]],
+                    **kwargs,
+                )
         if args[:2] != ["git", "clone"]:
             return run(args, **kwargs)
         assert args[-2] == "https://github.com/MojiLex/mojilex.git"
