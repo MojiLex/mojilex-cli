@@ -17,7 +17,7 @@ from mojilex_cli.dataset.repository import _load_dataset_unlocked
 from mojilex_cli.dataset.transaction import TRANSACTION_DIRECTORY_NAME
 from mojilex_cli.runs import RunCheckpoint, RunStore, RunStoreError
 
-from .runtime import CommandError, CommandResult
+from .runtime import CommandError, CommandResult, operation_progress
 
 _RUN_ID = re.compile(r"mlxrun_[0-9a-f]{32}\Z")
 _PACK_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
@@ -137,7 +137,8 @@ def _runs(config: MojiLexConfig) -> tuple[list[RunCheckpoint], int]:
         return [], 0
     checkpoints = []
     skipped = 0
-    for index, path in enumerate(sorted(store.root.glob("mlxrun_*.json"))):
+    paths = sorted(store.root.glob("mlxrun_*.json"))
+    for index, path in enumerate(paths):
         if index >= _MAX_RUNS:
             raise CommandError(
                 "CONFIG_INVALID",
@@ -147,7 +148,15 @@ def _runs(config: MojiLexConfig) -> tuple[list[RunCheckpoint], int]:
         if not _RUN_ID.fullmatch(path.stem):
             continue
         try:
-            checkpoint = store.load(path.stem)
+            from mojilex_cli.i18n import current_ui_language
+
+            label = (
+                "Чтение сохранённых запусков"
+                if current_ui_language() == "ru"
+                else "Reading saved runs"
+            )
+            with operation_progress(f"{label}: {index + 1}/{len(paths)}"):
+                checkpoint = store.load(path.stem)
         except (RunStoreError, OSError, ValueError):
             skipped += 1
             continue

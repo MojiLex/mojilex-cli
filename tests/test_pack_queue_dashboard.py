@@ -190,6 +190,7 @@ def test_cache_backend_probe_is_not_reported_as_media_download_count():
     queue = PackQueue()
     queue.register(["A"])
     queue.stages["A"] = "render"
+    queue.report_counts("A", "render", 0, 200)
     checking = BatchProgress("Checking cache", 1, unit="backends")
     checking.completed = 1
     queue.batches = {checking: "A"}
@@ -198,8 +199,7 @@ def test_cache_backend_probe_is_not_reported_as_media_download_count():
         Console(file=output, width=100, height=40).print(queue)
     text = output.getvalue()
     assert "Downloading: 0" in text
-    assert "A — processing on pc · checking cache" in text
-    assert "1/1" not in text
+    assert "A — processing on pc · 0/200 · checking tools 1/1" in text
 
 
 def test_intermediate_import_summary_is_silent_but_standalone_remains_visible(capsys):
@@ -217,3 +217,56 @@ def test_intermediate_import_summary_is_silent_but_standalone_remains_visible(ca
     assert capsys.readouterr().out == ""
     runtime._render_human(envelope)
     assert "MojiLex import" in capsys.readouterr().out
+
+
+def test_pack_counts_survive_backend_and_media_batch_gaps(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Console(file=StringIO(), force_terminal=True, width=120, height=40)
+    monkeypatch.setattr(runtime, "Console", lambda **kw: terminal)
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.begin_pack_queue(["Alpha", "Beta"])
+        runtime.report_pack_stage("Alpha", "render")
+        runtime.report_pack_counts("Alpha", "download", 0, 200)
+        runtime.report_pack_counts("Alpha", "render", 25, 200, detail="checking saved media")
+        assert "25/200 · checking saved media" in context.pack_queue.suffix(
+            "Alpha", "render", ru=False
+        )
+        backend = BatchProgress("Checking cache", 2, unit="backends")
+        backend.pack = "Alpha"
+        backend.completed = 1
+        with use_ui_language("en"):
+            runtime.update_pack_progress(backend)
+            runtime.finish_live_progress(key=backend)
+        assert "25/200 · checking tools 1/2" in context.pack_queue.suffix(
+            "Alpha", "render", ru=False
+        )
+        runtime.report_pack_counts("Alpha", "render", 42, 200, detail="checking saved media")
+        assert "42/200 · checking saved media" in context.pack_queue.suffix(
+            "Alpha", "render", ru=False
+        )
+        media = BatchProgress("Media", 200, unit="media")
+        media.pack = "Alpha"
+        media.cached = 42
+        media.completed = 100
+        media.downloaded = {str(i) for i in range(75)}
+        runtime.update_pack_progress(media)
+        runtime.finish_live_progress(key=media)
+        assert "75/158" in context.pack_queue.suffix("Alpha", "download", ru=False)
+        assert "100/200" in context.pack_queue.suffix("Alpha", "render", ru=False)
+        assert "200" not in context.pack_queue.suffix("Beta", "download", ru=False)
+        assert "fetching file list" in context.pack_queue.suffix("Beta", "download", ru=False)
+    finally:
+        runtime.finish_live_progress()
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_retained_ai_count_survives_transition_to_final_validation():
+    queue = PackQueue()
+    queue.register(["A"])
+    queue.report_counts("A", "ai", 133, 133)
+    queue.stages["A"] = "finalize"
+    assert "133/133" in queue.suffix("A", "finalize", ru=False)
+    queue.report_counts("A", "finalize", 25, 133, detail="validating")
+    assert "25/133 · validating" in queue.suffix("A", "finalize", ru=False)

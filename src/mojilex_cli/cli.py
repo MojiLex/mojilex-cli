@@ -207,7 +207,7 @@ def _unknown_cost_callback(
                 "AI requests were not authorized.",
                 hint=(
                     "Review the planned AI requests and confirm when restarting, "
-                    "or use --yes in an interactive workflow."
+                    "or use --allow-unknown-cost (or --yes in an interactive workflow)."
                 ),
                 details={"new_ai_requests": requests, "estimated_cost_usd": None},
             ) from exc

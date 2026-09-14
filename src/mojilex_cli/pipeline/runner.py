@@ -46,6 +46,7 @@ from mojilex_cli.ai.media_refs import bind_primary_media_references
 from mojilex_cli.ai.prompts import (
     current_prompt_version,
     gemini_request_parameters_sha256,
+    prompt_contract_scope,
     prompt_sha256,
     use_prompt_version,
 )
@@ -74,6 +75,7 @@ from mojilex_cli.commands.runtime import (
     CommandResult,
     begin_pack_queue,
     operation_progress,
+    report_pack_counts,
     report_pack_stage,
     report_progress,
     report_run_id,
@@ -85,6 +87,7 @@ from mojilex_cli.concurrency import (
     batch_limits,
     bounded_map,
     pack_pipeline_limits,
+    run_blocking,
 )
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
@@ -94,6 +97,7 @@ from mojilex_cli.dataset import (
     validate_dataset,
     validate_snapshot,
 )
+from mojilex_cli.dataset.validation import schema_validation_scope
 from mojilex_cli.dedupe import scan_snapshot
 from mojilex_cli.domain import SCHEMA_VERSION, DeterministicEmojiAnalysis, Emoji, RoutingReason
 from mojilex_cli.domain import media_digest as domain_media_digest
@@ -480,6 +484,8 @@ async def _run_describe_many(
             raise
 
     with (
+        prompt_contract_scope(),
+        schema_validation_scope(),
         request_budget_scope(budget),
         pack_pipeline_limits(config.processing.pack_concurrency),
         batch_limits(
@@ -635,11 +641,15 @@ async def _run_add(
         and not stage_only
         and (config.repository.publish == "pr" or options.direct_push)
     )
-    with repository_workspace(
-        config.repository.target,
-        config.repository.base_branch,
-        isolated=isolated_publication,
-    ) as workspace:
+    with (
+        prompt_contract_scope(),
+        schema_validation_scope(),
+        repository_workspace(
+            config.repository.target,
+            config.repository.base_branch,
+            isolated=isolated_publication,
+        ) as workspace,
+    ):
         if stage_only and resume_checkpoint is not None:
             upgrade_private_staging_schema(
                 workspace.root,
@@ -648,12 +658,12 @@ async def _run_add(
                 base_revision=resume_checkpoint.base_revision,
                 target_repository=resume_checkpoint.target_repository,
             )
-        initial_report = validate_dataset(workspace.root, strict=True)
+        initial_report = await run_blocking(validate_dataset, workspace.root, strict=True)
         if not initial_report.valid and not (
             stage_only and _only_staging_review_issues(initial_report)
         ):
             initial_report.raise_for_errors()
-        initial = load_dataset(workspace.root)
+        initial = await run_blocking(load_dataset, workspace.root)
         git = GitRunner(workspace.root, github_token=credentials.github_token)
         base_sha = git.current_sha()
         run_identifier = resume_id or new_run_id()
@@ -903,7 +913,7 @@ async def _run_add(
 
         generation_token = _GENERATION_INPUTS.set(None)
         try:
-            generation_inputs = _load_generation_inputs(current, config)
+            generation_inputs = await run_blocking(_load_generation_inputs, current, config)
             _GENERATION_INPUTS.set(generation_inputs)
             if checkpoint is not None and generation_inputs is not None:
                 checkpoint = checkpoint.model_copy(
@@ -979,6 +989,8 @@ async def _run_add(
                             totals["items_updated"] += max(0, availability_updates - 1)
                             successful_source_indexes.add(source_index)
                             return
+                        report_pack_counts(source_text, "download", 0, source.item_count)
+                        report_pack_counts(source_text, "render", 0, source.item_count)
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
                             f"download concurrency={config.telegram.download_concurrency}; "
@@ -1011,6 +1023,12 @@ async def _run_add(
                                 ),
                                 source=source.canonical_url,
                             )
+                        # Dependency waits do not perform media work. Leave preparation
+                        # capacity available to unrelated packs while an earlier shared
+                        # emoji/collection finishes its AI and canonical merge.
+                        pack_slots.preparation.release()
+                        preparing = False
+                        report_pack_stage(source_text, "waiting")
                         await dependencies.wait(
                             position,
                             (
@@ -1021,6 +1039,9 @@ async def _run_add(
                                 ),
                             ),
                         )
+                        await pack_slots.preparation.acquire()
+                        preparing = True
+                        report_pack_stage(source_text, "render")
                         if checkpoint is not None:
                             memberships = _membership_map(
                                 checkpoint.safe_parameters.get("source_memberships")
@@ -1220,7 +1241,8 @@ async def _run_add(
                                     snapshot=planned_snapshot,
                                     updated=plan.updated + availability_updates,
                                 )
-                            report = validate_snapshot(
+                            report = await run_blocking(
+                                validate_snapshot,
                                 plan.snapshot,
                                 schemas=True,
                                 repository_files=True,
@@ -2811,6 +2833,18 @@ async def _prepare_collection_media(
     """Download media and reconcile global IDs already seen in another collection."""
 
     if (progress_pack := PACK.get()) is not None:
+        report_pack_counts(progress_pack, "download", 0, len(collection.items))
+        report_pack_counts(
+            progress_pack,
+            "render",
+            0,
+            len(collection.items),
+            detail=(
+                "проверка сохранённых файлов"
+                if current_ui_language() == "ru"
+                else "checking saved files"
+            ),
+        )
         report_pack_stage(progress_pack, "render")
     guarded = _cross_collection_existing_emojis(snapshot, collection)
     retained: RetainedMediaStore | None = None
@@ -2822,7 +2856,8 @@ async def _prepare_collection_media(
             / hashlib.sha256(cache_alias_scope.encode()).hexdigest()
         )
         if not retained_root.resolve().is_relative_to(snapshot.root.resolve()):
-            retained = get_retained_store(
+            retained = await run_blocking(
+                get_retained_store,
                 retained_root,
                 max_bytes=media_run.limits.max_run_temp_bytes,
                 run=media_run,
@@ -2881,6 +2916,12 @@ async def _prepare_collection_media(
         for legacy_version in ("1.2.0", "1.1.0"):
             if legacy_version == current_prompt_version():
                 continue
+            if all(
+                item.native_id in cached_outcomes
+                or not ((element := resume_elements.get(item.native_id)) and element.ai_cache_key)
+                for item in collection.items
+            ):
+                break
             with use_prompt_version(legacy_version):
                 legacy_inputs = (
                     _load_generation_inputs(snapshot, config)
@@ -2902,6 +2943,7 @@ async def _prepare_collection_media(
                         redescribe=redescribe,
                         overwrite_reviewed=overwrite_reviewed,
                         backend_candidates=backend_candidates,
+                        deterministic_candidates={**cached_analysis, **cached},
                     )
                 finally:
                     _GENERATION_INPUTS.reset(legacy_token)
@@ -2936,18 +2978,32 @@ async def _prepare_collection_media(
 
     ready: dict[str, ProcessedMedia] = {}
     if retained is not None and cache is not None and resume_elements is not None:
-        for item in collection.items:
+        for index, item in enumerate(collection.items, 1):
+            if progress_pack is not None:
+                report_pack_counts(
+                    progress_pack,
+                    "render",
+                    index - 1,
+                    len(collection.items),
+                    detail=(
+                        "восстановление кадров"
+                        if current_ui_language() == "ru"
+                        else "restoring frames"
+                    ),
+                )
             if item.native_id in guarded:
                 continue
             element = resume_elements.get(item.native_id)
             if element is None:
                 continue
-            expected_media = _restore_deterministic_cache_entry(
-                cache, item, processor, element, backend_candidates=backend_candidates
-            )
+            expected_media = cached.get(item.native_id) or cached_analysis.get(item.native_id)
+            if expected_media is None:
+                expected_media = _restore_deterministic_cache_entry(
+                    cache, item, processor, element, backend_candidates=backend_candidates
+                )
             if expected_media is None:
                 continue
-            saved = await asyncio.to_thread(
+            saved = await run_blocking(
                 retained.get, _source_descriptor_sha256(item), expected_media
             )
             if saved is not None:
@@ -3033,6 +3089,7 @@ async def _resume_cached_processed_media(
     redescribe: str,
     overwrite_reviewed: bool,
     backend_candidates: dict[str, tuple[str, ...]] | None = None,
+    deterministic_candidates: Mapping[str, ProcessedMedia] | None = None,
 ) -> tuple[
     dict[str, ProcessedMedia],
     dict[str, _SemanticOutcome],
@@ -3054,7 +3111,21 @@ async def _resume_cached_processed_media(
     traces = _request_traces_from_checkpoint(collection.items, resume_elements)
     if backend_candidates is None:
         backend_candidates = {}
-    for item in collection.items:
+    for index, item in enumerate(collection.items, 1):
+        if (progress_pack := PACK.get()) is not None:
+            report_pack_counts(
+                progress_pack,
+                "render",
+                index - 1,
+                len(collection.items),
+                detail=(
+                    "проверка кэша анализа"
+                    if current_ui_language() == "ru"
+                    else "checking analysis cache"
+                ),
+            )
+        if index % 8 == 0:
+            await asyncio.sleep(0)
         element = resume_elements.get(item.native_id)
         if (
             element is None
@@ -3066,13 +3137,15 @@ async def _resume_cached_processed_media(
             or not element.fingerprint_complete
         ):
             continue
-        candidate = _restore_deterministic_cache_entry(
-            cache,
-            item,
-            processor,
-            element,
-            backend_candidates=backend_candidates,
-        )
+        candidate = (deterministic_candidates or {}).get(item.native_id)
+        if candidate is None:
+            candidate = _restore_deterministic_cache_entry(
+                cache,
+                item,
+                processor,
+                element,
+                backend_candidates=backend_candidates,
+            )
         if candidate is None:
             continue
         candidates[item.native_id] = candidate
@@ -4997,58 +5070,76 @@ async def _describe_batch(
                 cache_alias_scope=cache_alias_scope,
             )
         except AIOutputError as batch_error:
+            failed_batch = batch_error
             callback = _AI_PROGRESS_CALLBACK.get()
             if callback is not None and len(primary_items) > 1:
                 callback("recovery")
-            for item in primary_items:
-                trace: list[_AICacheTrace] = []
+            recovery_errors: list[Exception] = []
+
+            async def recover_one(item: SourceEmoji) -> None:
+                if recovery_errors:
+                    return
                 try:
-                    if len(primary_items) == 1:
-                        # This exact singleton already exhausted its two attempts.
-                        raise batch_error
-                    cached = await _load_or_describe_single(
-                        item,
-                        processed[item.native_id],
-                        model=config.ai.model,
-                        config=config,
-                        cache=cache,
-                        budget=budget,
-                        ai_state=ai_state,
-                        api_key=api_key,
-                        context=contexts[item.native_id],
-                        temporary=temporary,
-                        taxonomy_version=taxonomy_version,
-                        cache_alias_scope=cache_alias_scope,
-                        generation_stage="primary",
-                        trace_out=trace,
-                    )
-                except AIOutputError:
-                    if config.ai.model_routing != "rules":
-                        raise
-                    result[item.native_id] = await _describe_routed_single(
-                        item,
-                        processed[item.native_id],
-                        model=config.ai.escalation_model,
-                        generation_stage="escalated",
-                        routing_reasons=(RoutingReason.SCHEMA_RETRY_EXHAUSTED,),
-                        config=config,
-                        cache=cache,
-                        budget=budget,
-                        ai_state=ai_state,
-                        api_key=api_key,
-                        context=contexts[item.native_id],
-                        temporary=temporary,
-                        taxonomy_version=taxonomy_version,
-                        qualifications=qualifications,
-                        routing_registry=routing_registry,
-                        cache_alias_scope=cache_alias_scope,
-                    )
-                else:
-                    result[item.native_id] = await resolve_primary(item, cached, trace[0])
-                # Keep each validated recovery, even if a later item fails or
-                # exhausts the shared budget before this batch can finish.
-                if on_item_completed is not None:
-                    await on_item_completed((item,), {item.native_id: result[item.native_id]})
+                    trace: list[_AICacheTrace] = []
+                    try:
+                        if len(primary_items) == 1:
+                            # This exact singleton already exhausted its two attempts.
+                            raise failed_batch
+                        cached = await _load_or_describe_single(
+                            item,
+                            processed[item.native_id],
+                            model=config.ai.model,
+                            config=config,
+                            cache=cache,
+                            budget=budget,
+                            ai_state=ai_state,
+                            api_key=api_key,
+                            context=contexts[item.native_id],
+                            temporary=temporary,
+                            taxonomy_version=taxonomy_version,
+                            cache_alias_scope=cache_alias_scope,
+                            generation_stage="primary",
+                            trace_out=trace,
+                        )
+                    except AIOutputError:
+                        if config.ai.model_routing != "rules":
+                            raise
+                        result[item.native_id] = await _describe_routed_single(
+                            item,
+                            processed[item.native_id],
+                            model=config.ai.escalation_model,
+                            generation_stage="escalated",
+                            routing_reasons=(RoutingReason.SCHEMA_RETRY_EXHAUSTED,),
+                            config=config,
+                            cache=cache,
+                            budget=budget,
+                            ai_state=ai_state,
+                            api_key=api_key,
+                            context=contexts[item.native_id],
+                            temporary=temporary,
+                            taxonomy_version=taxonomy_version,
+                            qualifications=qualifications,
+                            routing_registry=routing_registry,
+                            cache_alias_scope=cache_alias_scope,
+                        )
+                    else:
+                        result[item.native_id] = await resolve_primary(item, cached, trace[0])
+                    # Keep each validated recovery, even if a later item fails or
+                    # exhausts the shared budget before this batch can finish.
+                    if on_item_completed is not None:
+                        await on_item_completed((item,), {item.native_id: result[item.native_id]})
+                except Exception as exc:
+                    # A budget or provider failure stops new work, but already
+                    # paid peers must finish and checkpoint their valid answers.
+                    recovery_errors.append(exc)
+
+            await bounded_map(
+                primary_items,
+                recover_one,
+                concurrency=min(len(primary_items), config.ai.ai_concurrency),
+            )
+            if recovery_errors:
+                raise recovery_errors[0] from None
 
     for item in primary_items:
         if item.native_id in result:
@@ -5777,6 +5868,7 @@ def _cache_deterministic_analysis(
                 ),
             },
         },
+        skip_unchanged=True,
     )
 
 

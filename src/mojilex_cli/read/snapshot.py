@@ -9,6 +9,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -1126,8 +1127,6 @@ def _delegated_contract_ref(value: object) -> str | None:
 def _embedded_schema_contracts() -> tuple[
     dict[str, dict[str, Any]], Registry[Any], Mapping[str, EmbeddedSchema]
 ]:
-    schemas: dict[str, dict[str, Any]] = {}
-    registry: Registry[Any] = Registry()
     try:
         embedded = embedded_schemas()
     except EmbeddedSchemaError as exc:
@@ -1136,6 +1135,17 @@ def _embedded_schema_contracts() -> tuple[
             "The installed CLI schema trust root is unavailable.",
             "Reinstall this exact mojilex-cli release.",
         ) from exc
+    return _compiled_embedded_schema_contracts(tuple(embedded.items()))
+
+
+@lru_cache(maxsize=2)
+def _compiled_embedded_schema_contracts(
+    entries: tuple[tuple[str, EmbeddedSchema], ...],
+) -> tuple[dict[str, dict[str, Any]], Registry[Any], Mapping[str, EmbeddedSchema]]:
+    # Keyed by exact immutable schema bytes, including test/update trust-root changes.
+    embedded = dict(entries)
+    schemas: dict[str, dict[str, Any]] = {}
+    registry: Registry[Any] = Registry()
     for uri, item in embedded.items():
         try:
             schema = parse_bounded_json(

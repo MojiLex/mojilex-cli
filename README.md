@@ -220,6 +220,14 @@ may pause when both windows are full. Dataset merges remain ordered within each
 saved run. This hides most local
 preparation time behind provider requests without multiplying the shared limits.
 
+Each active pack retains completed/total counters for downloads and local processing,
+including cache checks and frame restoration. Downloads show cached files separately;
+before source metadata arrives, the panel says it is fetching the file list. Startup
+shows an activity bar, the current operation, and elapsed time. Packs waiting for a
+shared emoji release their preparation slot so unrelated packs can proceed.
+An AI request waits up to 90 seconds; fast responses return immediately. Transient
+transport failures retry within the shared request budget.
+
 | Mode | Order |
 |---|---|
 | `fast` — default | Prepare following packs while AI handles the current pack; start AI in readiness order and merge results in input order. |

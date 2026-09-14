@@ -6,7 +6,7 @@ from mojilex_cli.commands import import_reuse, interactive, packs, runtime, work
 from mojilex_cli.commands.runtime import CommandResult
 from mojilex_cli.config import MojiLexConfig
 from mojilex_cli.output import RunStatus
-from mojilex_cli.runs import new_checkpoint
+from mojilex_cli.runs import ElementCheckpoint, new_checkpoint
 
 A = "https://t.me/addemoji/PackAlpha"
 B = "https://t.me/addemoji/PackBravo"
@@ -119,11 +119,11 @@ def test_completed_analysis_does_not_start_ai_again(saved_runs, monkeypatch):
     assert dispatched == [["import", A, "--preparation", "metadata"]]
 
 
-def test_newer_completed_download_not_shadowed_by_old_analysis(saved_runs):
+def test_completed_analysis_is_preferred_over_newer_metadata_import(saved_runs):
     create, _, config = saved_runs
-    create(phase="describe")
-    imported = create(phase="import")
-    assert import_reuse.reusable_imports([A], config, max_items=None)[A][0] == imported
+    completed = create(phase="describe")
+    create(phase="import")
+    assert import_reuse.reusable_imports([A], config, max_items=None)[A][0] == completed
 
 
 def test_complete_copy_preferred_over_accidental_interrupted_reimport(saved_runs):
@@ -314,3 +314,163 @@ def test_metadata_reuse_enters_analysis_without_finishing_import(saved_runs, mon
         f"{checkpoint.run_id}:PackAlpha",
         f"{checkpoint.run_id}:PackBravo",
     ]
+
+
+def test_reuse_indexes_sources_once_per_run(saved_runs, monkeypatch):
+    create, _, config = saved_runs
+    sources = tuple(f"https://t.me/addemoji/Pack{index}" for index in range(250))
+    checkpoint = create(sources)
+    calls = 0
+    original = import_reuse._source_name
+
+    def counted(source):
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(import_reuse, "_source_name", counted)
+    result = import_reuse.reusable_imports(sources, config, max_items=None)
+    assert len(result) == len(sources)
+    assert all(run is checkpoint for run, _ in result.values())
+    assert calls <= len(sources) * 2
+
+
+def test_startup_progress_visible_before_scanning_checkpoints(saved_runs, monkeypatch):
+    from contextlib import contextmanager
+
+    create, _, _ = saved_runs
+    checkpoint = create()
+    active = []
+    stages = []
+
+    @contextmanager
+    def progress(label):
+        active.append(label)
+        stages.append(label)
+        try:
+            yield
+        finally:
+            active.pop()
+
+    def restore(*args, **kwargs):
+        assert active, "Saved-run discovery must never run without startup progress"
+        return {A: (checkpoint, A)}
+
+    monkeypatch.setattr(runtime, "operation_progress", progress)
+    monkeypatch.setattr(import_reuse, "reusable_imports", restore)
+    monkeypatch.setattr(workflow, "run_import", forbid)
+    result = do_import([A], preparation="metadata")
+    assert result.result["reused_packs"] == 1
+    assert len(stages) == 2
+
+
+def test_cached_selector_index_still_rejects_foreign_pack(saved_runs, monkeypatch):
+    create, _, config = saved_runs
+    checkpoint = create()
+    monkeypatch.setattr(packs, "load_config", lambda: config)
+
+    def resolve(selector, **kwargs):
+        if selector.endswith(":ForeignPack"):
+            raise runtime.CommandError(
+                "CONFIG_INVALID", "Foreign pack", hint="Choose a saved pack."
+            )
+        return checkpoint
+
+    monkeypatch.setattr(packs, "resolve_pack_run", resolve)
+    monkeypatch.setattr(workflow, "run_describe_many", forbid)
+    with pytest.raises(runtime.CommandError, match="Foreign pack"):
+        workflow.describe_command(
+            [f"{checkpoint.run_id}:PackAlpha", f"{checkpoint.run_id}:ForeignPack"],
+            provider=None,
+            model=None,
+            max_ai_requests=None,
+            max_cost_usd=None,
+            allow_unknown_cost=False,
+        )
+
+
+def _with_saved_work(checkpoint, pack, *, media, ai=0):
+    ids = [f"{pack}-{index}" for index in range(media)]
+    return checkpoint.model_copy(
+        update={
+            "safe_parameters": {
+                **checkpoint.safe_parameters,
+                "source_memberships": {pack: ids},
+            },
+            "elements": {
+                identifier: ElementCheckpoint(
+                    stage="ai_cached" if index < ai else "fingerprint_ready",
+                    fingerprint_complete=True,
+                    deterministic_cache_key="a" * 64,
+                    ai_facets_complete=index < ai,
+                    ai_cache_key="b" * 64 if index < ai else None,
+                )
+                for index, identifier in enumerate(ids)
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("ai", [0, 128])
+def test_interrupted_saved_media_beats_newer_successful_metadata_import(
+    saved_runs, monkeypatch, ai
+):
+    create, runs, config = saved_runs
+    older = _with_saved_work(
+        create(phase="describe", status="interrupted"), "PackAlpha", media=200, ai=ai
+    )
+    runs[0] = older
+    imported = create(phase="import", status="succeeded")
+    assert imported.updated_at >= older.updated_at
+    selected = import_reuse.reusable_imports([A], config, max_items=None)
+    assert selected[A][0] is older
+    monkeypatch.setattr(workflow, "run_import", forbid)
+    monkeypatch.setattr(workflow, "run_resume_sync", forbid)
+    result = do_import([A], preparation="metadata")
+    assert result.result["analysis_selectors"] == [f"{older.run_id}:PackAlpha"]
+
+
+def test_reuse_prefers_saved_ai_then_media_before_newer_run_status(saved_runs):
+    create, runs, config = saved_runs
+    older = _with_saved_work(
+        create(phase="describe", status="interrupted"), "PackAlpha", media=100, ai=90
+    )
+    runs[0] = older
+    newer = _with_saved_work(
+        create(phase="import", status="succeeded"), "PackAlpha", media=200, ai=20
+    )
+    runs[0] = newer
+    assert import_reuse.reusable_imports([A], config, max_items=None)[A][0] is older
+
+
+def test_sibling_progress_does_not_influence_pack_selection(saved_runs):
+    create, runs, config = saved_runs
+    alpha = _with_saved_work(
+        create(phase="describe", status="interrupted"), "PackAlpha", media=10, ai=10
+    )
+    runs[0] = alpha
+    bravo = _with_saved_work(
+        create(phase="describe", status="interrupted"), "PackBravo", media=200, ai=200
+    )
+    runs[0] = bravo
+    selected = import_reuse.reusable_imports([A, B], config, max_items=None)
+    assert selected[A][0] is alpha
+    assert selected[B][0] is bravo
+
+
+def test_reuse_progress_index_is_built_once_per_run(saved_runs, monkeypatch):
+    create, runs, config = saved_runs
+    sources = tuple(f"https://t.me/addemoji/Pack{index}" for index in range(100))
+    create(sources, phase="describe", status="interrupted")
+    create(sources, phase="import")
+    calls = []
+    original = import_reuse._source_progress_index
+
+    def indexed(checkpoint, names):
+        calls.append(checkpoint.run_id)
+        return original(checkpoint, names)
+
+    monkeypatch.setattr(import_reuse, "_source_progress_index", indexed)
+    result = import_reuse.reusable_imports(sources, config, max_items=None)
+    assert len(result) == len(sources)
+    assert len(calls) == len(runs)

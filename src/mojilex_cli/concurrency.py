@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterat
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -49,6 +49,7 @@ class BatchLimits:
     temp_budget: ByteBudget
     retained_stores: dict[str, object] = field(default_factory=dict)
     retained_lock: threading.RLock = field(default_factory=threading.RLock)
+    retained_build_locks: dict[str, Any] = field(default_factory=dict)
 
 
 _batch: ContextVar[BatchLimits | None] = ContextVar("mojilex_batch_limits", default=None)
@@ -237,3 +238,24 @@ def pack_pipeline_limits(concurrency: int) -> Iterator[PackPipelineLimits]:
         yield limits
     finally:
         _pack_pipeline.reset(token)
+
+
+P = ParamSpec("P")
+
+
+async def run_blocking(function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    """Keep the event loop responsive and drain disk workers before releasing owners."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise

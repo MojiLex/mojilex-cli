@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from pydantic_core.core_schema import ErrorType
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
+from rich.progress_bar import ProgressBar
 from rich.segment import Segment
 from rich.spinner import Spinner
 from rich.table import Table
@@ -62,6 +63,9 @@ class _CommandContext:
     operations: list[tuple[str, float]] = field(default_factory=list)
     operation_live: Live | None = None
     operation_spinner: Spinner = field(default_factory=lambda: Spinner("dots"))
+    operation_bar: ProgressBar = field(
+        default_factory=lambda: ProgressBar(total=None, pulse=True, width=40)
+    )
     prompt_depth: int = 0
     pending_progress: list[RenderableType] = field(default_factory=list)
     pack_queue: PackQueue | None = None
@@ -119,6 +123,7 @@ def _operation_view(context: _CommandContext) -> RenderableType:
             Text(label),
             Text(f"{elapsed // 60:02d}:{elapsed % 60:02d}", style="dim"),
         )
+        return Group(table, context.operation_bar)
     return table
 
 
@@ -247,6 +252,24 @@ def report_pack_stage(source: str, stage: str) -> None:
         update_live_progress(context.pack_queue, key="packs")
 
 
+def report_pack_counts(
+    source: str, phase: str, completed: int, total: int, *, detail: str = ""
+) -> None:
+    """Record durable per-pack progress, including time between live item batches."""
+    context = _COMMAND_CONTEXT.get()
+    if (
+        context is not None
+        and context.pack_queue is not None
+        and source in context.pack_queue.stages
+    ):
+        context.pack_queue.report_counts(source, phase, completed, total, detail=detail)
+        if not context.progress_paused:
+            if context.live is None:
+                update_live_progress(context.pack_queue, key="packs")
+            else:
+                _refresh_live(context)
+
+
 def report_progress(message: str, *, verbose: bool = False) -> None:
     """Human diagnostics always go to stderr, leaving machine stdout untouched."""
 
@@ -310,6 +333,7 @@ def update_pack_progress(batch: object) -> bool:
     owner = getattr(batch, "pack", None)
     if owner is not None:
         context.pack_queue.batches[batch] = owner
+        context.pack_queue.remember_batch(batch, owner)
     if context.progress_paused:
         return True
     if context.live is None:
@@ -330,6 +354,7 @@ def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
         owner = getattr(key, "pack", None)
         if owner is not None:
             context.pack_queue.batches[key] = owner
+            context.pack_queue.remember_batch(key, owner)
         context.progress_views = {"packs": context.pack_queue}
     else:
         context.progress_views[key] = view
@@ -381,7 +406,9 @@ def finish_live_progress(*, key: object = None) -> None:
     if context is None:
         return
     if key is not None and context.pack_queue is not None:
-        context.pack_queue.batches.pop(key, None)
+        owner = context.pack_queue.batches.pop(key, None)
+        if owner is not None:
+            context.pack_queue.remember_batch(key, owner)
         context.progress_pause_keys.discard(key)
         context.progress_paused = bool(context.progress_pause_keys) or context.prompt_depth > 0
         _refresh_live(context)

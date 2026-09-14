@@ -287,3 +287,15 @@ def test_read_only_inspection_rejects_live_wal_instead_of_silently_reading_stale
         writer.put_ai("key", _result())
         with pytest.raises(CacheError, match="checkpointed WAL"):
             CacheStore(path, read_only=True)
+
+
+def test_repeated_deterministic_metadata_write_can_skip_identical_row(tmp_path):
+    with CacheStore(tmp_path / "cache.sqlite3") as cache:
+        cache.put_metadata("analysis", {"ready": True}, base_sha="base", skip_unchanged=True)
+        changes = cache._connection.total_changes
+        cache.put_metadata("analysis", {"ready": True}, base_sha="base", skip_unchanged=True)
+        assert cache._connection.total_changes == changes
+        cache.put_metadata("analysis", {"ready": False}, base_sha="base", skip_unchanged=True)
+        assert cache.get_metadata("analysis") == {"ready": False}
+        cache.put_metadata("analysis", {"ready": False}, base_sha=None, skip_unchanged=True)
+        assert cache.get_metadata("analysis", base_sha="base") is None

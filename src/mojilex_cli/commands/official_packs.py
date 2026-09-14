@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from threading import Lock
 
 from mojilex_cli.config import load_config
 from mojilex_cli.dataset import load_dataset, validate_dataset
@@ -38,7 +41,40 @@ class SourceSelection:
         )
 
 
+@dataclass
+class _OfficialPackSnapshot:
+    names: frozenset[str] | None = None
+    lock: Lock = field(default_factory=Lock)
+
+
+_OFFICIAL_SNAPSHOT: ContextVar[_OfficialPackSnapshot | None] = ContextVar(
+    "mojilex_official_snapshot", default=None
+)
+
+
+@contextmanager
+def official_pack_scope() -> Iterator[None]:
+    """Share one validated official snapshot only for this user's operation."""
+    token = _OFFICIAL_SNAPSHOT.set(_OFFICIAL_SNAPSHOT.get() or _OfficialPackSnapshot())
+    try:
+        yield
+    finally:
+        _OFFICIAL_SNAPSHOT.reset(token)
+
+
 def official_pack_names() -> frozenset[str]:
+    snapshot = _OFFICIAL_SNAPSHOT.get()
+    if snapshot is None:
+        return _load_official_pack_names()
+    # asyncio.to_thread propagates the holder, so concurrent callers also share
+    # one fetch/validation. A failure leaves names unset and is never cached.
+    with snapshot.lock:
+        if snapshot.names is None:
+            snapshot.names = _load_official_pack_names()
+        return snapshot.names
+
+
+def _load_official_pack_names() -> frozenset[str]:
     # The official main branch, never a user's local draft, fork, or pending PR.
     # One bounded checkout per input batch, not one GitHub request per URL.
     with repository_workspace("MojiLex/mojilex", "main") as workspace:

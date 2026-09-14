@@ -167,3 +167,25 @@ def test_doctor_installer_owns_terminal_until_it_returns(terminal, monkeypatch):
     monkeypatch.setattr(cli, "install_media_dependencies_command", installer)
     cli.doctor(install=True, non_interactive=False, json_output=False, quiet=False, debug=False)
     assert len(contexts) == 1 and contexts[0].operation_live is None
+
+
+def test_startup_displays_pulsing_bar_immediately_without_invented_percentage(terminal):
+    from rich.console import Group
+    from rich.progress_bar import ProgressBar
+
+    context, output = terminal
+    with runtime.operation_progress("Reading saved packs"):
+        assert context.operation_live is not None
+        view = runtime._operation_view(context)
+        assert isinstance(view, Group)
+        bars = [item for item in view.renderables if isinstance(item, ProgressBar)]
+        assert len(bars) == 1
+        assert bars[0].pulse is True and bars[0].total is None
+        assert "Reading saved packs" in output.getvalue()
+        assert "%" not in output.getvalue()
+        with runtime.operation_progress("Checking official repository"):
+            nested = runtime._operation_view(context)
+            assert isinstance(nested, Group)
+            assert bars[0] in nested.renderables
+        runtime.begin_pack_queue(["Alpha"])
+        assert context.operation_live is None and context.live is not None

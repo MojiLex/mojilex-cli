@@ -55,6 +55,10 @@ def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) ->
         return store
     key = os.path.normcase(os.path.abspath(root))
     with batch.retained_lock:
+        build_lock = batch.retained_build_locks.setdefault(key, threading.Lock())
+    # Different saved runs may inspect their own directories concurrently; only
+    # builders of the same store must wait for each other.
+    with build_lock:
         existing = batch.retained_stores.get(key)
         if isinstance(existing, RetainedMediaStore):
             if existing.max_bytes != max_bytes:
@@ -189,18 +193,23 @@ class RetainedMediaStore:
         pending = [(self.root, 0)]
         while pending:
             directory, depth = pending.pop()
-            for child in directory.iterdir():
-                seen += 1
-                if seen > _MAX_ENTRIES:
-                    return self.max_bytes + 1
-                _safe_path(child)
-                info = child.lstat()
-                if stat.S_ISREG(info.st_mode):
-                    total += info.st_size
-                elif stat.S_ISDIR(info.st_mode) and depth < 2:
-                    pending.append((child, depth + 1))
-                else:
-                    raise ValueError("unexpected retained media entry")
+            _safe_path(directory)
+            # Windows scandir supplies entry metadata without restatting every
+            # ancestor for every frame. Actual reads still validate the full path.
+            with os.scandir(directory) as entries:
+                for child in entries:
+                    seen += 1
+                    if seen > _MAX_ENTRIES:
+                        return self.max_bytes + 1
+                    info = child.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                        raise ValueError("retained media path contains a link or reparse point")
+                    if stat.S_ISREG(info.st_mode):
+                        total += info.st_size
+                    elif stat.S_ISDIR(info.st_mode) and depth < 2:
+                        pending.append((Path(child.path), depth + 1))
+                    else:
+                        raise ValueError("unexpected retained media entry")
         return total
 
     def get(self, key: str, expected: ProcessedMedia) -> ProcessedMedia | None:

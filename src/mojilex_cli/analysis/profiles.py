@@ -54,6 +54,13 @@ def load_analysis_profile(profile_id: str) -> AnalysisProfile:
     actual = hashlib.sha256(raw).hexdigest()
     if actual != expected:
         raise AnalysisError("bundled deterministic analysis profile hash mismatch")
+    return _validated_profile(profile_id, actual, raw)
+
+
+@lru_cache(maxsize=8)
+def _validated_profile(profile_id: str, actual: str, raw: bytes) -> AnalysisProfile:
+    # Read and hash the installed bytes on every public call; reuse only their
+    # immutable parsed/validated representation for the exact same bytes.
     try:
         parsed = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

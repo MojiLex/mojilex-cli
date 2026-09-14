@@ -217,19 +217,31 @@ def import_command(
     from .import_reuse import import_complete, reusable_imports
     from .official_packs import select_sources
     from .packs import _source_name
-    from .runtime import begin_pack_queue, report_pack_stage, report_progress
+    from .runtime import begin_pack_queue, operation_progress, report_pack_stage, report_progress
 
-    selection = select_sources(
-        sources,
-        platform=platform,
-        policy=official_pack_policy,
-        confirmation=official_confirmation,
-    )
+    with operation_progress(
+        "Проверка списка паков и официального репозитория"
+        if current_ui_language() == "ru"
+        else "Checking pack list and official repository"
+    ):
+        selection = select_sources(
+            sources,
+            platform=platform,
+            policy=official_pack_policy,
+            confirmation=official_confirmation,
+        )
     if not selection.selected:
         return selection.empty_result()
     del check_media  # import always verifies bytes; the option remains explicit in the CLI contract
     config = load_config(cli={"repository": {"target": repo}})
-    existing = {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
+    with operation_progress(
+        "Восстановление сохранённого прогресса"
+        if current_ui_language() == "ru"
+        else "Restoring saved progress"
+    ):
+        existing = (
+            {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
+        )
     if existing:
         begin_pack_queue(list(selection.selected))
         for checkpoint, saved_source in existing.values():
@@ -343,19 +355,33 @@ def describe_command(
     if len(selectors) > 1 and all(value.startswith("mlxrun_") for value in selectors):
         from mojilex_cli.runs import RunCheckpoint
 
-        from .packs import _sources, resolve_pack_run, selected_pack_sources
+        from .packs import _selector_name, _source_name, _sources, resolve_pack_run
 
         groups: list[tuple[str, list[str]]] = []
         checkpoints: dict[str, RunCheckpoint] = {}
+        source_maps: dict[str, dict[str, list[str]]] = {}
         for selector in selectors:
             parent_id = selector.split(":", 1)[0]
             checkpoint = checkpoints.get(parent_id)
-            if checkpoint is None or (
-                ":" in selector and not selected_pack_sources(checkpoint, selector)
-            ):
+            if checkpoint is None:
                 checkpoint = resolve_pack_run(selector, purpose="describe")
                 checkpoints[parent_id] = checkpoint
-            selected = selected_pack_sources(checkpoint, selector)
+                source_map: dict[str, list[str]] = {}
+                for source in _sources(checkpoint):
+                    name = _source_name(source)
+                    if name is not None:
+                        source_map.setdefault(name.casefold(), []).append(source)
+                source_maps[parent_id] = source_map
+            source_map = source_maps[parent_id]
+            name = _selector_name(selector)
+            if ":" in selector and (name is None or name.casefold() not in source_map):
+                # Validate malformed/foreign scoped names with the normal error path.
+                resolve_pack_run(selector, purpose="describe")
+            selected = (
+                tuple(source_map[name.casefold()])
+                if name is not None and len(source_map) > 1
+                else ()
+            )
             if not groups or groups[-1][0] != checkpoint.run_id:
                 groups.append((checkpoint.run_id, []))
             values = groups[-1][1]

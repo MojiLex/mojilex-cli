@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
 import subprocess
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
@@ -170,13 +175,65 @@ def _issue(issues: list[ValidationIssue], code: str, path: str, message: str) ->
     issues.append(ValidationIssue(code, path, message))
 
 
-def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]]]:
+_SCHEMA_MEMO_LIMIT = 65_536
+
+
+class _SchemaMemo:
+    def __init__(self) -> None:
+        self.successes: dict[bytes, None] = {}
+        self.lock = Lock()
+
+
+_SCHEMA_MEMO: ContextVar[_SchemaMemo | None] = ContextVar("mojilex_schema_memo", default=None)
+
+
+@contextmanager
+def schema_validation_scope() -> Iterator[None]:
+    """Reuse successful exact schema checks only within this operation."""
+    if _SCHEMA_MEMO.get() is not None:
+        yield
+        return
+    token = _SCHEMA_MEMO.set(_SchemaMemo())
+    try:
+        yield
+    finally:
+        _SCHEMA_MEMO.reset(token)
+
+
+def _json_native(value: object) -> bool:
+    if type(value) in {str, int, float, bool, type(None)}:
+        return True
+    if type(value) is list:
+        return all(_json_native(item) for item in value)
+    if type(value) is dict:
+        return all(type(key) is str and _json_native(item) for key, item in value.items())
+    return False
+
+
+def _schema_instance_key(graph: bytes, name: str, instance: object) -> bytes | None:
+    try:
+        if not _json_native(instance):
+            return None
+        payload = json.dumps(
+            instance, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return None  # Non-JSON inputs still undergo the original validation.
+    return hashlib.sha256(graph + name.encode("utf-8") + b"\0" + payload).digest()
+
+
+def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], bytes]:
     registry: Any = Registry()
     by_name: dict[str, dict[str, Any]] = {}
+    graph = hashlib.sha256()
     from .serialization import parse_json
 
     for path in sorted(schema_root.rglob("*.json")):
-        schema = parse_json(path.read_bytes(), source=str(path))
+        raw = path.read_bytes()
+        uri = path.as_uri().encode("utf-8")
+        # Include registry URI bindings and exact bytes read, avoiding a second read.
+        graph.update(len(uri).to_bytes(8, "big") + uri + len(raw).to_bytes(8, "big") + raw)
+        schema = parse_json(raw, source=str(path))
         by_name[path.name] = schema
         resource = Resource.from_contents(schema, default_specification=DRAFT202012)
         registry = registry.with_resource(path.as_uri(), resource)
@@ -184,7 +241,7 @@ def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]]]:
         schema_id = schema.get("$id")
         if isinstance(schema_id, str):
             registry = registry.with_resource(schema_id, resource)
-    return registry, by_name
+    return registry, by_name, graph.digest()
 
 
 def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
@@ -193,7 +250,7 @@ def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIss
         _issue(issues, "SCHEMA_MISSING", "schemas/v1", "schema v1 directory is required")
         return
     try:
-        registry, schemas = _schema_store(schema_root)
+        registry, schemas, graph = _schema_store(schema_root)
     except (OSError, ValueError) as exc:
         _issue(issues, "SCHEMA_INVALID", "schemas/v1", str(exc))
         return
@@ -233,6 +290,8 @@ def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIss
         )
         for value in snapshot.relations.values()
     )
+    validators: dict[str, Any] = {}
+    memo = _SCHEMA_MEMO.get()
     for path, schema_name, instance in targets:
         schema = schemas.get(schema_name)
         if schema is None:
@@ -240,12 +299,26 @@ def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIss
                 issues, "SCHEMA_MISSING", f"schemas/v1/{schema_name}", "required schema is absent"
             )
             continue
+        key = _schema_instance_key(graph, schema_name, instance) if memo is not None else None
+        if memo is not None and key is not None:
+            with memo.lock:
+                if key in memo.successes:
+                    continue
         try:
-            Draft202012Validator.check_schema(schema)
-            validator = Draft202012Validator(schema, registry=registry)
-            for error in sorted(
+            validator = validators.get(schema_name)
+            if validator is None:
+                Draft202012Validator.check_schema(schema)
+                validator = Draft202012Validator(schema, registry=registry)
+                validators[schema_name] = validator
+            errors = sorted(
                 validator.iter_errors(instance), key=lambda item: list(item.absolute_path)
-            ):
+            )
+            if not errors and memo is not None and key is not None:
+                with memo.lock:
+                    if key not in memo.successes and len(memo.successes) >= _SCHEMA_MEMO_LIMIT:
+                        memo.successes.pop(next(iter(memo.successes)))
+                    memo.successes[key] = None
+            for error in errors:
                 suffix = "/".join(str(part) for part in error.absolute_path)
                 _issue(issues, "SCHEMA", f"{path}/{suffix}".rstrip("/"), error.message)
         except (SchemaError, OSError, ValueError) as exc:

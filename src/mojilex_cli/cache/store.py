@@ -180,7 +180,12 @@ class CacheStore:
         return value
 
     def put_metadata(
-        self, key: str, payload: Mapping[str, Any], *, base_sha: str | None = None
+        self,
+        key: str,
+        payload: Mapping[str, Any],
+        *,
+        base_sha: str | None = None,
+        skip_unchanged: bool = False,
     ) -> None:
         self._ensure_writable()
         serialized = _serialize_safe(payload)
@@ -193,8 +198,10 @@ class CacheStore:
                    VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(cache_key) DO UPDATE SET
                      base_sha=excluded.base_sha, payload_json=excluded.payload_json,
-                     created_at=excluded.created_at, accessed_at=excluded.accessed_at""",
-                (key, base_sha, serialized, now, now),
+                     created_at=excluded.created_at, accessed_at=excluded.accessed_at
+                   WHERE ? OR metadata_cache.payload_json != excluded.payload_json
+                      OR metadata_cache.base_sha IS NOT excluded.base_sha""",
+                (key, base_sha, serialized, now, now, not skip_unchanged),
             )
 
     def get_ai(self, key: str) -> DescriptionResult | None:

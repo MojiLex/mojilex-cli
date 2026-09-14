@@ -53,7 +53,7 @@ class GeminiVisionProvider:
         api_key: str | None = None,
         client: Any | None = None,
         pricing: ModelPricing | None = None,
-        timeout_seconds: float = 30,
+        timeout_seconds: float = 90,
     ) -> None:
         if not model:
             raise ValueError("Gemini model must be selected explicitly")
@@ -311,7 +311,8 @@ def _safe_provider_status(exc: Exception) -> str:
     }:
         parts.append(f"status={status}")
     body = getattr(exc, "body", None)
-    provider_error = body.get("error") if isinstance(body, dict) else None
+    # SDK versions may expose either the HTTP envelope or its inner error object.
+    provider_error = body.get("error", body) if isinstance(body, dict) else None
     provider_code = provider_error.get("code") if isinstance(provider_error, dict) else None
     if isinstance(provider_code, str) and provider_code in {
         "invalid_request",
@@ -355,19 +356,31 @@ def _safe_provider_status(exc: Exception) -> str:
 
 
 def _transient_provider_error(exc: Exception) -> bool:
-    """Retry only known network failures and documented transient provider statuses."""
-    if isinstance(exc, (httpx.TransportError, ConnectionError, TimeoutError)):
-        return True
-    code = getattr(exc, "code", getattr(exc, "status_code", None))
-    if type(code) is int and code in {408, 429, 500, 502, 503, 504}:
-        return True
-    status = getattr(exc, "status", None)
-    return isinstance(status, str) and status in {
-        "RESOURCE_EXHAUSTED",
-        "UNAVAILABLE",
-        "DEADLINE_EXCEEDED",
-        "INTERNAL",
-    }
+    """Classify known failures, including SDK wrappers, without exposing their text."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            return False
+        seen.add(id(current))
+        code = getattr(current, "code", getattr(current, "status_code", None))
+        if type(code) is int and 100 <= code <= 599:
+            # An explicit permanent HTTP response wins over an incidental cause.
+            return code in {408, 429, 500, 502, 503, 504}
+        if isinstance(current, (httpx.TransportError, ConnectionError, TimeoutError)):
+            return True
+        status = getattr(current, "status", None)
+        if isinstance(status, str) and status in {
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "INTERNAL",
+        }:
+            return True
+        # Interactions APITimeoutError/APIConnectionError wrap httpx failures
+        # using an explicit cause. Do not inspect or print arbitrary context.
+        current = current.__cause__
+    return False
 
 
 def _animated(request: DescriptionRequest) -> bool:

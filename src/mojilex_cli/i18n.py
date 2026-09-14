@@ -501,10 +501,10 @@ _RUSSIAN_MESSAGES = {
     "AI requests were not authorized.": "Разрешение на запросы к ИИ не получено.",
     (
         "Review the planned AI requests and confirm when restarting, "
-        "or use --yes in an interactive workflow."
+        "or use --allow-unknown-cost (or --yes in an interactive workflow)."
     ): (
         "Проверьте запланированные запросы к ИИ и подтвердите их при повторном запуске "
-        "либо используйте --yes в интерактивном режиме."
+        "либо используйте --allow-unknown-cost (или --yes в интерактивном режиме)."
     ),
     "The provider's USD cost is unknown and was not authorized.": (
         "Стоимость запросов к провайдеру в USD неизвестна; разрешение не получено."

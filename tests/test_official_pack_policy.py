@@ -468,3 +468,82 @@ def test_default_skips_official_packs_without_confirmation(official):
     assert selected.selected == (NEW,)
     assert selected.skipped == (OLD,)
     assert len(official) == 1
+
+
+def test_official_snapshot_is_shared_for_import_and_saved_runs_only_within_scope(monkeypatch):
+    from mojilex_cli.commands.queue_progress import pack_queue_scope
+
+    calls = []
+
+    def load_names():
+        calls.append(True)
+        return frozenset({"published"} if len(calls) == 1 else {"published", "newpack"})
+
+    monkeypatch.setattr(official_packs, "_load_official_pack_names", load_names)
+    with pack_queue_scope():
+        assert official_packs.select_sources(
+            [OLD, NEW], platform="auto", policy="skip"
+        ).selected == (NEW,)
+        with pack_queue_scope():
+            for _ in range(4):
+                assert official_packs.select_sources(
+                    [NEW], platform="auto", policy="skip"
+                ).selected == (NEW,)
+        assert len(calls) == 1
+    with pack_queue_scope():
+        assert official_packs.select_sources([NEW], platform="auto", policy="skip").selected == ()
+    assert len(calls) == 2
+    official_packs.official_pack_names()
+    official_packs.official_pack_names()
+    assert len(calls) == 4  # Standalone calls do not retain a stale main-branch index.
+
+
+def test_official_snapshot_failure_is_not_cached_and_validation_stays_strict(tmp_path, monkeypatch):
+    attempts = []
+    validations = []
+
+    @contextmanager
+    def workspace(target, branch):
+        attempts.append((target, branch))
+        yield SimpleNamespace(root=tmp_path)
+
+    def validate(root, *, strict):
+        validations.append((root, strict))
+
+        def raise_for_errors():
+            if len(validations) == 1:
+                raise RuntimeError("invalid official dataset")
+
+        return SimpleNamespace(raise_for_errors=raise_for_errors)
+
+    monkeypatch.setattr(official_packs, "repository_workspace", workspace)
+    monkeypatch.setattr(official_packs, "validate_dataset", validate)
+    monkeypatch.setattr(official_packs, "load_dataset", lambda _: SimpleNamespace(collections={}))
+    with official_packs.official_pack_scope():
+        with pytest.raises(RuntimeError, match="invalid official dataset"):
+            official_packs.official_pack_names()
+        assert official_packs.official_pack_names() == frozenset()
+        assert official_packs.official_pack_names() == frozenset()
+    assert attempts == [("MojiLex/mojilex", "main")] * 2
+    assert validations == [(tmp_path, True)] * 2
+
+
+def test_official_snapshot_is_shared_with_worker_threads(monkeypatch):
+    import asyncio
+
+    calls = []
+
+    def load_names():
+        calls.append(True)
+        return frozenset({"published"})
+
+    monkeypatch.setattr(official_packs, "_load_official_pack_names", load_names)
+
+    async def lookup():
+        with official_packs.official_pack_scope():
+            return await asyncio.gather(
+                *(asyncio.to_thread(official_packs.official_pack_names) for _ in range(8))
+            )
+
+    assert asyncio.run(lookup()) == [frozenset({"published"})] * 8
+    assert len(calls) == 1

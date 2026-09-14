@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from typing import Literal
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mojilex_cli.config import secrets as secret_rules
 from mojilex_cli.config.secrets import contains_secret_text, is_secret_key, url_has_credentials
 
 _RUN_ID = re.compile(r"mlxrun_[0-9a-f]{32}\Z")
@@ -42,6 +44,70 @@ _FORBIDDEN_FIELDS = frozenset(
         "contact_sheet",
     }
 )
+
+
+def _safety_rule_identity() -> tuple[object, ...]:
+    # Current detectors are pure functions over immutable rules; they do not read
+    # environment credentials. Disable memoization if a detector/rule is replaced.
+    return (
+        contains_secret_text,
+        is_secret_key,
+        url_has_credentials,
+        _TELEGRAM_TOKEN,
+        _SHA256,
+        _FORBIDDEN_FIELDS,
+        secret_rules.contains_secret_text,
+        secret_rules.is_secret_key,
+        secret_rules.url_has_credentials,
+        secret_rules.redact_text,
+        secret_rules.SECRET_ENV_NAMES,
+        secret_rules._SECRET_KEY,
+        secret_rules._KNOWN_CREDENTIALS,
+        secret_rules._TELEGRAM_BOT_PATH,
+        secret_rules._AUTHORITY_CREDENTIALS,
+    )
+
+
+_ORIGINAL_SAFETY_RULES = _safety_rule_identity()
+
+
+class _SafeTextMemo:
+    """Bounded successful checks of exact immutable text, never mutable subtrees."""
+
+    MAX_ENTRIES = 8192
+    MAX_BYTES = 1024 * 1024
+    MAX_TEXT_BYTES = 1024
+
+    def __init__(self) -> None:
+        self.entries: OrderedDict[tuple[bool, str], int] = OrderedDict()
+        self.size_bytes = 0
+
+    def clear(self) -> None:
+        self.entries.clear()
+        self.size_bytes = 0
+
+    def contains(self, text: str, *, key: bool) -> bool:
+        identity = (key, text)
+        if identity not in self.entries:
+            return False
+        self.entries.move_to_end(identity)
+        return True
+
+    def remember(self, text: str, *, key: bool) -> None:
+        if len(text) > self.MAX_TEXT_BYTES:
+            return
+        size = len(text.encode("utf-8"))
+        if size > self.MAX_TEXT_BYTES:
+            return
+        identity = (key, text)
+        if identity in self.entries:
+            self.entries.move_to_end(identity)
+            return
+        self.entries[identity] = size
+        self.size_bytes += size
+        while len(self.entries) > self.MAX_ENTRIES or self.size_bytes > self.MAX_BYTES:
+            _, removed_size = self.entries.popitem(last=False)
+            self.size_bytes -= removed_size
 
 
 class RunStoreError(RuntimeError):
@@ -357,6 +423,7 @@ class RunStore:
         if repository_root is not None and self.root.is_relative_to(repository_root.resolve()):
             raise RunStoreError("run checkpoints must be outside the target repository")
         self.write_enabled = write_enabled
+        self._safe_text = _SafeTextMemo()
         if write_enabled:
             self.root.mkdir(parents=True, exist_ok=True)
             (self.root / "locks").mkdir(exist_ok=True)
@@ -368,7 +435,7 @@ class RunStore:
     def save(self, checkpoint: RunCheckpoint) -> Path:
         if not self.write_enabled:
             raise RunStoreError("checkpoints are disabled in dry-run mode")
-        _assert_safe(checkpoint.model_dump(mode="json"))
+        self._assert_checkpoint_safe(checkpoint)
         destination = self._checkpoint_path(checkpoint.run_id)
         serialized = checkpoint.model_dump_json().encode("utf-8") + b"\n"
         if len(serialized) > _MAX_CHECKPOINT_BYTES:
@@ -392,8 +459,15 @@ class RunStore:
             checkpoint = RunCheckpoint.model_validate_json(payload)
         except ValueError as exc:
             raise RunStoreError("checkpoint is malformed") from exc
-        _assert_safe(checkpoint.model_dump(mode="json"))
+        self._assert_checkpoint_safe(checkpoint)
         return checkpoint
+
+    def _assert_checkpoint_safe(self, checkpoint: RunCheckpoint) -> None:
+        memo: _SafeTextMemo | None = self._safe_text
+        if _safety_rule_identity() != _ORIGINAL_SAFETY_RULES:
+            self._safe_text.clear()
+            memo = None
+        _assert_safe(checkpoint.model_dump(mode="json"), memo=memo)
 
     def load_for_resume(
         self,
@@ -484,20 +558,34 @@ def _atomic_write(path: Path, content: bytes) -> None:
         temp.unlink(missing_ok=True)
 
 
-def _assert_safe(value: object, *, path: str = "checkpoint") -> None:
+def _assert_safe(
+    value: object, *, path: str = "checkpoint", memo: _SafeTextMemo | None = None
+) -> None:
     if isinstance(value, bytes):
         raise RunStoreError(f"binary content is forbidden in {path}")
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
             key = str(raw_key)
-            if key.lower() in _FORBIDDEN_FIELDS or is_secret_key(key):
-                raise RunStoreError(f"unsafe field is forbidden in {path}: {key}")
-            _assert_safe(child, path=f"{path}.{key}")
+            if memo is None or not memo.contains(key, key=True):
+                if key.lower() in _FORBIDDEN_FIELDS or is_secret_key(key):
+                    raise RunStoreError(f"unsafe field is forbidden in {path}: {key}")
+                if memo is not None:
+                    memo.remember(key, key=True)
+            _assert_safe(child, path=f"{path}.{key}", memo=memo)
     elif isinstance(value, (list, tuple)):
         for child in value:
-            _assert_safe(child, path=path)
+            _assert_safe(child, path=path, memo=memo)
     elif isinstance(value, str):
+        # With the original rules, exactly 64 lowercase hex characters cannot
+        # contain any credential prefix, URL separator, or userinfo delimiter.
+        # RunStore disables this path along with memoization if any rule changes.
+        if memo is not None and len(value) == 64 and _SHA256.fullmatch(value):
+            return
+        if memo is not None and memo.contains(value, key=False):
+            return
         if _TELEGRAM_TOKEN.search(value) or contains_secret_text(value):
             raise RunStoreError(f"credential is forbidden in {path}")
         if "://" in value and url_has_credentials(value):
             raise RunStoreError(f"credential URL is forbidden in {path}")
+        if memo is not None:
+            memo.remember(value, key=False)
