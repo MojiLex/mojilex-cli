@@ -227,6 +227,9 @@ shows an activity bar, the current operation, and elapsed time. Packs waiting fo
 shared emoji release their preparation slot so unrelated packs can proceed.
 An AI request waits up to 90 seconds; fast responses return immediately. Transient
 transport failures retry within the shared request budget.
+An explicit API retry interval pauses new AI requests across the operation and
+shows the reason in the dashboard. Downloads and local processing remain unblocked.
+An unlimited application budget does not remove the AI provider's quotas.
 
 | Mode | Order |
 |---|---|

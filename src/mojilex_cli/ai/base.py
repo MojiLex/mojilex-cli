@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -15,7 +16,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from mojilex_cli.concurrency import ai_slot
+from mojilex_cli.concurrency import ai_slot, delay_ai_requests, wait_retry_delay
 
 SEMANTIC_VALIDATION_CODES = frozenset(
     {
@@ -41,7 +42,17 @@ class AIOutputError(AIError):
 
 
 class AITransientError(AIError):
-    """A known transient transport/provider failure eligible for bounded retry."""
+    """A known transient failure with an optional explicit server retry interval."""
+
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        if retry_after_seconds is not None and (
+            isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds <= 0
+        ):
+            raise ValueError("retry interval must be finite and positive")
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class BudgetExceededError(AIError):
@@ -680,12 +691,19 @@ async def describe_with_recovery(
                         approval_callback=lambda: progress("approval"),
                     )
                     progress("request")
-                    return await provider.describe(target)
-            except AITransientError:
+                    try:
+                        return await provider.describe(target)
+                    except AITransientError as exc:
+                        if exc.retry_after_seconds is not None:
+                            # Publish the cooldown before releasing this slot so
+                            # already queued peers recheck it before paying.
+                            delay_ai_requests(max(2**transport_attempt, exc.retry_after_seconds))
+                        raise
+            except AITransientError as exc:
                 if transport_attempt == 2:
                     raise
                 progress("transport_retry")
-                await asyncio.sleep(2**transport_attempt)
+                await wait_retry_delay(max(2**transport_attempt, exc.retry_after_seconds or 0))
         raise AssertionError("unreachable transport retry state")
 
     last_error: AIOutputError | None = None

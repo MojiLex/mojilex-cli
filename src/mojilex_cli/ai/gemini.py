@@ -6,8 +6,10 @@ import asyncio
 import base64
 import json
 import math
-from datetime import date
+import re
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -174,10 +176,12 @@ class GeminiVisionProvider:
             raise
         except Exception as exc:
             # Deliberately omit exception text: SDK errors can include request details.
-            error_class = AITransientError if _transient_provider_error(exc) else AIError
-            raise error_class(
-                f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
-            ) from None
+            message = f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
+            if _transient_provider_error(exc):
+                raise AITransientError(
+                    message, retry_after_seconds=_retry_after_seconds(exc)
+                ) from None
+            raise AIError(message) from None
         if getattr(response, "status", None) != "completed":
             raise AIOutputError("Gemini structured response: interaction_incomplete") from None
         if getattr(response, "model", None) not in (self.model, f"models/{self.model}"):
@@ -281,6 +285,54 @@ def _disable_interaction_retries(interactions: Any) -> None:
     retry.strategy = "none"
     retry.max_retries = 0
     retry.retry_connection_errors = False
+
+
+def _positive_delay(value: object) -> float | None:
+    if not isinstance(value, str) or len(value) > 128:
+        return None
+    try:
+        result = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) and result > 0 else None
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Read explicit protocol delays only; never inspect arbitrary error messages."""
+    delays: list[float] = []
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    header = headers.get("Retry-After") if headers is not None else None
+    if isinstance(header, str) and len(header) <= 128:
+        delay = _positive_delay(header)
+        if delay is None:
+            try:
+                instant = parsedate_to_datetime(header)
+                if instant.tzinfo is not None:
+                    delay = (instant - datetime.now(UTC)).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                pass
+        if delay is not None and math.isfinite(delay) and delay > 0:
+            delays.append(delay)
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if isinstance(details, list):
+        for detail in details[:32]:
+            if not isinstance(detail, dict) or detail.get("@type") != (
+                "type.googleapis.com/google.rpc.RetryInfo"
+            ):
+                continue
+            raw = detail.get("retryDelay")
+            if (
+                isinstance(raw, str)
+                and len(raw) <= 128
+                and re.fullmatch(r"[0-9]+(?:\.[0-9]{1,9})?s", raw)
+            ):
+                delay = _positive_delay(raw[:-1])
+                if delay is not None:
+                    delays.append(delay)
+    return max(delays) if delays else None
 
 
 def _safe_provider_status(exc: Exception) -> str:

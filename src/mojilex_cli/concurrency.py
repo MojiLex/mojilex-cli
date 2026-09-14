@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -41,12 +42,30 @@ class ByteBudget:
             self._used = updated
 
 
+class _AICooldown:
+    def __init__(self) -> None:
+        self.deadline = 0.0
+
+    def extend(self, seconds: float) -> None:
+        self.deadline = max(self.deadline, asyncio.get_running_loop().time() + seconds)
+
+    def remaining(self) -> float:
+        return max(0.0, self.deadline - asyncio.get_running_loop().time())
+
+    async def wait(self) -> None:
+        while remaining := self.remaining():  # noqa: ASYNC110 - deadline may be extended
+            # Large intervals remain in force; bounded sleep segments merely
+            # avoid platform timer overflow and stay immediately cancellable.
+            await asyncio.sleep(min(remaining, 86400.0))
+
+
 @dataclass(frozen=True)
 class BatchLimits:
     download_slots: asyncio.Semaphore
     render_slots: asyncio.Semaphore
     ai_slots: asyncio.Semaphore
     temp_budget: ByteBudget
+    ai_cooldown: _AICooldown = field(default_factory=_AICooldown)
     retained_stores: dict[str, object] = field(default_factory=dict)
     retained_lock: threading.RLock = field(default_factory=threading.RLock)
     retained_build_locks: dict[str, Any] = field(default_factory=dict)
@@ -84,15 +103,40 @@ def batch_limits(
         _batch.reset(token)
 
 
+async def wait_retry_delay(seconds: float) -> None:
+    """Wait a full retry interval without passing oversized timers to the platform."""
+    if seconds <= 86400.0:
+        await asyncio.sleep(seconds)
+        return
+    cooldown = _AICooldown()
+    cooldown.extend(seconds)
+    await cooldown.wait()
+
+
+def delay_ai_requests(seconds: float) -> None:
+    """Apply an explicit provider cooldown to all requests in this operation."""
+    if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("AI cooldown must be finite and positive")
+    limits = current_batch_limits()
+    if limits is not None:
+        limits.ai_cooldown.extend(seconds)
+
+
 @asynccontextmanager
 async def ai_slot() -> AsyncIterator[None]:
-    """Hold a shared slot only around one provider request, including its cleanup."""
+    """Hold a shared slot for a request, never for provider cooldown waiting."""
     limits = current_batch_limits()
     if limits is None:
         yield
-    else:
+        return
+    while True:
+        await limits.ai_cooldown.wait()
         async with limits.ai_slots:
+            # A peer may receive 429 while this coroutine waits for the slot.
+            if limits.ai_cooldown.remaining() > 0:
+                continue
             yield
+            return
 
 
 async def bounded_map(

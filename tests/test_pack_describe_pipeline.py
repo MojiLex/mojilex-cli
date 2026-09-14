@@ -480,7 +480,7 @@ async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline
     assert not result.errors
     for source in pipeline.sources:
         phases = [phase for name, phase in events if name == source.canonical_url]
-        assert phases == ["download", "ai_wait", "ai", "finalize", "ready"]
+        assert phases == ["download", "waiting", "render", "ai_wait", "ai", "finalize", "ready"]
     first_ready = next(i for i, event in enumerate(events) if event[1] == "ready")
     assert all(event[1] != "ai" for event in events[first_ready:])
 

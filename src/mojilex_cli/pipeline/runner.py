@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import re
 import sqlite3
 import subprocess
@@ -86,6 +87,7 @@ from mojilex_cli.concurrency import (
     PackDependencies,
     batch_limits,
     bounded_map,
+    current_batch_limits,
     pack_pipeline_limits,
     run_blocking,
 )
@@ -4098,6 +4100,18 @@ async def _descriptions_for_collection(
                     if ru
                     else "recovering individual emojis",
                 }
+                limits = current_batch_limits()
+                if event == "transport_retry" and limits is not None:
+                    remaining = limits.ai_cooldown.remaining()
+                    if remaining > 0:
+                        seconds = f"{math.ceil(remaining):.6g}"
+                        messages[event] = (
+                            f"пауза по требованию API: повтор не раньше чем через {seconds} сек.; "
+                            "скачивание и обработка на ПК не блокируются"
+                            if ru
+                            else f"API requested a pause: retry in at least {seconds} s; "
+                            "downloads and local processing are not blocked"
+                        )
                 if event in messages:
                     report_progress(f"{batch_label} — {messages[event]}")
 
