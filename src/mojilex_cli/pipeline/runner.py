@@ -3353,6 +3353,9 @@ def _decoder_backend_candidates(media_format: str, processor: MediaProcessor) ->
             for codec in ("av1", "vp8", "vp9")
             for preserve_alpha in (False, True)
         )
+        from mojilex_cli.media.webm_alpha import separate_alpha_fingerprint
+
+        candidates += (separate_alpha_fingerprint(candidates[-1]),)
     else:
         return ()
     return candidates

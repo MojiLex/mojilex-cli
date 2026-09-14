@@ -36,7 +36,7 @@ from mojilex_cli.media.inspect import (
     inspect_webp,
     sniff_format,
 )
-from mojilex_cli.media.models import MediaLimits
+from mojilex_cli.media.models import HARD_MAX_DURATION_MS, MediaLimitError, MediaLimits
 
 _LIGHT = (242, 242, 242, 255)
 _DARK = (30, 30, 30, 255)
@@ -62,6 +62,7 @@ def process(
 ) -> dict[str, Any]:
     if render_only != (expected_dark_render is not None):
         raise ValueError("render-only mode requires an exact background render marker")
+    separate_alpha_verified = False
     actual_format = sniff_format(source)
     if expected_format == "webp" and actual_format == "png":
         expected_format = "png"
@@ -111,28 +112,63 @@ def process(
             or not isinstance(has_alpha_value, bool)
         ):
             raise ValueError("WebM probe did not return complete typed metadata")
-        rgba_frames = _render_webm(
+        # Some Telegram muxers declare only the last frame's start (or 1 ms)
+        # as the duration. Resolve the decoded endpoint before sampling for AI.
+        durations = _webm_frame_durations(
             source,
-            output_dir,
-            duration_value,
-            limits,
-            ffmpeg,
-            codec=codec_value,
-            preserve_alpha=has_alpha_value,
             ffprobe=ffprobe,
+            duration_ms=duration_value,
+            timeout=limits.worker_timeout_seconds,
         )
-        analysis = (
-            None
-            if render_only
-            else _analyze_webm_full_stream(
+        duration_value = (sum(durations) + 999) // 1000
+        if duration_value > limits.max_duration_ms:
+            raise MediaLimitError("WebM video exceeds the duration limit")
+        info["duration_ms"] = duration_value
+        rgba_frames = []
+        try:
+            rgba_frames = _render_webm(
                 source,
+                output_dir,
+                duration_value,
+                limits,
+                ffmpeg,
+                codec=codec_value,
+                preserve_alpha=has_alpha_value,
+                ffprobe=ffprobe,
+            )
+            analysis = (
+                None
+                if render_only
+                else _analyze_webm_full_stream(
+                    source,
+                    info,
+                    limits,
+                    ffmpeg=ffmpeg,
+                    ffprobe=ffprobe,
+                    needs_repainting=needs_repainting,
+                )
+            )
+        except (RuntimeError, AnalysisError):
+            for frame in rgba_frames:
+                frame.close()
+            if codec_value != "vp9" or not has_alpha_value:
+                raise
+            from .webm_alpha import decode_separate_alpha
+
+            recovered = decode_separate_alpha(
+                source,
+                output_dir,
                 info,
                 limits,
                 ffmpeg=ffmpeg,
                 ffprobe=ffprobe,
                 needs_repainting=needs_repainting,
+                analyze=not render_only,
             )
-        )
+            if recovered is None:
+                raise
+            rgba_frames, analysis = recovered
+            separate_alpha_verified = True
         kind, mime, animated = "video", "video/webm", True
     else:
         raise ValueError("unsupported media format")
@@ -157,7 +193,7 @@ def process(
     # Render-only resumes reuse a full-stream analysis verified by the parent
     # against the downloaded bytes. Its absence here is intentional; sampled
     # frames can all be opaque even when other frames contain transparency.
-    if not render_only and declared_alpha and not analyzed_alpha:
+    if not render_only and declared_alpha and not analyzed_alpha and not separate_alpha_verified:
         # AlphaMode advertises an alpha plane, not necessarily transparent
         # pixels. Verify an apparently opaque plane before accepting it: merely
         # dropping this check would also accept a decoder that lost alpha.
@@ -835,7 +871,8 @@ def _webm_presentation_intervals(
     files it can be rounded independently from the time base, so adding it to
     a timestamp can leave a one-tick gap or overlap. A decoded frame is instead
     presented until the next frame timestamp; the final frame is held until the
-    bounded container duration.
+    bounded container duration. If that endpoint does not cover the final
+    decoded frame, its explicit duration provides the missing endpoint.
     """
 
     total_duration = duration_ms * 1000
@@ -845,6 +882,16 @@ def _webm_presentation_intervals(
     if not timestamps or timestamps[0] != 0 or any(timestamp is None for timestamp in timestamps):
         raise AnalysisError("WebM presentation intervals cannot be proven exactly")
     starts = cast(tuple[int, ...], timestamps)
+    if total_duration <= starts[-1]:
+        last = raw_frames[-1]
+        final_duration = _seconds_to_microseconds(
+            last.get("duration_time") or last.get("pkt_duration_time")
+        )
+        if final_duration is None or final_duration <= 0:
+            raise AnalysisError("WebM final frame has no usable duration")
+        total_duration = starts[-1] + final_duration
+    if total_duration > HARD_MAX_DURATION_MS * 1000:
+        raise AnalysisError("WebM decoded timeline exceeds the duration limit")
     ends = (*starts[1:], total_duration)
     if any(start >= end for start, end in zip(starts, ends, strict=True)):
         raise AnalysisError("WebM presentation intervals cannot be proven exactly")
@@ -859,6 +906,8 @@ def _seconds_to_microseconds(value: object) -> int | None:
             Decimal(1), rounding=ROUND_HALF_UP
         )
     except (InvalidOperation, ValueError):
+        return None
+    if not result.is_finite():
         return None
     converted = int(result)
     return converted if converted >= 0 else None
