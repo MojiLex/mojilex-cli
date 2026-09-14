@@ -22,6 +22,7 @@ from .runtime import (
     pause_live_progress,
     report_progress,
     update_live_progress,
+    update_pack_progress,
 )
 
 
@@ -165,6 +166,8 @@ class BatchProgress:
         self.last_report = now
 
     def _report_live(self, *, interrupted: bool = False) -> bool:
+        if update_pack_progress(self):
+            return True
         ru = current_ui_language() == "ru"
         elapsed = int(time.monotonic() - self.started)
         active = sum(self.active_counts.values())

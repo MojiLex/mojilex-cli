@@ -35,12 +35,13 @@ def official(monkeypatch):
 
 
 @pytest.mark.parametrize("approved", [False, True])
-def test_default_ask_uses_one_decision_for_whole_mixed_batch(official, approved):
+def test_explicit_ask_uses_one_decision_for_whole_mixed_batch(official, approved):
     prompts = []
     other = "tg://addemoji?set=Another"
     result = official_packs.select_sources(
         [OLD, NEW, other],
         platform="auto",
+        policy="ask",
         confirmation=lambda message: prompts.append(message) or approved,
     )
     assert len(prompts) == 1
@@ -199,13 +200,14 @@ def test_policy_and_render_settings_preserve_other_config(tmp_path):
 def test_receipt_is_source_specific_and_explicit_skip_overrides_it(official):
     prompts = []
     receipt = official_packs.select_sources(
-        [OLD], platform="auto", confirmation=lambda _: True
+        [OLD], platform="auto", policy="ask", confirmation=lambda _: True
     ).approved_sources
     assert receipt == (OLD,)
     other = "https://t.me/addemoji/Another"
     selection = official_packs.select_sources(
         [OLD, other, NEW],
         platform="auto",
+        policy="ask",
         approved_sources=receipt,
         confirmation=lambda message: prompts.append(message) or False,
     )
@@ -221,7 +223,11 @@ def test_receipt_is_source_specific_and_explicit_skip_overrides_it(official):
 
 @pytest.fixture
 def saved_import(tmp_path, monkeypatch):
-    config = MojiLexConfig(cache_dir=tmp_path / "cache", runs_dir=tmp_path / "runs")
+    config = MojiLexConfig(
+        cache_dir=tmp_path / "cache",
+        runs_dir=tmp_path / "runs",
+        processing={"official_pack_policy": "ask"},
+    )
     staging = tmp_path / "staging"
     staging.mkdir()
     options = runner.PipelineOptions(
@@ -339,6 +345,7 @@ async def test_import_approval_is_saved_and_immediate_describe_does_not_prompt_a
         download_concurrency=None,
         check_media=True,
         fail_fast=False,
+        official_pack_policy="ask",
         official_confirmation=lambda message: prompts.append(message) or True,
     )
     saved = state.store.load(state.checkpoint.run_id)
@@ -428,6 +435,7 @@ def test_update_all_checks_once_before_ai_but_preview_does_not_check(
         all_collections=True,
         repo=None,
         dry_run=dry_run,
+        official_pack_policy="ask",
         official_confirmation=lambda message: prompts.append(message) or False,
     )
     assert calls[0][0] == ((OLD, NEW) if dry_run else (NEW,))
@@ -449,3 +457,14 @@ def test_update_cli_forwards_official_policy_and_noninteractive_callback(monkeyp
     assert result.exit_code == 0, result.output
     assert calls[0]["official_pack_policy"] == "skip"
     assert calls[0]["official_confirmation"]("must not prompt") is False
+
+
+def test_default_skips_official_packs_without_confirmation(official):
+    selected = official_packs.select_sources(
+        [OLD, NEW],
+        platform="auto",
+        confirmation=lambda _: pytest.fail("default must not ask"),
+    )
+    assert selected.selected == (NEW,)
+    assert selected.skipped == (OLD,)
+    assert len(official) == 1

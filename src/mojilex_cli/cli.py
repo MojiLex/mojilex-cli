@@ -192,7 +192,7 @@ def _unknown_cost_callback(
             if requests is None
             else f"Authorize up to {requests} additional AI requests for this run, "
             "including retries? "
-        ) + "The USD cost is unknown. This is a one-time approval for this invocation."
+        ) + "The USD cost may be unknown. This is a one-time approval for this invocation."
         try:
             require_confirmation(
                 message,
@@ -204,9 +204,9 @@ def _unknown_cost_callback(
         except CommandError as exc:
             raise CommandError(
                 "UNKNOWN_COST",
-                "The provider's USD cost is unknown and was not authorized.",
+                "AI requests were not authorized.",
                 hint=(
-                    "Rerun with --allow-unknown-cost after reviewing the planned AI requests, "
+                    "Review the planned AI requests and confirm when restarting, "
                     "or use --yes in an interactive workflow."
                 ),
                 details={"new_ai_requests": requests, "estimated_cost_usd": None},

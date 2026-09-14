@@ -115,3 +115,53 @@ def test_analysis_selector_list_is_machine_only(capsys, machine):
         assert "Packs queued for analysis: 188" in output
         assert "mlxrun_parent" not in output
         assert "analysis selectors" not in output
+
+
+def test_dashboard_does_not_construct_hidden_batch_tables(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Console(file=StringIO(), force_terminal=True)
+    monkeypatch.setattr(runtime, "Console", lambda **kw: terminal)
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.begin_pack_queue(["A"])
+        batch = BatchProgress("Media", 200)
+        batch.pack = "A"
+        from types import SimpleNamespace
+
+        from mojilex_cli.commands import progress
+
+        monkeypatch.setattr(
+            progress,
+            "Table",
+            SimpleNamespace(grid=lambda **kw: pytest.fail("Hidden table must not be built")),
+        )
+        for i in range(200):
+            batch.phase(str(i), "download")
+        assert context.pack_queue.groups()["download"] == ["A"]
+    finally:
+        runtime.finish_live_progress()
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_intermediate_import_does_not_print_a_duplicate_dashboard(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Console(file=StringIO(), force_terminal=True)
+    monkeypatch.setattr(runtime, "Console", lambda **kw: terminal)
+    printed = []
+    original_print = terminal.print
+
+    def capture(*args, **kwargs):
+        printed.extend(value for value in args if isinstance(value, runtime._ProgressDisplay))
+        original_print(*args, **kwargs)
+
+    monkeypatch.setattr(terminal, "print", capture)
+    with pack_queue_scope():
+        context = runtime._CommandContext("test", command="import")
+        token = runtime._COMMAND_CONTEXT.set(context)
+        try:
+            runtime.begin_pack_queue(["A"])
+            runtime.finish_live_progress()
+            assert printed == []
+        finally:
+            runtime._COMMAND_CONTEXT.reset(token)

@@ -130,16 +130,17 @@ def test_settings_order_keeps_parallel_limits_together_and_defines_official_data
     with use_ui_language("ru"):
         rows = settings.settings_command(**_paths(tmp_path), environment={}).result["settings"]
     keys = [row["key"] for row in rows]
-    assert keys[:7] == [
+    assert keys[:8] == [
         "ui_language",
         "official_pack_policy",
         "file_analysis_mode",
         "provider",
         "model",
+        "confirm_before_analysis",
         "max_ai_requests",
         "max_cost_usd",
     ]
-    assert keys[7:11] == [
+    assert keys[8:12] == [
         "pack_concurrency",
         "download_concurrency",
         "render_concurrency",
@@ -149,7 +150,7 @@ def test_settings_order_keeps_parallel_limits_together_and_defines_official_data
     assert (
         "GitHub" in official and "локального кэша" in official and "Enter означает Нет" in official
     )
-    budget = rows[5]["description"]
+    budget = rows[6]["description"]
     assert "всех паков файла" in budget and "пазлов" in budget and "unlimited" in budget
 
 

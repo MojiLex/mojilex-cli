@@ -702,7 +702,9 @@ async def _run_add(
         budget = RequestBudget(
             max_requests=config.ai.max_ai_requests,
             max_cost_usd=config.ai.max_cost_usd,
-            allow_unknown_cost=config.ai.allow_unknown_cost,
+            allow_unknown_cost=config.ai.allow_unknown_cost
+            or not config.ai.confirm_before_analysis,
+            confirm_before_requests=config.ai.confirm_before_analysis,
             unknown_cost_authorizer=options.unknown_cost_confirmation,
             reservation_recorder=(None if options.dry_run else record_budget_reservation),
             requests_used=resume_checkpoint.ai_requests_used if resume_checkpoint else 0,
@@ -1028,6 +1030,11 @@ async def _run_add(
                                     record_ai_chunk_completion(source, items, outcomes)
                                 ),
                             )
+                            # Let the next pack use AI slots during local puzzle preparation
+                            # and validation; canonical merges still happen in input order.
+                            if file_mode == "fast":
+                                analysis_turns.finish(position)
+                            report_pack_stage(source_text, "finalize")
                             analyses = _bind_deterministic_analyses(processed)
                             if checkpoint is not None:
                                 evidence = checkpoint.safe_parameters.get(
@@ -1166,7 +1173,6 @@ async def _run_add(
                                     or before_emoji.as_dict() != after_emoji.as_dict()
                                 ):
                                     dedupe_emoji_ids.add(changed_id)
-                            report_pack_stage(source_text, "finalize")
                             current = plan.snapshot
                             source_collections.append(source)
                             if checkpoint is not None:

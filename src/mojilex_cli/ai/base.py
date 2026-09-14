@@ -533,6 +533,7 @@ class RequestBudget:
         max_requests: int | None,
         max_cost_usd: Decimal | None = None,
         allow_unknown_cost: bool = False,
+        confirm_before_requests: bool = False,
         unknown_cost_authorizer: Callable[[int | None], bool] | None = None,
         reservation_recorder: Callable[[int, Decimal], None] | None = None,
         requests_used: int = 0,
@@ -556,10 +557,16 @@ class RequestBudget:
         # Consent is bounded by this budget and lasts only for this invocation.
         # A resumed invocation must obtain fresh consent for its remaining limit.
         self._unknown_cost_approved = allow_unknown_cost
+        self._requests_approved = not confirm_before_requests
         self._unknown_cost_asked = False
         self._lock = asyncio.Lock()
 
-    async def reserve(self, estimate: CostEstimate) -> None:
+    async def reserve(
+        self,
+        estimate: CostEstimate,
+        *,
+        approval_callback: Callable[[], None] | None = None,
+    ) -> None:
         async with self._lock:
             if (
                 self.max_requests is not None
@@ -567,12 +574,25 @@ class RequestBudget:
             ):
                 raise BudgetExceededError("AI request limit would be exceeded")
             estimated_cost = estimate.upper_bound_usd
-            if estimated_cost is None:
-                if not self._unknown_cost_approved and not self._unknown_cost_asked:
+            if (
+                estimated_cost is not None
+                and self.max_cost_usd is not None
+                and self.cost_reserved + estimated_cost > self.max_cost_usd
+            ):
+                raise BudgetExceededError("estimated AI cost limit would be exceeded")
+            needs_confirmation = not self._requests_approved or (
+                estimated_cost is None and not self._unknown_cost_approved
+            )
+            if needs_confirmation:
+                if not self._unknown_cost_asked:
                     # Mark before calling: a refusal/exception must not prompt
                     # every other concurrent or queued request again.
                     self._unknown_cost_asked = True
                     if self.unknown_cost_authorizer is not None:
+                        # Only an actual consent prompt should suspend live UI.
+                        # Reservations and retries after consent are silent.
+                        if approval_callback is not None:
+                            approval_callback()
                         self._unknown_cost_approved = (
                             self.unknown_cost_authorizer(
                                 None
@@ -581,15 +601,13 @@ class RequestBudget:
                             )
                             is True
                         )
+                        self._requests_approved = self._unknown_cost_approved
+                if not self._requests_approved:
+                    raise UnknownCostError("AI requests require explicit approval")
                 if not self._unknown_cost_approved:
                     raise UnknownCostError(
                         "provider cost is unknown; explicit approval is required"
                     )
-            elif (
-                self.max_cost_usd is not None
-                and self.cost_reserved + estimated_cost > self.max_cost_usd
-            ):
-                raise BudgetExceededError("estimated AI cost limit would be exceeded")
             next_requests = self.requests_used + estimate.requests
             next_cost = self.cost_reserved + (estimated_cost or Decimal("0"))
             # Persist the conservative reservation before the provider can observe
@@ -631,8 +649,10 @@ async def describe_with_recovery(
                 # Reserve only when an actual request slot is available. Retries
                 # release their slot during backoff, and escalation shares it too.
                 async with ai_slot():
-                    progress("approval")
-                    await budget.reserve(provider.estimate(target))
+                    await budget.reserve(
+                        provider.estimate(target),
+                        approval_callback=lambda: progress("approval"),
+                    )
                     progress("request")
                     return await provider.describe(target)
             except AITransientError:

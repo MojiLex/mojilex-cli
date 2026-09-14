@@ -467,3 +467,75 @@ async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline
         assert phases == ["download", "ai_wait", "ai", "finalize", "ready"]
     first_ready = next(i for i, event in enumerate(events) if event[1] == "ready")
     assert all(event[1] != "ai" for event in events[first_ready:])
+
+
+async def test_fast_ai_overlaps_previous_packs_local_postprocessing(pipeline, monkeypatch):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 2}
+            )
+        }
+    )
+    local_started = asyncio.Event()
+    beta_ai = asyncio.Event()
+    release_local = asyncio.Event()
+
+    async def prepare(self, key, *args, **kwargs):
+        if key == "PackAlpha":
+            local_started.set()
+            await release_local.wait()
+        return []
+
+    async def describe(snapshot, source, processed, **kwargs):
+        if source.native_id == "PackBeta":
+            beta_ai.set()
+        return await state.describe(snapshot, source, processed, **kwargs)
+
+    monkeypatch.setattr(state.queue, "prepare", prepare)
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(local_started.wait(), 5)
+        await asyncio.wait_for(beta_ai.wait(), 5)
+        assert not release_local.is_set()
+        release_local.set()
+        result = await asyncio.wait_for(task, 5)
+        assert not result.errors
+        assert state.merges == ["PackAlpha", "PackBeta"]
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_runner_applies_current_confirmation_setting_without_changing_budget(
+    pipeline, monkeypatch, confirm
+):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "ai": state.config.ai.model_copy(
+                update={
+                    "confirm_before_analysis": confirm,
+                    "allow_unknown_cost": False,
+                    "max_ai_requests": 37,
+                }
+            )
+        }
+    )
+    captured = {}
+    original = runner.RequestBudget
+
+    def budget(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner, "RequestBudget", budget)
+    result = await state.run()
+    assert not result.errors
+    assert captured["confirm_before_requests"] is confirm
+    assert captured["allow_unknown_cost"] is (not confirm)
+    assert captured["max_requests"] == 37

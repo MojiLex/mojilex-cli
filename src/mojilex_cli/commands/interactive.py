@@ -615,6 +615,8 @@ def _settings(dispatch: Dispatch) -> None:
 
 
 def _setting_value(value: object, *, key: str | None = None) -> str:
+    if isinstance(value, bool):
+        return label("Включено", "Enabled") if value else label("Выключено", "Disabled")
     if key == "max_ai_requests" and value in {None, "unlimited"}:
         return label("Без лимита", "Unlimited")
     if value is None:

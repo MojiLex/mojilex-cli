@@ -61,9 +61,10 @@ SETTINGS: dict[str, Setting] = {
         ("processing", "official_pack_policy"),
         "Packs already published in MojiLex",
         "Checks the shared MojiLex database on GitHub, not your local cache. "
-        "ask: one confirmation, Enter means No; skip: omit silently; allow: do not check.",
+        "skip (default): omit silently; ask: one confirmation, Enter means No; "
+        "allow: do not check.",
         "MOJILEX_OFFICIAL_PACK_POLICY",
-        choices=("ask", "skip", "allow"),
+        choices=("skip", "ask", "allow"),
     ),
     "file_analysis_mode": Setting(
         ("processing", "file_analysis_mode"),
@@ -87,6 +88,15 @@ SETTINGS: dict[str, Setting] = {
         "AI model",
         "Exact model ID; no model is chosen automatically.",
         "MOJILEX_MODEL",
+    ),
+    "confirm_before_analysis": Setting(
+        ("ai", "confirm_before_analysis"),
+        "Confirm before AI analysis",
+        "Disabled by default: start AI with the configured request and cost limits. "
+        "Enable to ask once before analysis; saved budgets are unchanged.",
+        "MOJILEX_CONFIRM_BEFORE_ANALYSIS",
+        "boolean",
+        choices=("false", "true"),
     ),
     "max_ai_requests": Setting(
         ("ai", "max_ai_requests"),
@@ -167,7 +177,8 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
     "official_pack_policy": (
         "Паки, уже опубликованные в MojiLex",
         "Проверка общей базы MojiLex на GitHub, а не локального кэша. "
-        "ask — спросить один раз, Enter означает Нет; skip — пропускать; allow — не проверять.",
+        "skip — пропускать без вопросов (по умолчанию); ask — спросить один раз, "
+        "Enter означает Нет; allow — не проверять.",
     ),
     "file_analysis_mode": (
         "Режим анализа паков из файла",
@@ -193,6 +204,11 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
         "Параллельные запросы к ИИ",
         "Максимум одновременных запросов к ИИ во всей активной операции, с учётом квот сервиса "
         "и бюджета запуска.",
+    ),
+    "confirm_before_analysis": (
+        "Подтверждать начало анализа ИИ",
+        "false — начинать без вопроса (по умолчанию); true — спросить один раз перед анализом. "
+        "Лимиты запросов, стоимости и бюджет сохранённого запуска продолжают действовать.",
     ),
     "max_ai_requests": (
         "Лимит запросов ИИ на всю операцию",
@@ -328,8 +344,13 @@ def _parse_value(setting: Setting, raw: str) -> Any:
     }:
         return "unlimited"
     try:
-        if setting.kind == "integer":
-            parsed: Any = int(value)
+        if setting.kind == "boolean":
+            normalized = value.casefold()
+            if normalized not in {"true", "false"}:
+                raise ValueError("unsupported boolean")
+            parsed: Any = normalized == "true"
+        elif setting.kind == "integer":
+            parsed = int(value)
         elif setting.kind == "decimal":
             parsed = Decimal(value)
             if not parsed.is_finite():
@@ -355,6 +376,8 @@ def _parse_value(setting: Setting, raw: str) -> Any:
 
 
 def _literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
     return json.dumps(value, ensure_ascii=False) if isinstance(value, str) else str(value)
 
 

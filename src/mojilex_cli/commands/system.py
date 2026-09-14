@@ -717,6 +717,7 @@ def _config_toml(config: MojiLexConfig) -> str:
     lines.extend(
         [
             f"ai_concurrency = {config.ai.ai_concurrency}",
+            f"confirm_before_analysis = {str(config.ai.confirm_before_analysis).lower()}",
             f"allow_unknown_cost = {str(config.ai.allow_unknown_cost).lower()}",
             f"model_routing = {_quoted(config.ai.model_routing)}",
             f"escalation_model = {_quoted(config.ai.escalation_model)}",

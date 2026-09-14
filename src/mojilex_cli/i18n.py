@@ -497,6 +497,15 @@ _RUSSIAN_MESSAGES = {
     "provider cost is unknown; explicit approval is required": (
         "Стоимость запросов к провайдеру неизвестна; требуется явное подтверждение."
     ),
+    "AI requests require explicit approval": "Для запросов к ИИ требуется подтверждение.",
+    "AI requests were not authorized.": "Разрешение на запросы к ИИ не получено.",
+    (
+        "Review the planned AI requests and confirm when restarting, "
+        "or use --yes in an interactive workflow."
+    ): (
+        "Проверьте запланированные запросы к ИИ и подтвердите их при повторном запуске "
+        "либо используйте --yes в интерактивном режиме."
+    ),
     "The provider's USD cost is unknown and was not authorized.": (
         "Стоимость запросов к провайдеру в USD неизвестна; разрешение не получено."
     ),
@@ -620,9 +629,10 @@ _RUSSIAN_MESSAGES = {
 _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     (
         r"Authorize AI requests without a request-count limit for this run, including retries\? "
-        r"The USD cost is unknown\. This is a one-time approval for this invocation\.",
+        r"The USD cost may be unknown\. This is a one-time approval for this invocation\.",
         "Разрешить AI-запросы без ограничения количества для этого запуска, включая повторы? "
-        "Стоимость в USD неизвестна. Разрешение действует только для текущего вызова команды.",
+        "Стоимость в USD может быть неизвестна. "
+        "Разрешение действует только для текущего вызова команды.",
     ),
     (
         r"eligible emoji (?P<emoji_id>\S+) has incomplete concept mapping; "
@@ -632,9 +642,10 @@ _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (
         r"Authorize up to (?P<count>\d+) additional AI requests for this run, including retries\? "
-        r"The USD cost is unknown\. This is a one-time approval for this invocation\.",
+        r"The USD cost may be unknown\. This is a one-time approval for this invocation\.",
         "Разрешить до {count} дополнительных AI-запросов для этого запуска, включая повторы? "
-        "Стоимость в USD неизвестна. Разрешение действует только для текущего вызова команды.",
+        "Стоимость в USD может быть неизвестна. "
+        "Разрешение действует только для текущего вызова команды.",
     ),
     (
         r"Snapshot discovery for channel (?P<channel>.+) is not configured "

@@ -237,7 +237,7 @@ async def test_recovery_reports_retry_without_repeating_budget_prompt(monkeypatc
     )
     assert result.batch.items[0].label == "E001"
     assert prompts == [2]
-    assert events == ["approval", "request", "retry", "approval", "request"]
+    assert events == ["approval", "request", "retry", "request"]
     assert budget.requests_used == 2
 
 
@@ -253,6 +253,48 @@ async def test_request_budget_is_hard_and_unknown_cost_requires_opt_in() -> None
         await known.reserve(CostEstimate(upper_bound_usd=Decimal("0"), note="known"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known_cost", [True, False])
+async def test_silent_reservations_never_report_approval(known_cost: bool) -> None:
+    events: list[str] = []
+    budget = RequestBudget(max_requests=3, allow_unknown_cost=not known_cost)
+    estimate = CostEstimate(upper_bound_usd=Decimal("0.01") if known_cost else None, note="test")
+    await asyncio.gather(
+        *(
+            budget.reserve(estimate, approval_callback=lambda: events.append("approval"))
+            for _ in range(3)
+        )
+    )
+    assert events == []
+    assert budget.requests_used == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_concurrent_approval_progress_only_surrounds_actual_prompt(approved: bool) -> None:
+    events: list[str] = []
+
+    def authorize(_remaining: int | None) -> bool:
+        events.append("prompt")
+        return approved
+
+    budget = RequestBudget(max_requests=3, unknown_cost_authorizer=authorize)
+    estimate = CostEstimate(upper_bound_usd=None, note="test")
+    results = await asyncio.gather(
+        *(
+            budget.reserve(estimate, approval_callback=lambda: events.append("approval"))
+            for _ in range(3)
+        ),
+        return_exceptions=True,
+    )
+    assert events == ["approval", "prompt"]
+    assert budget.requests_used == (3 if approved else 0)
+    if approved:
+        assert results == [None, None, None]
+    else:
+        assert all(isinstance(result, UnknownCostError) for result in results)
+
+
 def test_request_budget_resume_cannot_reset_or_exceed_previous_usage() -> None:
     resumed = RequestBudget(
         max_requests=3,
@@ -264,6 +306,61 @@ def test_request_budget_resume_cannot_reset_or_exceed_previous_usage() -> None:
     assert resumed.cost_reserved == Decimal("0.75")
     with pytest.raises(ValueError):
         RequestBudget(max_requests=1, requests_used=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_optional_confirmation_covers_known_cost_then_unknown_cost(approved: bool) -> None:
+    prompts: list[int | None] = []
+
+    def authorize(remaining: int | None) -> bool:
+        prompts.append(remaining)
+        return approved
+
+    budget = RequestBudget(
+        max_requests=3,
+        max_cost_usd=Decimal("0.02"),
+        allow_unknown_cost=True,
+        confirm_before_requests=True,
+        unknown_cost_authorizer=authorize,
+    )
+    known = CostEstimate(upper_bound_usd=Decimal("0.01"), note="known")
+    unknown = CostEstimate(upper_bound_usd=None, note="unknown")
+    for estimate in (known, unknown):
+        if approved:
+            await budget.reserve(estimate)
+        else:
+            with pytest.raises(UnknownCostError, match="approval"):
+                await budget.reserve(estimate)
+    assert prompts == [3]
+    assert budget.requests_used == (2 if approved else 0)
+    assert budget.cost_reserved == (Decimal("0.01") if approved else Decimal("0"))
+    if approved:
+        with pytest.raises(BudgetExceededError):
+            await budget.reserve(CostEstimate(upper_bound_usd=Decimal("0.02"), note="known"))
+        await budget.reserve(known)
+        with pytest.raises(BudgetExceededError):
+            await budget.reserve(known)
+
+
+@pytest.mark.asyncio
+async def test_known_cost_default_does_not_prompt_even_with_authorizer() -> None:
+    prompts: list[int | None] = []
+    budget = RequestBudget(
+        max_requests=1,
+        unknown_cost_authorizer=lambda count: prompts.append(count) is None,
+    )
+    await budget.reserve(CostEstimate(upper_bound_usd=Decimal("0.01"), note="known"))
+    assert prompts == []
+    assert budget.requests_used == 1
+
+
+@pytest.mark.asyncio
+async def test_optional_confirmation_requires_authorizer_even_with_unknown_cost_allowed() -> None:
+    budget = RequestBudget(max_requests=1, allow_unknown_cost=True, confirm_before_requests=True)
+    with pytest.raises(UnknownCostError, match="approval"):
+        await budget.reserve(CostEstimate(upper_bound_usd=Decimal("0.01"), note="known"))
+    assert budget.requests_used == 0
 
 
 @pytest.mark.asyncio

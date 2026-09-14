@@ -124,7 +124,7 @@ mojilex
 ```
 
 1. Choose **Add packs from a URL or file** and paste a public link, such as `https://t.me/addemoji/NewsEmoji`, or a text file path.
-2. Read the analysis plan and cost confirmation; allow requests if you agree.
+2. Analysis starts automatically using the configured AI request and cost limits.
 3. After completion, open **My packs → your pack → Browse descriptions**.
 4. Search, switch RU/EN, or open **All fields and English text**.
    **↑↓ / PgUp / PgDn** scroll details; **Enter / Esc** return.
@@ -141,9 +141,12 @@ Example details, rendered by the program using sample data:
 
 Paste a path such as `C:\Users\Me\Desktop\packs.txt` into the menu. Use one URL
 per line in a UTF-8 file. Blank lines, `#` comments and duplicate URLs are ignored.
-All URLs share one import and analysis run, with one AI cost approval rather than
-one per URL. The configured AI request limit still applies to the entire run.
-AI cost and publication confirmations default to **Yes**; Enter accepts it.
+All URLs share one import and analysis run. AI starts without confirmation by default;
+the configured AI request and cost limits still apply to the entire run. Enable
+**Confirm before AI analysis** (`ai.confirm_before_analysis = true`, or environment
+`MOJILEX_CONFIRM_BEFORE_ANALYSIS=true`) to ask once per operation, rather than per URL.
+Changing this preference does not reset saved request counters or budgets.
+Publication still asks for confirmation, with **Yes** selected by default.
 
 **My packs** shows each URL as a separate pack with its own progress, descriptions,
 and history. Its card resumes, analyzes, or publishes only that pack. Existing
@@ -160,8 +163,8 @@ is checked once per operation; local drafts and pending PRs do not count.
 
 | Mode | Behavior |
 |---|---|
-| `ask` — default | One combined question for matching packs. **Enter means No**; only an explicit yes permits processing them again. New packs continue. |
-| `skip` | Skip matching official packs without asking. |
+| `ask` | One combined question for matching packs. **Enter means No**; only an explicit yes permits processing them again. New packs continue. |
+| `skip` — default | Skip matching official packs without asking. |
 | `allow` | Disable the official-list check; normal cache and reanalysis rules still apply. |
 
 Use `--official-packs ask|skip|allow` with `import`, `add`, `describe`, `update`, or `resume` for a
@@ -208,7 +211,8 @@ Resuming downloads does not itself start paid analysis.
 
 Choose **Pack-file analysis mode** in `mojilex settings`. New installations use
 `fast`: while AI analyzes the current pack, bounded workers download and decode
-following packs. AI and dataset merges remain ordered. This hides most local
+following packs. Once a pack finishes its description requests, the next pack can
+start AI while local puzzle preparation and validation finish. Dataset merges remain ordered. This hides most local
 preparation time behind provider requests without multiplying the shared limits.
 
 | Mode | Order |

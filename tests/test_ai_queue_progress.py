@@ -148,7 +148,7 @@ async def test_pipeline_single_request_forwards_real_recovery_events():
         runner._AI_PROGRESS_CALLBACK.reset(token)
     assert actual is result
     assert budget.requests_used == 2
-    assert events == ["approval", "request", "retry", "approval", "request"]
+    assert events == ["request", "retry", "request"]
 
 
 @pytest.mark.parametrize("concurrency", [1, 4])

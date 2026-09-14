@@ -90,3 +90,15 @@ def test_validation_error_does_not_echo_invalid_input(tmp_path: Path) -> None:
             user_path=tmp_path / "none2",
         )
     assert invalid not in str(failure.value)
+
+
+def test_confirmation_defaults_and_environment_override(tmp_path: Path) -> None:
+    paths = {"project_path": tmp_path / "project.toml", "user_path": tmp_path / "user.toml"}
+    defaults = load_config(environment={}, **paths)
+    assert defaults.processing.official_pack_policy == "skip"
+    assert defaults.ai.confirm_before_analysis is False
+    overridden = load_config(environment={"MOJILEX_CONFIRM_BEFORE_ANALYSIS": "true"}, **paths)
+    assert overridden.ai.confirm_before_analysis is True
+    assert overridden.ai.max_ai_requests == defaults.ai.max_ai_requests
+    with pytest.raises(ConfigError):
+        load_config(environment={"MOJILEX_CONFIRM_BEFORE_ANALYSIS": "maybe"}, **paths)

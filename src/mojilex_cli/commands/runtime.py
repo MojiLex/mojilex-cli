@@ -66,6 +66,7 @@ class _CommandContext:
     pending_progress: list[RenderableType] = field(default_factory=list)
     pack_queue: PackQueue | None = None
     last_pack_refresh: float = 0.0
+    command: str = ""
 
 
 class _ProgressDisplay:
@@ -301,6 +302,22 @@ def _refresh_live(context: _CommandContext) -> None:
         )
 
 
+def update_pack_progress(batch: object) -> bool:
+    """Update counters without constructing a hidden per-item Rich table."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.pack_queue is None:
+        return False
+    owner = getattr(batch, "pack", None)
+    if owner is not None:
+        context.pack_queue.batches[batch] = owner
+    if context.progress_paused:
+        return True
+    if context.live is None:
+        return update_live_progress(context.pack_queue, key="packs")
+    _refresh_live(context)
+    return True
+
+
 def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
     """Use one terminal panel; retain ordinary logs for pipes and JSON callers."""
     context = _COMMAND_CONTEXT.get()
@@ -395,7 +412,9 @@ def finish_live_progress(*, key: object = None) -> None:
     if context.live is not None:
         context.live.stop()
         context.live = None
-    if context.progress_view is not None:
+    if context.progress_view is not None and not (
+        context.command == "import" and SHARED.get() is not None
+    ):
         if context.progress_paused:
             context.pending_progress.append(context.progress_view)
         else:
@@ -674,7 +693,12 @@ def execute(
     effective_json = json_output or _MACHINE_JSON_MODE.get()
     run_id = new_run_id()
     context = _CommandContext(
-        run_id, quiet=quiet, verbose=verbose, no_color=no_color, json_output=effective_json
+        run_id,
+        quiet=quiet,
+        verbose=verbose,
+        no_color=no_color,
+        json_output=effective_json,
+        command=command,
     )
     context_token = _COMMAND_CONTEXT.set(context)
     try:
@@ -864,7 +888,13 @@ def _render_pack_result(console: Console, command: str, result: Mapping[str, Any
         for setting in result.get("settings", []):
             value = setting["value"]
             display = str(value)
-            if value is None:
+            if isinstance(value, bool):
+                display = (
+                    ("Включено" if value else "Выключено")
+                    if ru
+                    else ("Enabled" if value else "Disabled")
+                )
+            elif value is None:
                 if setting.get("key") == "max_ai_requests":
                     display = "Без лимита" if ru else "Unlimited"
                 else:

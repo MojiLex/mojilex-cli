@@ -53,6 +53,7 @@ class AIConfig(BaseModel):
     max_ai_requests: int | None = Field(default=100, ge=0)
     max_cost_usd: Decimal | None = Field(default=None, ge=0)
     ai_concurrency: int = Field(default=1, ge=1, le=16)
+    confirm_before_analysis: bool = False
     allow_unknown_cost: bool = False
     model_routing: Literal["off", "rules"] = "off"
     escalation_model: str = ""
@@ -91,7 +92,7 @@ class DedupeConfig(BaseModel):
 class ProcessingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    official_pack_policy: Literal["ask", "skip", "allow"] = "ask"
+    official_pack_policy: Literal["ask", "skip", "allow"] = "skip"
     file_analysis_mode: Literal["fast", "sequential", "download_all", "prepare_all"] = "fast"
     pack_concurrency: int = Field(default=3, ge=1, le=8)
     render_concurrency: int = Field(default=2, ge=1, le=8)

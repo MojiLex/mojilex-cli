@@ -188,3 +188,20 @@ def test_russian_settings_are_localized(tmp_path: Path) -> None:
     assert provider["label"] == "Сервис ИИ"
     assert "Приоритет" in result["notes"][0]
     assert "Сохранено" in saved["note"]
+
+
+def test_analysis_confirmation_setting_round_trip_preserves_budget(tmp_path):
+    from mojilex_cli.commands.system import _config_toml
+    from mojilex_cli.config import load_config
+
+    files = paths(tmp_path)
+    files["user_path"].write_text('[ai]\nmax_ai_requests="unlimited"\nmax_cost_usd=2.5\n')
+    for raw, expected in (("true", True), ("false", False)):
+        update_setting_command("confirm_before_analysis", raw, **files, environment={})
+        configured = load_config(**files, environment={})
+        assert configured.ai.confirm_before_analysis is expected
+        assert configured.ai.max_ai_requests is None
+        assert str(configured.ai.max_cost_usd) == "2.5"
+        assert f"confirm_before_analysis = {raw}" in _config_toml(configured)
+    with pytest.raises(CommandError):
+        update_setting_command("confirm_before_analysis", "maybe", **files, environment={})

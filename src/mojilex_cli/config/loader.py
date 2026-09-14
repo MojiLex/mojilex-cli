@@ -27,6 +27,7 @@ _ENV_PATHS: dict[str, tuple[str, ...]] = {
     "MOJILEX_LANGUAGES": ("ai", "languages"),
     "MOJILEX_MAX_AI_REQUESTS": ("ai", "max_ai_requests"),
     "MOJILEX_MAX_COST_USD": ("ai", "max_cost_usd"),
+    "MOJILEX_CONFIRM_BEFORE_ANALYSIS": ("ai", "confirm_before_analysis"),
     "MOJILEX_AI_CONCURRENCY": ("ai", "ai_concurrency"),
     "MOJILEX_MODEL_ROUTING": ("ai", "model_routing"),
     "MOJILEX_ESCALATION_MODEL": ("ai", "escalation_model"),

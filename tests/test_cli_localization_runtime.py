@@ -194,7 +194,7 @@ def test_dynamic_translations_preserve_counts_identifiers_and_english() -> None:
     source = "Checking source 2/3: Pack_Name"
     approval = (
         "Authorize up to 7 additional AI requests for this run, including retries? "
-        "The USD cost is unknown. This is a one-time approval for this invocation."
+        "The USD cost may be unknown. This is a one-time approval for this invocation."
     )
     with use_ui_language("ru"):
         assert text(source) == "Проверка источника 2/3: Pack_Name"
