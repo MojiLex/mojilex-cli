@@ -206,14 +206,15 @@ Within each stage, packs are processed sequentially. Transient media failures
 are retried automatically (six attempts by default). An unresolved failure
 stops the queue before the next pack; saved work can be resumed. Downloads,
 decoding and AI requests within the current pack remain parallel. The legacy
-`processing.pack_concurrency` setting is retained for compatibility but does not
-override this queue's ordering.
+`processing.pack_concurrency` setting remains readable, validated and editable
+for compatibility with existing configuration and automation, but changing it
+does not activate multiple packs or override the queue's ordering.
 
 **Parallel media downloads**, **Parallel media decoders**, and **Parallel AI
-requests** are shared limits for the entire operation, not separate allowances
-for every pack. The saved AI request and cost budgets and the temporary media
-storage limit are shared too. Increasing the number of active packs does not
-multiply these limits. Shared repository updates and Git writes remain ordered.
+requests** control simultaneous work within the current pack. The saved AI
+request and cost budgets and the temporary media storage limit cover the entire
+operation across all sequentially queued packs. Shared repository updates and
+Git writes remain ordered.
 
 Two decoders run by default; downloads can continue while waiting for a decoder
 without consuming its timeout. Increase decoder concurrency gradually: too many

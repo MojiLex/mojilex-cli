@@ -1,4 +1,4 @@
-"""Pack parallelism is bounded and never rewrites existing resource budgets."""
+"""Legacy pack concurrency stays compatible while pack execution remains sequential."""
 
 from pathlib import Path
 
@@ -106,9 +106,26 @@ def test_pack_setting_edit_changes_only_its_project_value(tmp_path: Path) -> Non
     )
 
 
-@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize(
+    ("language", "expected_label", "expected_fragments"),
+    [
+        (
+            "en",
+            "Legacy pack concurrency",
+            ("compatibility", "sequentially", "within the current pack"),
+        ),
+        (
+            "ru",
+            "Прежняя параллельность паков",
+            ("совместимости", "последовательно", "внутри текущего пака"),
+        ),
+    ],
+)
 def test_pack_setting_is_visible_with_bounds_and_localized_description(
-    tmp_path: Path, language: str
+    tmp_path: Path,
+    language: str,
+    expected_label: str,
+    expected_fragments: tuple[str, ...],
 ) -> None:
     with use_ui_language(normalize_ui_language(language)):
         result = settings_command(**_paths(tmp_path), environment={}).result
@@ -117,4 +134,5 @@ def test_pack_setting_is_visible_with_bounds_and_localized_description(
     assert row["value"] == 3
     assert row["minimum"] == 1 and row["maximum"] == 8
     assert row["editable"] and row["source"] == "default"
-    assert ("общие" if language == "ru" else "global") in row["description"]
+    assert row["label"] == expected_label
+    assert all(fragment in row["description"] for fragment in expected_fragments)

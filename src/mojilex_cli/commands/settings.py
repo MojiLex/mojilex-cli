@@ -97,8 +97,9 @@ SETTINGS: dict[str, Setting] = {
     ),
     "pack_concurrency": Setting(
         ("processing", "pack_concurrency"),
-        "Parallel packs",
-        "Legacy limit. The pack queue is sequential; media and AI within a pack remain parallel.",
+        "Legacy pack concurrency",
+        "Kept for configuration compatibility. Packs run sequentially; download, decoder and AI "
+        "concurrency apply within the current pack.",
         "MOJILEX_PACK_CONCURRENCY",
         "integer",
         1,
@@ -107,7 +108,7 @@ SETTINGS: dict[str, Setting] = {
     "download_concurrency": Setting(
         ("telegram", "download_concurrency"),
         "Parallel media downloads",
-        "Maximum simultaneous media downloads across all active packs.",
+        "Maximum simultaneous media downloads within the current pack.",
         "MOJILEX_DOWNLOAD_CONCURRENCY",
         "integer",
         1,
@@ -116,7 +117,8 @@ SETTINGS: dict[str, Setting] = {
     "render_concurrency": Setting(
         ("processing", "render_concurrency"),
         "Parallel media decoders",
-        "Shared by all active packs. Too many CPU-heavy decoders can cause timeouts.",
+        "Maximum simultaneous media decoders within the current pack. "
+        "Too many CPU-heavy decoders can cause timeouts.",
         "MOJILEX_RENDER_CONCURRENCY",
         "integer",
         1,
@@ -125,7 +127,8 @@ SETTINGS: dict[str, Setting] = {
     "ai_concurrency": Setting(
         ("ai", "ai_concurrency"),
         "Parallel AI requests",
-        "Shared by all active packs, within provider rate limits and the saved run budget.",
+        "Maximum simultaneous AI requests within the current pack, subject to provider limits "
+        "and the saved run budget.",
         "MOJILEX_AI_CONCURRENCY",
         "integer",
         1,
@@ -157,18 +160,21 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
         "ask — спросить один раз, Enter означает Нет; skip — пропускать; allow — не проверять.",
     ),
     "pack_concurrency": (
-        "Параллельные паки",
-        "Прежний лимит. Очередь паков последовательная; медиа и ИИ внутри пака параллельны.",
+        "Прежняя параллельность паков",
+        "Сохраняется для совместимости конфигурации. Паки выполняются последовательно; "
+        "параллельность скачиваний, декодеров и ИИ действует внутри текущего пака.",
     ),
     "render_concurrency": (
         "Параллельные декодеры медиа",
-        "Общий предел для всех активных паков. Слишком много декодеров вызывает таймауты.",
+        "Максимум одновременных декодеров медиа внутри текущего пака. "
+        "Слишком много декодеров вызывает таймауты.",
     ),
     "provider": ("Сервис ИИ", "Сервис, который создаёт описания эмодзи."),
     "model": ("Модель ИИ", "Точное название модели; программа не выбирает модель автоматически."),
     "ai_concurrency": (
         "Параллельные запросы к ИИ",
-        "Общий предел для всех активных паков, с учётом квот сервиса и бюджета запуска.",
+        "Максимум одновременных запросов к ИИ внутри текущего пака, с учётом квот сервиса "
+        "и бюджета запуска.",
     ),
     "max_ai_requests": (
         "Лимит запросов ИИ на всю операцию",
@@ -181,7 +187,7 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
     ),
     "download_concurrency": (
         "Параллельные скачивания",
-        "Максимум одновременных скачиваний файлов суммарно во всех активных паках.",
+        "Максимум одновременных скачиваний файлов внутри текущего пака.",
     ),
     "download_attempts": (
         "Попытки подключения при скачивании",

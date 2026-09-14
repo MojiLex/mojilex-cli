@@ -112,7 +112,14 @@ async def test_interrupted_media_run_reuses_only_exact_retained_frames(
         # A recoverable download failure must not prevent the later valid item
         # from being processed and durably retained before the run reports it.
         successful = [items[index].native_id for index in (0, 1, 3)]
-        assert calls == [item.native_id for item in items]
+        assert calls == [
+            items[0].native_id,
+            items[1].native_id,
+            items[2].native_id,
+            items[2].native_id,
+            items[2].native_id,
+            items[3].native_id,
+        ]
         assert rendered == completed == successful
         assert all(not path.exists() for path in original_frame_paths)
         assert set(checkpoint.elements) == set(successful)
