@@ -653,10 +653,22 @@ _RUSSIAN_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (r"Checking source (?P<index>\d+/\d+): (?P<source>.+)", "Проверка источника {index}: {source}"),
     (
-        r"Pack pipeline: up to (?P<packs>\d+) active packs; shared limits: "
-        r"downloads=(?P<downloads>\d+), decoders=(?P<decoders>\d+), AI=(?P<ai>\d+)\.",
-        "Одновременно паков: до {packs}. Общие лимиты: скачивания — {downloads}, "
-        "декодеры — {decoders}, запросы ИИ — {ai}.",
+        r"Packs are processed one at a time\. Within the current pack: up to "
+        r"(?P<downloads>\d+) simultaneous downloads, (?P<decoders>\d+) media decoders, "
+        r"and (?P<ai>\d+) simultaneous AI requests\. The AI value is concurrency, "
+        r"not the total request limit\.",
+        "Паки обрабатываются по очереди, по одному. Внутри текущего пака одновременно "
+        "выполняются: до {downloads} скачиваний, до {decoders} обработок медиа и до {ai} "
+        "запросов к ИИ. Число для ИИ — параллельность, а не общий лимит запросов.",
+    ),
+    (
+        r"Packs are processed one at a time\. Within the current pack: up to "
+        r"(?P<downloads>\d+) simultaneous downloads and (?P<decoders>\d+) media decoders\. "
+        r"AI is not used during import; AI request limits apply later, during analysis\.",
+        "Паки обрабатываются по очереди, по одному. Внутри текущего пака одновременно "
+        "выполняются: до {downloads} скачиваний и до {decoders} обработок медиа. "
+        "При импорте ИИ не используется; лимит запросов к ИИ применяется позже, "
+        "на этапе анализа.",
     ),
     (
         r"Source (?P<source>.+): (?P<count>\d+) media item\(s\); "

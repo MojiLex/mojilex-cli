@@ -13,13 +13,17 @@ from mojilex_cli.media import MediaLimits, worker
         (["0", "0.1", "0.2"], ["0.1"] * 3, 0.28, 2),
         (["0", "0.1", "0.2"], ["0.1"] * 3, 0.1, 1),
         (["0", "0.1", "0.2"], ["0.1"] * 3, 0.31, None),
-        (["0", "0.15", "0.2"], ["0.1"] * 3, 0.28, None),
-        (["0", "0.05", "0.2"], ["0.1"] * 3, 0.28, None),
-        (["0", "0.1", "0.2"], ["0.1", None, "0.1"], 0.28, None),
-        (["0", "0.1", "0.2"], ["0.1", "0.1", "0.2"], 0.28, None),
+        (["0", "0.15", "0.2"], ["0.1"] * 3, 0.28, 2),
+        (["0", "0.05", "0.2"], ["0.1"] * 3, 0.28, 2),
+        (["0", "0.1", "0.2"], ["0.1", None, "0.1"], 0.28, 2),
+        (["0", "0.1", "0.2"], ["0.1", "0.1", "0.2"], 0.28, 2),
+        (["0.01", "0.1", "0.2"], ["0.1"] * 3, 0.28, None),
+        (["0", "0.2", "0.1"], ["0.1"] * 3, 0.28, None),
+        (["0", "0.1", "0.3"], ["0.1"] * 3, 0.28, None),
+        (["0", None, "0.2"], ["0.1"] * 3, 0.28, None),
     ],
 )
-def test_held_frame_requires_proven_contiguous_intervals(
+def test_held_frame_requires_proven_presentation_timestamps(
     tmp_path, monkeypatch, timestamps, durations, wanted, selected
 ) -> None:
     metadata = [
@@ -33,6 +37,23 @@ def test_held_frame_requires_proven_contiguous_intervals(
             worker._held_webm_frame_index(tmp_path / "media.webm", **kwargs)
     else:
         assert worker._held_webm_frame_index(tmp_path / "media.webm", **kwargs) == selected
+
+
+def test_webm_durations_follow_presentation_timestamps_not_rounded_packet_durations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata = [
+        {"best_effort_timestamp_time": timestamp, "duration_time": "0.030000"}
+        for timestamp in ("0", "0.030", "0.061", "0.091", "0.121")
+    ]
+    monkeypatch.setattr(worker, "_webm_frame_metadata", lambda *a, **kw: metadata)
+
+    durations = worker._webm_frame_durations(
+        tmp_path / "media.webm", ffprobe="unused", duration_ms=151, timeout=15
+    )
+
+    assert durations == (30_000, 31_000, 30_000, 30_000, 30_000)
+    assert sum(durations) == 151_000
 
 
 @pytest.mark.skipif(

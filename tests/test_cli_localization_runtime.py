@@ -33,6 +33,35 @@ def test_workspace_and_pending_snapshot_messages_are_localized(message: str) -> 
 
 
 @pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "Packs are processed one at a time. Within the current pack: up to "
+            "15 simultaneous downloads, 8 media decoders, and 16 simultaneous AI requests. "
+            "The AI value is concurrency, not the total request limit.",
+            "до 16 запросов к ИИ. Число для ИИ — параллельность, а не общий лимит",
+        ),
+        (
+            "Packs are processed one at a time. Within the current pack: up to "
+            "15 simultaneous downloads and 8 media decoders. AI is not used during import; "
+            "AI request limits apply later, during analysis.",
+            "При импорте ИИ не используется; лимит запросов к ИИ применяется позже",
+        ),
+    ],
+)
+def test_pack_pipeline_progress_explains_parallelism_and_import_ai(
+    message: str, expected: str
+) -> None:
+    with use_ui_language("ru"):
+        translated = text(message)
+    assert expected in translated
+    assert "AI=0" not in translated
+
+    with use_ui_language("en"):
+        assert text(message) == message
+
+
+@pytest.mark.parametrize(
     ("arguments", "translated", "original"),
     [
         (["resume"], "Не указан обязательный аргумент", "Missing argument"),

@@ -797,19 +797,21 @@ def _held_webm_frame_index(
     """Select an actual held frame only on a proven contiguous presentation timeline."""
     frames = _webm_frame_metadata(source, ffprobe=ffprobe, timeout=timeout)
     wanted = _seconds_to_microseconds(timestamp)
-    previous_end = 0
-    selected = None
-    for index, frame in enumerate(frames):
-        start = _seconds_to_microseconds(frame.get("best_effort_timestamp_time"))
-        duration = _seconds_to_microseconds(
-            frame.get("pkt_duration_time") or frame.get("duration_time")
-        )
-        if start != previous_end or duration is None or duration <= 0:
-            raise RuntimeError("WebM held-frame presentation interval cannot be proven exactly")
-        previous_end = start + duration
-        if wanted is not None and start <= wanted < previous_end:
-            selected = index
-    if previous_end != duration_ms * 1000 or selected is None:
+    try:
+        intervals = _webm_presentation_intervals(frames, duration_ms=duration_ms)
+    except AnalysisError as exc:
+        raise RuntimeError(
+            "WebM held-frame presentation interval cannot be proven exactly"
+        ) from exc
+    selected = next(
+        (
+            index
+            for index, (start, end) in enumerate(intervals)
+            if wanted is not None and start <= wanted < end
+        ),
+        None,
+    )
+    if selected is None:
         raise RuntimeError("WebM held-frame presentation interval cannot be proven exactly")
     return selected
 
@@ -818,27 +820,35 @@ def _webm_frame_durations(
     source: Path, *, ffprobe: str, duration_ms: int, timeout: float
 ) -> tuple[int, ...]:
     raw_frames = _webm_frame_metadata(source, ffprobe=ffprobe, timeout=timeout)
-    timestamps: list[int | None] = []
-    durations: list[int | None] = []
-    for raw_frame in raw_frames:
-        if not isinstance(raw_frame, Mapping):
-            raise AnalysisError("WebM frame metadata entry is invalid")
-        timestamps.append(_seconds_to_microseconds(raw_frame.get("best_effort_timestamp_time")))
-        duration = raw_frame.get("pkt_duration_time") or raw_frame.get("duration_time")
-        durations.append(_seconds_to_microseconds(duration))
-    first_timestamp = timestamps[0]
-    for index, duration in enumerate(durations):
-        if duration is not None and duration > 0:
-            continue
-        current = timestamps[index]
-        following = timestamps[index + 1] if index + 1 < len(timestamps) else None
-        if current is not None and following is not None and following > current:
-            durations[index] = following - current
-        elif current is not None and first_timestamp is not None and index == len(durations) - 1:
-            durations[index] = duration_ms * 1000 - (current - first_timestamp)
-    if any(value is None or value <= 0 for value in durations):
-        raise AnalysisError("WebM presentation durations cannot be proven exactly")
-    return tuple(cast(int, value) for value in durations)
+    return tuple(
+        end - start
+        for start, end in _webm_presentation_intervals(raw_frames, duration_ms=duration_ms)
+    )
+
+
+def _webm_presentation_intervals(
+    raw_frames: list[Mapping[str, Any]], *, duration_ms: int
+) -> tuple[tuple[int, int], ...]:
+    """Derive exact held-frame intervals from presentation timestamps.
+
+    FFprobe's per-frame duration is the encoded packet duration. In legal WebM
+    files it can be rounded independently from the time base, so adding it to
+    a timestamp can leave a one-tick gap or overlap. A decoded frame is instead
+    presented until the next frame timestamp; the final frame is held until the
+    bounded container duration.
+    """
+
+    total_duration = duration_ms * 1000
+    timestamps = tuple(
+        _seconds_to_microseconds(frame.get("best_effort_timestamp_time")) for frame in raw_frames
+    )
+    if not timestamps or timestamps[0] != 0 or any(timestamp is None for timestamp in timestamps):
+        raise AnalysisError("WebM presentation intervals cannot be proven exactly")
+    starts = cast(tuple[int, ...], timestamps)
+    ends = (*starts[1:], total_duration)
+    if any(start >= end for start, end in zip(starts, ends, strict=True)):
+        raise AnalysisError("WebM presentation intervals cannot be proven exactly")
+    return tuple(zip(starts, ends, strict=True))
 
 
 def _seconds_to_microseconds(value: object) -> int | None:

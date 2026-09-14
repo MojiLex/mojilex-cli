@@ -12,6 +12,13 @@ from mojilex_cli import cli
 from mojilex_cli.commands import runtime
 
 
+def test_import_activity_names_the_whole_media_processing_stage(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "current_ui_language", lambda: "ru")
+    assert runtime._command_activity("import") == "Импорт и обработка пака"
+    monkeypatch.setattr(runtime, "current_ui_language", lambda: "en")
+    assert runtime._command_activity("import") == "Importing and processing pack"
+
+
 @pytest.fixture
 def terminal(monkeypatch):
     monkeypatch.setenv("TERM", "xterm-256color")

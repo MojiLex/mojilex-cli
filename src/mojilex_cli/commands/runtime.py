@@ -195,7 +195,7 @@ def _command_activity(command: str) -> str:
     labels = {
         "publish": ("Подготовка публикации", "Preparing publication"),
         "submit": ("Подготовка и отправка данных", "Preparing and submitting data"),
-        "import": ("Загрузка пака", "Importing pack"),
+        "import": ("Импорт и обработка пака", "Importing and processing pack"),
         "describe": ("Подготовка анализа", "Preparing analysis"),
         "add": ("Обработка пака", "Processing pack"),
         "resume": ("Восстановление сохранённой обработки", "Resuming saved processing"),

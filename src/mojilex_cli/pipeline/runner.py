@@ -1159,10 +1159,11 @@ async def _run_add(
                             collection_lock.__exit__(None, None, None)
 
                 report_progress(
-                    "Pack pipeline: one pack at a time; parallel media and AI limits: "
-                    f"downloads={config.telegram.download_concurrency}, "
-                    f"decoders={config.processing.render_concurrency}, "
-                    f"AI={config.ai.ai_concurrency}."
+                    "Packs are processed one at a time. Within the current pack: up to "
+                    f"{config.telegram.download_concurrency} simultaneous downloads, "
+                    f"{config.processing.render_concurrency} media decoders, and "
+                    f"{config.ai.ai_concurrency} simultaneous AI requests. The AI value is "
+                    "concurrency, not the total request limit."
                 )
                 with batch_limits(
                     downloads=config.telegram.download_concurrency,
@@ -1659,9 +1660,10 @@ async def _run_import(
                         dependencies.finish(position)
 
                 report_progress(
-                    "Pack pipeline: one pack at a time; parallel media limits: "
-                    f"downloads={config.telegram.download_concurrency}, "
-                    f"decoders={config.processing.render_concurrency}, AI=0."
+                    "Packs are processed one at a time. Within the current pack: up to "
+                    f"{config.telegram.download_concurrency} simultaneous downloads and "
+                    f"{config.processing.render_concurrency} media decoders. AI is not used "
+                    "during import; AI request limits apply later, during analysis."
                 )
                 with batch_limits(
                     downloads=config.telegram.download_concurrency,
