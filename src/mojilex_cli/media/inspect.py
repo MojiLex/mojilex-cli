@@ -131,7 +131,7 @@ def inspect_tgs(path: Path, limits: MediaLimits) -> tuple[dict[str, object], dic
     if not isinstance(document, dict):
         raise MediaError("TGS root must be a JSON object")
     _validate_json_depth(document, max_depth=64)
-    _reject_lottie_external_content(document)
+    _sanitize_lottie_document(document)
     try:
         width = _positive_int(document["w"])
         height = _positive_int(document["h"])
@@ -288,7 +288,15 @@ def _validate_json_depth(value: object, *, max_depth: int) -> None:
             pending.extend((child, depth + 1) for child in item)
 
 
-def _reject_lottie_external_content(document: Mapping[str, Any]) -> None:
+def _sanitize_lottie_document(document: dict[str, Any]) -> None:
+    """Remove Lottie expressions only when baked renderer input is present.
+
+    Telegram TGS files can retain an After Effects expression in ``x`` while
+    also carrying the exported ``k`` value that rlottie actually renders.  The
+    expression must never reach the native renderer, but rejecting the whole
+    sticker loses otherwise complete, non-executable animation data.
+    """
+
     assets = document.get("assets", [])
     if not isinstance(assets, list):
         raise MediaError("TGS assets must be a list")
@@ -298,13 +306,27 @@ def _reject_lottie_external_content(document: Mapping[str, Any]) -> None:
     pending: list[object] = [document]
     while pending:
         value = pending.pop()
-        if isinstance(value, Mapping):
-            for key, child in value.items():
+        if isinstance(value, dict):
+            for key, child in tuple(value.items()):
                 if key in {"x", "expression"} and isinstance(child, str) and child.strip():
-                    raise MediaError("executable expressions are forbidden in TGS")
+                    if not _has_baked_lottie_value(value):
+                        raise MediaError("TGS expression has no baked value")
+                    # Only the bounded JSON object returned from json.loads is
+                    # changed.  Original bytes and their content hash stay intact.
+                    del value[key]
+                    continue
                 pending.append(child)
         elif isinstance(value, list):
             pending.extend(value)
+
+
+def _has_baked_lottie_value(property_value: Mapping[str, Any]) -> bool:
+    if "k" not in property_value:
+        return False
+    value = property_value["k"]
+    if value is None or isinstance(value, (bool, str)):
+        return False
+    return isinstance(value, (int, float, list, Mapping))
 
 
 def _positive_int(value: object) -> int:

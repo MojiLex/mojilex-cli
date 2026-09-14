@@ -97,6 +97,59 @@ def test_tgs_inspection_is_bounded_and_rejects_external_assets(tmp_path: Path) -
         inspect_tgs(source, MediaLimits())
 
 
+def test_tgs_inspection_strips_expressions_with_baked_values(tmp_path: Path) -> None:
+    document = {
+        "v": "5.7",
+        "fr": 30,
+        "ip": 0,
+        "op": 30,
+        "w": 100,
+        "h": 100,
+        "assets": [],
+        "layers": [
+            {
+                "ks": {
+                    "r": {"a": 0, "k": 15, "x": "time * 10"},
+                    "p": {"a": 1, "k": [0, 25], "expression": "value + 5"},
+                }
+            }
+        ],
+    }
+    source = tmp_path / "expressions.tgs"
+    source.write_bytes(gzip.compress(json.dumps(document).encode(), mtime=0))
+
+    _, sanitized = inspect_tgs(source, MediaLimits())
+
+    rotation = sanitized["layers"][0]["ks"]["r"]
+    position = sanitized["layers"][0]["ks"]["p"]
+    assert rotation == {"a": 0, "k": 15}
+    assert position == {"a": 1, "k": [0, 25]}
+
+
+@pytest.mark.parametrize("fallback", [None, True, "not-renderable"])
+def test_tgs_inspection_rejects_expression_without_baked_value(
+    tmp_path: Path, fallback: object
+) -> None:
+    animated = {"a": 0, "x": "time * 10"}
+    if fallback is not None:
+        animated["k"] = fallback
+    document = {
+        "v": "5.7",
+        "fr": 30,
+        "ip": 0,
+        "op": 30,
+        "w": 100,
+        "h": 100,
+        "assets": [],
+        "layers": [{"ks": {"r": animated}}],
+    }
+    source = tmp_path / "unsafe-expression.tgs"
+    source.write_bytes(gzip.compress(json.dumps(document).encode(), mtime=0))
+
+    with pytest.raises(MediaError, match="no baked value"):
+        inspect_tgs(source, MediaLimits())
+
+
 def test_tgs_analysis_consumes_the_full_renderer_timeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
