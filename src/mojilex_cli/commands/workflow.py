@@ -335,11 +335,20 @@ def describe_command(
 ) -> CommandResult:
     execution_config = load_config()
     if len(selectors) > 1 and all(value.startswith("mlxrun_") for value in selectors):
+        from mojilex_cli.runs import RunCheckpoint
+
         from .packs import _sources, resolve_pack_run, selected_pack_sources
 
         groups: list[tuple[str, list[str]]] = []
+        checkpoints: dict[str, RunCheckpoint] = {}
         for selector in selectors:
-            checkpoint = resolve_pack_run(selector, purpose="describe")
+            parent_id = selector.split(":", 1)[0]
+            checkpoint = checkpoints.get(parent_id)
+            if checkpoint is None or (
+                ":" in selector and not selected_pack_sources(checkpoint, selector)
+            ):
+                checkpoint = resolve_pack_run(selector, purpose="describe")
+                checkpoints[parent_id] = checkpoint
             selected = selected_pack_sources(checkpoint, selector)
             if not groups or groups[-1][0] != checkpoint.run_id:
                 groups.append((checkpoint.run_id, []))

@@ -258,9 +258,13 @@ def test_multi_parent_analysis_retains_selected_pack_scope_and_one_approval(
     first = create()
     second = create((B, C))
     lookup = {first.run_id: first, second.run_id: second}
-    monkeypatch.setattr(
-        packs, "resolve_pack_run", lambda selector, **kw: lookup[selector.split(":")[0]]
-    )
+    resolutions = []
+
+    def resolve(selector, **kw):
+        resolutions.append(selector)
+        return lookup[selector.split(":")[0]]
+
+    monkeypatch.setattr(packs, "resolve_pack_run", resolve)
     calls = []
     approvals = []
 
@@ -281,6 +285,7 @@ def test_multi_parent_analysis_retains_selected_pack_scope_and_one_approval(
     )
     assert calls == [(first.run_id, (A,)), (second.run_id, (C,)), (first.run_id, (B,))]
     assert approvals == [None]
+    assert len(resolutions) == 2
 
 
 @pytest.mark.parametrize("phase", ["import", "describe"])
