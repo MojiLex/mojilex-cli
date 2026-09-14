@@ -27,6 +27,21 @@ def test_machine_output_is_one_compact_secret_free_object() -> None:
     assert envelope.exit_code is ExitCode.AUTH
 
 
+def test_machine_output_is_ascii_safe_for_legacy_windows_consoles() -> None:
+    envelope = OutputEnvelope(
+        ok=True,
+        command="settings",
+        status=RunStatus.SUCCEEDED,
+        run_id="01TEST",
+        result={"description": "Enter → Нет"},
+    )
+
+    encoded = envelope.to_json()
+
+    assert encoded.isascii()
+    assert json.loads(encoded)["result"]["description"] == "Enter → Нет"
+
+
 def test_partial_result_has_partial_exit_code() -> None:
     envelope = OutputEnvelope(
         ok=False,

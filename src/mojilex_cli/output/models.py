@@ -217,7 +217,10 @@ class OutputEnvelope:
         )
 
     def to_json(self) -> str:
-        return json.dumps(self.as_dict(), ensure_ascii=False, separators=(",", ":"))
+        # Machine output must remain writable even when a Windows parent process
+        # gives Python a legacy console encoding such as cp1251. JSON escapes are
+        # decoded transparently by consumers and keep the one-line contract ASCII-safe.
+        return json.dumps(self.as_dict(), ensure_ascii=True, separators=(",", ":"))
 
     @property
     def exit_code(self) -> ExitCode:
