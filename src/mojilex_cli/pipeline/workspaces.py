@@ -51,6 +51,8 @@ def prepare_staging_workspace(
         _git(
             "-c",
             f"safe.directory={_local_git_directory(source_repository).as_posix()}",
+            "-c",
+            "core.longpaths=true",
             "clone",
             "--no-hardlinks",
             "--no-tags",
@@ -88,6 +90,8 @@ def snapshot_at_revision(repository: Path, revision: str) -> Iterator[Path]:
         _git(
             "-c",
             f"safe.directory={_local_git_directory(repository).as_posix()}",
+            "-c",
+            "core.longpaths=true",
             "clone",
             "--no-hardlinks",
             "--no-checkout",

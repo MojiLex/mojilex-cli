@@ -116,7 +116,14 @@ class GitRunner:
         timeout_seconds: float | None = None,
     ) -> CommandResult:
         self._validate_arguments(arguments)
-        command = [self.executable, "-C", str(self.repository), *arguments]
+        command = [
+            self.executable,
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            str(self.repository),
+            *arguments,
+        ]
         github_token = self._github_token_for(arguments)
         try:
             with git_subprocess_environment(github_token) as environment:

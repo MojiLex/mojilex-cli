@@ -123,6 +123,8 @@ def test_local_clones_scope_safe_directory_to_the_exact_git_dir(
     expected_staging = f"safe.directory={(staging / '.git').resolve().as_posix()}"
     assert clone_commands[0][:2] == ("-c", expected_source)
     assert clone_commands[1][:2] == ("-c", expected_staging)
+    assert clone_commands[0][2:4] == ("-c", "core.longpaths=true")
+    assert clone_commands[1][2:4] == ("-c", "core.longpaths=true")
 
 
 def test_revision_snapshot_canonicalizes_its_own_temporary_parent(
