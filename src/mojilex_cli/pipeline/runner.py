@@ -817,7 +817,6 @@ async def _run_add(
             ) as adapter:
                 await adapter.validate_credentials()
                 merge_turns = OrderedTurns()
-                analysis_turns = OrderedTurns()
                 dependencies = PackDependencies()
                 cancelled_queue = asyncio.Event()
                 failed_positions: set[int] = set()
@@ -995,7 +994,6 @@ async def _run_add(
                             request_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
                             report_pack_stage(source_text, "ai_wait")
                             if file_mode == "fast":
-                                await analysis_turns.wait(position)
                                 if cancelled_queue.is_set() or any(
                                     failed < position for failed in failed_positions
                                 ):
@@ -1030,10 +1028,6 @@ async def _run_add(
                                     record_ai_chunk_completion(source, items, outcomes)
                                 ),
                             )
-                            # Let the next pack use AI slots during local puzzle preparation
-                            # and validation; canonical merges still happen in input order.
-                            if file_mode == "fast":
-                                analysis_turns.finish(position)
                             report_pack_stage(source_text, "finalize")
                             analyses = _bind_deterministic_analyses(processed)
                             if checkpoint is not None:
@@ -1211,7 +1205,6 @@ async def _run_add(
                     finally:
                         PACK.reset(pack_token)
                         dependencies.finish(position)
-                        analysis_turns.finish(position)
                         merge_turns.finish(position)
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)

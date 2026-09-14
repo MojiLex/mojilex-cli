@@ -211,13 +211,14 @@ Resuming downloads does not itself start paid analysis.
 
 Choose **Pack-file analysis mode** in `mojilex settings`. New installations use
 `fast`: while AI analyzes the current pack, bounded workers download and decode
-following packs. Once a pack finishes its description requests, the next pack can
-start AI while local puzzle preparation and validation finish. Dataset merges remain ordered. This hides most local
+following packs. Each independent pack starts AI as soon as its media is ready;
+a slow earlier pack does not block it. All packs share the AI concurrency and
+request/cost budgets. Dataset merges remain ordered. This hides most local
 preparation time behind provider requests without multiplying the shared limits.
 
 | Mode | Order |
 |---|---|
-| `fast` — default | Prepare following packs while AI handles the current pack; consume AI and merge turns in input order. |
+| `fast` — default | Prepare following packs while AI handles the current pack; start AI in readiness order and merge results in input order. |
 | `sequential` | Download, decode and analyze one complete pack before starting the next. |
 | `download_all` | Persist and hash every original file first, decode all packs second, then start AI. |
 | `prepare_all` | Download and decode packs concurrently, wait for all local preparation, then start AI. |

@@ -273,7 +273,7 @@ async def test_collection_and_membership_changes_do_not_abort_source_merge(pipel
     assert all(element.stage == "validated" for element in checkpoint.elements.values())
 
 
-async def test_fast_mode_prepares_next_pack_while_ai_stays_ordered(pipeline, monkeypatch):
+async def test_fast_mode_prepares_next_pack_while_first_ai_runs(pipeline, monkeypatch):
     state = pipeline
     state.config = state.config.model_copy(
         update={
@@ -332,17 +332,20 @@ async def test_fast_mode_does_not_spend_ai_on_prefetched_pack_after_prior_failur
         }
     )
     beta_media = asyncio.Event()
+    release_beta = asyncio.Event()
     ai_order = []
 
     async def media(snapshot, adapter, source, processor, **kwargs):
         if source.native_id == "PackBeta":
             beta_media.set()
+            await release_beta.wait()
         return await state.media(snapshot, adapter, source, processor, **kwargs)
 
     async def describe(snapshot, source, processed, **kwargs):
         ai_order.append(source.native_id)
         if source.native_id == "PackAlpha":
             await beta_media.wait()
+            release_beta.set()
             raise CommandError("SOURCE_CHANGED_DURING_RUN", "synthetic", hint="retry")
         pytest.fail("prefetched pack started AI after the prior pack failed")
 
@@ -353,12 +356,21 @@ async def test_fast_mode_does_not_spend_ai_on_prefetched_pack_after_prior_failur
     assert ai_order == ["PackAlpha"]
 
 
-async def test_parallel_packs_write_real_collections_emojis_and_memberships(pipeline, monkeypatch):
+@pytest.mark.parametrize("mode", ["sequential", "fast"])
+async def test_parallel_packs_write_real_collections_emojis_and_memberships(
+    pipeline, monkeypatch, mode
+):
     from mojilex_cli.dataset import load_dataset, validate_dataset
     from mojilex_cli.pipeline.transform import plan_collection_merge
     from test_pipeline_transform import _description, _generation
 
     state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(update={"file_analysis_mode": mode})
+        }
+    )
+    beta_finished = asyncio.Event()
     state.sources = tuple(
         _collection(
             (
@@ -384,6 +396,8 @@ async def test_parallel_packs_write_real_collections_emojis_and_memberships(pipe
         return plan
 
     async def describe(snapshot, source, processed, **kwargs):
+        if mode == "fast" and source.native_id == "PackAlpha":
+            await beta_finished.wait()
         descriptions = {item.native_id: _description(snapshot) for item in source.items}
         generations = {item.native_id: _generation() for item in source.items}
         await kwargs["on_chunk_completed"](
@@ -395,6 +409,8 @@ async def test_parallel_packs_write_real_collections_emojis_and_memberships(pipe
                 for item in source.items
             },
         )
+        if source.native_id == "PackBeta":
+            beta_finished.set()
         return descriptions, generations
 
     monkeypatch.setattr(runner, "plan_collection_merge", merge)
@@ -539,3 +555,81 @@ async def test_runner_applies_current_confirmation_setting_without_changing_budg
     assert captured["confirm_before_requests"] is confirm
     assert captured["allow_unknown_cost"] is (not confirm)
     assert captured["max_requests"] == 37
+
+
+async def test_fast_ready_pack_starts_ai_before_earlier_pack_finishes_media(pipeline, monkeypatch):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 2}
+            )
+        }
+    )
+    alpha_media = asyncio.Event()
+    beta_ai = asyncio.Event()
+    release_alpha = asyncio.Event()
+    order = []
+
+    async def media(snapshot, adapter, source, processor, **kwargs):
+        if source.native_id == "PackAlpha":
+            alpha_media.set()
+            await release_alpha.wait()
+        return await state.media(snapshot, adapter, source, processor, **kwargs)
+
+    async def describe(snapshot, source, processed, **kwargs):
+        order.append(source.native_id)
+        if source.native_id == "PackBeta":
+            beta_ai.set()
+        return await state.describe(snapshot, source, processed, **kwargs)
+
+    monkeypatch.setattr(runner, "_prepare_collection_media", media)
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(alpha_media.wait(), 5)
+        await asyncio.wait_for(beta_ai.wait(), 5)
+        assert order == ["PackBeta"]
+        assert state.merges == []
+        release_alpha.set()
+        result = await asyncio.wait_for(task, 5)
+        assert not result.errors
+        assert state.merges == ["PackAlpha", "PackBeta"]
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_fast_independent_packs_can_have_ai_in_flight_together(pipeline, monkeypatch):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 2}
+            )
+        }
+    )
+    entered = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def describe(snapshot, source, processed, **kwargs):
+        entered.add(source.native_id)
+        if len(entered) == 2:
+            both_started.set()
+        await release.wait()
+        return await state.describe(snapshot, source, processed, **kwargs)
+
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        result = await asyncio.wait_for(task, 5)
+        assert not result.errors
+        assert state.merges == ["PackAlpha", "PackBeta"]
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
