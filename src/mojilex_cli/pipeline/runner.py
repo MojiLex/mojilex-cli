@@ -118,6 +118,7 @@ from mojilex_cli.media import (
     build_contact_sheets,
     expected_labels,
 )
+from mojilex_cli.media.raw_store import RawMediaStore, get_raw_store
 from mojilex_cli.media.resume import RetainedMediaStore, get_retained_store
 from mojilex_cli.output.models import RunStatus, StructuredError
 from mojilex_cli.policy import (
@@ -216,6 +217,8 @@ class PipelineOptions:
     allow_unknown_cost: bool = False
     ai_concurrency: int | None = None
     download_concurrency: int | None = None
+    file_analysis_mode: str | None = None
+    import_strategy: Literal["full", "metadata", "download_all"] = "full"
     dedupe: str | None = None
     max_dedupe_candidates: int | None = None
     dedupe_profile: str | None = None
@@ -376,6 +379,22 @@ _MediaCompletion = Callable[[SourceEmoji, ProcessedMedia], Awaitable[None]]
 _AIChunkCompletion = Callable[
     [Sequence[SourceEmoji], Mapping[str, _SemanticOutcome]], Awaitable[None]
 ]
+
+
+class _RawMediaAdapter:
+    """Delegate Telegram metadata calls while replaying retained original bytes."""
+
+    def __init__(self, delegate: TelegramBotAPI, store: RawMediaStore) -> None:
+        self._delegate = delegate
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+    async def fetch_media(self, item: SourceEmoji) -> AsyncIterator[bytes]:
+        key = _source_descriptor_sha256(item)
+        async for chunk in self._store.stream(key):
+            yield chunk
 
 
 def run_add(sources: Sequence[str], options: PipelineOptions) -> CommandResult:
@@ -793,7 +812,11 @@ async def _run_add(
             ) as adapter:
                 await adapter.validate_credentials()
                 merge_turns = OrderedTurns()
+                analysis_turns = OrderedTurns()
                 dependencies = PackDependencies()
+                cancelled_queue = asyncio.Event()
+                failed_positions: set[int] = set()
+                file_mode = config.processing.file_analysis_mode
 
                 async def process_source(entry: tuple[int, tuple[int, str]]) -> None:
                     nonlocal current, checkpoint
@@ -801,6 +824,11 @@ async def _run_add(
                     collection_lock: Any | None = None
                     lock_entered = False
                     try:
+                        if file_mode == "fast" and (
+                            cancelled_queue.is_set()
+                            or any(failed < position for failed in failed_positions)
+                        ):
+                            return
                         if checkpoint is not None:
                             checkpoint = record_source_state(
                                 checkpoint, source_text, "describe", "running"
@@ -958,6 +986,12 @@ async def _run_add(
                                 checkpoint.elements if checkpoint is not None else {},
                             )
                             request_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
+                            if file_mode == "fast":
+                                await analysis_turns.wait(position)
+                                if cancelled_queue.is_set() or any(
+                                    failed < position for failed in failed_positions
+                                ):
+                                    return
                             descriptions, generation_metadata = await _descriptions_for_collection(
                                 current,
                                 source,
@@ -1135,6 +1169,10 @@ async def _run_add(
                                 )
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
+                    except asyncio.CancelledError:
+                        if file_mode == "fast":
+                            cancelled_queue.set()
+                        raise
                     except Exception as exc:
                         error = structured_exception(exc)
                         errors.append(error)
@@ -1150,20 +1188,31 @@ async def _run_add(
                                 terminal=terminal_error,
                             )
                             run_store.save(checkpoint)
+                        if file_mode == "fast":
+                            failed_positions.add(position)
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
                         dependencies.finish(position)
+                        analysis_turns.finish(position)
                         merge_turns.finish(position)
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)
 
                 report_progress(
-                    "Packs are processed one at a time. Within the current pack: up to "
-                    f"{config.telegram.download_concurrency} simultaneous downloads, "
-                    f"{config.processing.render_concurrency} media decoders, and "
-                    f"{config.ai.ai_concurrency} simultaneous AI requests. The AI value is "
-                    "concurrency, not the total request limit."
+                    f"Режим очереди: {file_mode}; скачивания="
+                    f"{config.telegram.download_concurrency}, декодеры="
+                    f"{config.processing.render_concurrency}, ИИ="
+                    f"{config.ai.ai_concurrency}, параллельность паков="
+                    f"{config.processing.pack_concurrency}. Значение ИИ — число "
+                    "одновременных запросов. Общий лимит задаётся отдельно."
+                    if current_ui_language() == "ru"
+                    else f"Queue mode: {file_mode}; downloads="
+                    f"{config.telegram.download_concurrency}, decoders="
+                    f"{config.processing.render_concurrency}, AI="
+                    f"{config.ai.ai_concurrency}, pack preparation="
+                    f"{config.processing.pack_concurrency}. AI is simultaneous requests, "
+                    "not the total request limit."
                 )
                 with batch_limits(
                     downloads=config.telegram.download_concurrency,
@@ -1171,15 +1220,23 @@ async def _run_add(
                     ai=config.ai.ai_concurrency,
                     max_temp_bytes=config.processing.max_temp_bytes,
                 ):
-                    for entry in enumerate(source_entries):
-                        await process_source(entry)
-                        if errors:
-                            report_progress(
-                                "Очередь остановлена: исправьте ошибку пака и продолжите."
-                                if current_ui_language() == "ru"
-                                else "Queue stopped: resolve the pack error and resume."
-                            )
-                            break
+                    if file_mode == "sequential":
+                        for entry in enumerate(source_entries):
+                            await process_source(entry)
+                            if errors:
+                                break
+                    else:
+                        await bounded_map(
+                            enumerate(source_entries),
+                            process_source,
+                            concurrency=config.processing.pack_concurrency,
+                        )
+                    if errors:
+                        report_progress(
+                            "Очередь остановлена. Готовые этапы сохранены."
+                            if current_ui_language() == "ru"
+                            else "The queue stopped with completed stages saved."
+                        )
             if options.dry_run:
                 status = RunStatus.DRY_RUN
                 if errors:
@@ -1539,12 +1596,21 @@ async def _run_import(
             cast(Path, config.cache_dir) / "cache-v1.sqlite3",
             repository_root=workspace.root,
         )
+        progress_lock = asyncio.Lock()
+        prefetched_collections: dict[str, SourceCollection] = {}
 
         async def record_import_item(item: SourceEmoji, value: ProcessedMedia) -> None:
             nonlocal checkpoint
-            _cache_deterministic_analysis(cache, item, value)
-            checkpoint = _checkpoint_media_item(checkpoint, item, value)
-            store.save(checkpoint)
+            async with progress_lock:
+                _cache_deterministic_analysis(cache, item, value)
+                checkpoint = _checkpoint_media_item(checkpoint, item, value)
+                store.save(checkpoint)
+
+        async def record_download_item(item: SourceEmoji, sha256: str) -> None:
+            nonlocal checkpoint
+            async with progress_lock:
+                checkpoint = _checkpoint_download_item(checkpoint, item, sha256)
+                store.save(checkpoint)
 
         try:
             async with TelegramBotAPI(
@@ -1555,16 +1621,22 @@ async def _run_import(
             ) as adapter:
                 await adapter.validate_credentials()
                 dependencies = PackDependencies()
+                raw_store: RawMediaStore | None = None
 
                 async def import_source(entry: tuple[int, str]) -> None:
                     nonlocal checkpoint, imported
                     position, source_text = entry
                     try:
-                        checkpoint = record_source_state(
-                            checkpoint, source_text, "import", "running"
-                        )
-                        store.save(checkpoint)
-                        source = await adapter.fetch_collection(adapter.canonicalize(source_text))
+                        async with progress_lock:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "import", "running"
+                            )
+                            store.save(checkpoint)
+                        source = prefetched_collections.get(source_text)
+                        if source is None:
+                            source = await adapter.fetch_collection(
+                                adapter.canonicalize(source_text)
+                            )
                         report_progress(
                             f"Source {source.native_id}: {source.item_count} media item(s); "
                             f"download concurrency={config.telegram.download_concurrency}; "
@@ -1600,33 +1672,52 @@ async def _run_import(
                                 ),
                             ),
                         )
-                        memberships = _membership_map(
-                            checkpoint.safe_parameters.get("source_memberships")
-                        )
-                        memberships[source.native_id] = current_members
-                        checkpoint = checkpoint.model_copy(
-                            update={
-                                "safe_parameters": {
-                                    **checkpoint.safe_parameters,
-                                    "source_memberships": {
-                                        key: list(value)
-                                        for key, value in sorted(memberships.items())
-                                    },
+                        async with progress_lock:
+                            memberships = _membership_map(
+                                checkpoint.safe_parameters.get("source_memberships")
+                            )
+                            memberships[source.native_id] = current_members
+                            checkpoint = checkpoint.model_copy(
+                                update={
+                                    "safe_parameters": {
+                                        **checkpoint.safe_parameters,
+                                        "source_memberships": {
+                                            key: list(value)
+                                            for key, value in sorted(memberships.items())
+                                        },
+                                    }
                                 }
-                            }
-                        )
-                        store.save(checkpoint)
+                            )
+                            store.save(checkpoint)
+                        if options.import_strategy == "metadata":
+                            async with progress_lock:
+                                checkpoint = record_source_state(
+                                    checkpoint, source_text, "import", "succeeded"
+                                )
+                                store.save(checkpoint)
+                            imported += 1
+                            return
                         with TemporaryMediaRun(limits=_media_limits(config)) as temporary:
+                            media_adapter: Any = (
+                                _RawMediaAdapter(adapter, raw_store)
+                                if raw_store is not None
+                                else adapter
+                            )
+                            phase_hashes = {
+                                native_id: element.media_sha256
+                                for native_id, element in checkpoint.elements.items()
+                                if element.media_sha256
+                            }
                             source, processed = await _prepare_collection_media(
                                 initial,
-                                adapter,
+                                media_adapter,
                                 source,
                                 MediaProcessor(
                                     temporary,
                                     render_concurrency=config.processing.render_concurrency,
                                 ),
                                 concurrency=config.telegram.download_concurrency,
-                                expected_hashes=expected_hashes,
+                                expected_hashes=phase_hashes or expected_hashes,
                                 cache=cache,
                                 resume_elements=checkpoint.elements,
                                 config=config,
@@ -1635,35 +1726,145 @@ async def _run_import(
                                 on_item_completed=record_import_item,
                             )
                             _cache_deterministic_analyses(cache, source, processed)
-                        checkpoint = _checkpoint_media(checkpoint, source, processed)
-                        checkpoint = record_source_state(
-                            checkpoint, source_text, "import", "succeeded"
-                        )
-                        store.save(checkpoint)
+                        async with progress_lock:
+                            checkpoint = _checkpoint_media(checkpoint, source, processed)
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "import", "succeeded"
+                            )
+                            store.save(checkpoint)
                         imported += 1
                     except Exception as exc:
                         error = structured_exception(exc)
                         failures.append(error)
-                        checkpoint = record_source_state(
-                            checkpoint, source_text, "import", "failed"
-                        )
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
-                        checkpoint = _checkpoint_issue(
-                            checkpoint,
-                            error,
-                            terminal=terminal_error,
-                        )
-                        store.save(checkpoint)
+                        async with progress_lock:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "import", "failed"
+                            )
+                            checkpoint = _checkpoint_issue(
+                                checkpoint,
+                                error,
+                                terminal=terminal_error,
+                            )
+                            store.save(checkpoint)
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
                         dependencies.finish(position)
 
+                async def download_source(entry: tuple[int, str]) -> None:
+                    nonlocal checkpoint
+                    _position, source_text = entry
+                    try:
+                        async with progress_lock:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "import", "running"
+                            )
+                            store.save(checkpoint)
+                        source = await adapter.fetch_collection(adapter.canonicalize(source_text))
+                        if options.max_items is not None and source.item_count > options.max_items:
+                            raise CommandError(
+                                "CONFIG_INVALID",
+                                f"Collection exceeds --max-items={options.max_items}.",
+                                hint="Raise the explicit item budget and retry.",
+                                source=source.canonical_url,
+                            )
+                        current_members = tuple(item.native_id for item in source.items)
+                        imported_members = (
+                            expected_memberships.get(source.native_id)
+                            if expected_memberships is not None
+                            else None
+                        )
+                        if imported_members is not None and current_members != imported_members:
+                            raise CommandError(
+                                "SOURCE_CHANGED_DURING_RUN",
+                                f"Collection {source.native_id} changed while resuming import.",
+                                hint="Start a new import from the current Telegram collection.",
+                                source=source.canonical_url,
+                            )
+                        async with progress_lock:
+                            memberships = _membership_map(
+                                checkpoint.safe_parameters.get("source_memberships")
+                            )
+                            memberships[source.native_id] = current_members
+                            checkpoint = checkpoint.model_copy(
+                                update={
+                                    "safe_parameters": {
+                                        **checkpoint.safe_parameters,
+                                        "source_memberships": {
+                                            key: list(value)
+                                            for key, value in sorted(memberships.items())
+                                        },
+                                    }
+                                }
+                            )
+                            store.save(checkpoint)
+                        assert raw_store is not None
+                        active_raw_store = raw_store
+                        download_progress = BatchProgress(
+                            (
+                                f"Скачивание {source.native_id}"
+                                if current_ui_language() == "ru"
+                                else f"Downloading {source.native_id}"
+                            ),
+                            len(source.items),
+                        )
+
+                        async def download_one(item: SourceEmoji) -> None:
+                            download_progress.phase(item.native_id, "download")
+                            key = _source_descriptor_sha256(item)
+                            saved = checkpoint.elements.get(item.native_id)
+                            expected = (
+                                saved.media_sha256[0]
+                                if saved is not None and len(saved.media_sha256) == 1
+                                else None
+                            )
+                            record = await active_raw_store.put_stream(
+                                key,
+                                adapter.fetch_media(item),
+                                expected_size=item.declared_file_size,
+                                expected_sha256=expected,
+                            )
+                            await record_download_item(item, record.sha256)
+                            download_progress.finish(item.native_id)
+
+                        async with download_progress:
+                            await bounded_map(
+                                source.items,
+                                download_one,
+                                concurrency=config.telegram.download_concurrency,
+                            )
+                        prefetched_collections[source_text] = source
+                    except Exception as exc:
+                        error = structured_exception(exc)
+                        failures.append(error)
+                        async with progress_lock:
+                            checkpoint = record_source_state(
+                                checkpoint, source_text, "import", "failed"
+                            )
+                            checkpoint = _checkpoint_issue(
+                                checkpoint,
+                                error,
+                                terminal=error.code in _TERMINAL_ERROR_CODES,
+                            )
+                            store.save(checkpoint)
+                        if options.fail_fast or error.code in _TERMINAL_ERROR_CODES:
+                            raise
+
+                mode = config.processing.file_analysis_mode
+                strategy = options.import_strategy
                 report_progress(
-                    "Packs are processed one at a time. Within the current pack: up to "
-                    f"{config.telegram.download_concurrency} simultaneous downloads and "
-                    f"{config.processing.render_concurrency} media decoders. AI is not used "
-                    "during import; AI request limits apply later, during analysis."
+                    f"Режим очереди: {mode}; скачивания="
+                    f"{config.telegram.download_concurrency}, "
+                    f"декодеры={config.processing.render_concurrency}, "
+                    f"параллельность паков={config.processing.pack_concurrency}. "
+                    "ИИ начнётся после импорта."
+                    if current_ui_language() == "ru"
+                    else f"Queue mode: {mode}; downloads="
+                    f"{config.telegram.download_concurrency}, "
+                    f"decoders={config.processing.render_concurrency}, "
+                    f"pack preparation={config.processing.pack_concurrency}. "
+                    "AI starts after import."
                 )
                 with batch_limits(
                     downloads=config.telegram.download_concurrency,
@@ -1671,15 +1872,52 @@ async def _run_import(
                     ai=config.ai.ai_concurrency,
                     max_temp_bytes=config.processing.max_temp_bytes,
                 ):
-                    for position, (_, source) in enumerate(source_entries):
-                        await import_source((position, source))
-                        if failures:
-                            report_progress(
-                                "Очередь остановлена: исправьте ошибку пака и продолжите."
-                                if current_ui_language() == "ru"
-                                else "Queue stopped: resolve the pack error and resume."
+                    entries = tuple(
+                        (position, source) for position, (_, source) in enumerate(source_entries)
+                    )
+                    if strategy == "download_all":
+                        raw_root = (
+                            cache.path.parent
+                            / "resume-source"
+                            / hashlib.sha256(checkpoint.run_id.encode()).hexdigest()
+                        )
+                        if raw_root.resolve().is_relative_to(workspace.root.resolve()):
+                            raise CommandError(
+                                "CONFIG_INVALID",
+                                "Retained source storage must be outside the dataset repository.",
+                                hint=(
+                                    "Use the default cache directory or move cache_dir outside "
+                                    "the repository."
+                                ),
                             )
-                            break
+                        raw_store = get_raw_store(
+                            raw_root,
+                            max_bytes=config.processing.max_temp_bytes,
+                            max_file_bytes=config.processing.max_download_bytes,
+                        )
+                        await bounded_map(
+                            entries,
+                            download_source,
+                            concurrency=config.processing.pack_concurrency,
+                        )
+                    if not failures:
+                        if strategy == "metadata" or mode == "sequential":
+                            for entry in entries:
+                                await import_source(entry)
+                                if failures:
+                                    break
+                        else:
+                            await bounded_map(
+                                entries,
+                                import_source,
+                                concurrency=config.processing.pack_concurrency,
+                            )
+                    if failures:
+                        report_progress(
+                            "Очередь остановлена. Готовые этапы сохранены."
+                            if current_ui_language() == "ru"
+                            else "The queue stopped with completed stages saved."
+                        )
             status = "succeeded" if not failures else "partial" if imported else "failed"
             parent_phase = "describe" if checkpoint.command == "describe" else "import"
             checkpoint = _finish_checkpoint(
@@ -2316,6 +2554,7 @@ def _resolved_config(options: PipelineOptions) -> MojiLexConfig:
             "max_candidates": options.max_dedupe_candidates,
             "profile": options.dedupe_profile,
         },
+        "processing": {"file_analysis_mode": options.file_analysis_mode},
     }
     return load_config(cli=layer)
 
@@ -2347,6 +2586,8 @@ def _validate_options(options: PipelineOptions, config: MojiLexConfig) -> None:
         raise ValueError("--platform must be auto or telegram")
     if options.redescribe not in {"missing", "changed", "all"}:
         raise ValueError("--redescribe must be missing, changed, or all")
+    if options.import_strategy not in {"full", "metadata", "download_all"}:
+        raise ValueError("import strategy must be full, metadata, or download_all")
     if options.new_identity and options.same_identity:
         raise ValueError("--new-identity and --same-identity are mutually exclusive")
     if config.repository.publish not in {"local", "pr"}:
@@ -6415,6 +6656,8 @@ def _safe_parameters(sources: Sequence[str], options: PipelineOptions) -> dict[s
         "allow_unknown_cost": options.allow_unknown_cost,
         "ai_concurrency": options.ai_concurrency,
         "download_concurrency": options.download_concurrency,
+        "file_analysis_mode": options.file_analysis_mode,
+        "import_strategy": options.import_strategy,
         "dedupe": options.dedupe or "",
         "max_dedupe_candidates": options.max_dedupe_candidates,
         "dedupe_profile": options.dedupe_profile or "",
@@ -6447,6 +6690,7 @@ def _materialized_options(
         allow_unknown_cost=config.ai.allow_unknown_cost,
         ai_concurrency=config.ai.ai_concurrency,
         download_concurrency=config.telegram.download_concurrency,
+        file_analysis_mode=config.processing.file_analysis_mode,
         dedupe=config.dedupe.mode,
         max_dedupe_candidates=config.dedupe.max_candidates,
         dedupe_profile=config.dedupe.profile,
@@ -6480,6 +6724,11 @@ def _options_from_safe(value: Mapping[str, object]) -> PipelineOptions:
         allow_unknown_cost=bool(value.get("allow_unknown_cost", False)),
         ai_concurrency=_optional_int(value.get("ai_concurrency")),
         download_concurrency=_optional_int(value.get("download_concurrency")),
+        file_analysis_mode=_optional_string(value.get("file_analysis_mode")),
+        import_strategy=cast(
+            Literal["full", "metadata", "download_all"],
+            str(value.get("import_strategy") or "full"),
+        ),
         dedupe=_optional_string(value.get("dedupe")),
         max_dedupe_candidates=_optional_int(value.get("max_dedupe_candidates")),
         dedupe_profile=_optional_string(value.get("dedupe_profile")),
@@ -6502,6 +6751,40 @@ def _checkpoint_media(
     for native_id, value in processed.items():
         checkpoint = _checkpoint_media_item(checkpoint, source_by_native[native_id], value)
     return checkpoint
+
+
+def _checkpoint_download_item(
+    checkpoint: RunCheckpoint,
+    item: SourceEmoji,
+    sha256: str,
+) -> RunCheckpoint:
+    elements = dict(checkpoint.elements)
+    previous = elements.get(item.native_id, ElementCheckpoint(stage="discovered"))
+    descriptor_sha256 = _source_descriptor_sha256(item)
+    changed = previous.source_descriptor_sha256 != descriptor_sha256 or previous.media_sha256 != (
+        sha256,
+    )
+    updates: dict[str, object] = {
+        "stage": "media_verified",
+        "source_descriptor_sha256": descriptor_sha256,
+        "media_sha256": (sha256,),
+        "error_code": None,
+    }
+    if changed:
+        updates.update(
+            {
+                "deterministic_cache_key": None,
+                "ai_cache_key": None,
+                "ai_requests": (),
+                "palette_complete": False,
+                "fingerprint_complete": False,
+                "ai_facets_complete": False,
+                "candidate_scan_complete": False,
+                "review_complete": False,
+            }
+        )
+    elements[item.native_id] = previous.model_copy(update=updates)
+    return checkpoint.model_copy(update={"elements": elements})
 
 
 def _checkpoint_media_item(

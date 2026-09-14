@@ -470,6 +470,14 @@ def _analyze(
     from .runtime import capture_command_results
 
     arguments = ["import", source]
+    mode = load_config().processing.file_analysis_mode
+    preparation = {
+        "fast": "metadata",
+        "sequential": "metadata",
+        "download_all": "download_all",
+        "prepare_all": "full",
+    }[mode]
+    arguments.extend(["--preparation", preparation])
     if refresh:
         arguments.append("--refresh")
     if repository is not None:

@@ -202,18 +202,27 @@ source media never silently replaces the saved input.
 After import completes, its page offers **Analyze saved import with AI**.
 Resuming downloads does not itself start paid analysis.
 
-Within each stage, packs are processed sequentially. Transient media failures
-are retried automatically (six attempts by default). An unresolved failure
-stops the queue before the next pack; saved work can be resumed. Downloads,
-decoding and AI requests within the current pack remain parallel. The legacy
-`processing.pack_concurrency` setting remains readable, validated and editable
-for compatibility with existing configuration and automation, but changing it
-does not activate multiple packs or override the queue's ordering.
+Choose **Pack-file analysis mode** in `mojilex settings`. New installations use
+`fast`: while AI analyzes the current pack, bounded workers download and decode
+following packs. AI and dataset merges remain ordered. This hides most local
+preparation time behind provider requests without multiplying the shared limits.
 
-**Parallel media downloads**, **Parallel media decoders**, and **Parallel AI
-requests** control simultaneous work within the current pack. The saved AI
+| Mode | Order |
+|---|---|
+| `fast` — default | Prepare following packs while AI handles the current pack; consume AI and merge turns in input order. |
+| `sequential` | Download, decode and analyze one complete pack before starting the next. |
+| `download_all` | Persist and hash every original file first, decode all packs second, then start AI. |
+| `prepare_all` | Download and decode packs concurrently, wait for all local preparation, then start AI. |
+
+Transient media failures are retried automatically (six attempts by default).
+Every completed file and AI batch is checkpointed. In `download_all`, retained
+originals are private local cache files and are hash-checked again before decoding.
+An interruption resumes completed stages instead of restarting the whole list.
+
+**Parallel pack preparation**, **Parallel media downloads**, **Parallel media
+decoders**, and **Parallel AI requests** control the bounded workers. The saved AI
 request and cost budgets and the temporary media storage limit cover the entire
-operation across all sequentially queued packs. Shared repository updates and
+operation across all queued packs. Shared repository updates and
 Git writes remain ordered.
 
 Two decoders run by default; downloads can continue while waiting for a decoder
@@ -328,7 +337,7 @@ block submission; invalid data still fails validation.
 | Question | What to do or expect |
 |---|---|
 | Does analysis cost money? | It may, depending on your Gemini account and model. The default limit is **100 requests per run**, including retries. Resume retains the consumed count. Review the plan before approving unknown pricing. |
-| Can it run faster? | Packs are queued sequentially. Increase download, decoder and AI concurrency within the current pack. Adjust those limits separately for your computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
+| Can it run faster? | The default `fast` mode prepares following packs while AI handles the current one. `prepare_all` maximizes local preparation before AI. Increase each concurrency limit only after measuring the computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
 | The connection dropped or I stopped it | Use `mojilex resume NewsEmoji`. Completed work is reused; missing/corrupt media may need downloading again. Budget or access errors need resolving first. |
 | Why is the count not moving? | A batch may be waiting for a response or validation. Watch the stage, retries and elapsed time. Time spent is not completed work. |
 | Where are English descriptions? | Switch languages in `show` or open item details. Interface language is separate, under **Settings**. |

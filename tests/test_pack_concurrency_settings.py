@@ -28,6 +28,7 @@ def test_legacy_config_gets_pack_default_without_changing_resource_limits(tmp_pa
     before = paths["user_path"].read_bytes()
     config = load_config(**paths, environment={})
     assert config.processing.pack_concurrency == 3
+    assert config.processing.file_analysis_mode == "fast"
     assert config.telegram.download_concurrency == 15
     assert config.processing.render_concurrency == 4
     assert config.processing.render_timeout_seconds == 15
@@ -36,6 +37,17 @@ def test_legacy_config_gets_pack_default_without_changing_resource_limits(tmp_pa
     assert config.ai.max_ai_requests == 43
     assert str(config.ai.max_cost_usd) == "1.25"
     assert paths["user_path"].read_bytes() == before
+
+
+def test_file_analysis_modes_roundtrip_and_default_to_fast(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    result = settings_command(**paths, environment={}).result
+    row = next(item for item in result["settings"] if item["key"] == "file_analysis_mode")
+    assert row["value"] == "fast"
+    assert row["choices"] == ["fast", "sequential", "download_all", "prepare_all"]
+    for value in row["choices"]:
+        update_setting_command("file_analysis_mode", value, **paths, environment={})
+        assert load_config(**paths, environment={}).processing.file_analysis_mode == value
 
 
 @pytest.mark.parametrize("value", [1, 8])
@@ -111,13 +123,13 @@ def test_pack_setting_edit_changes_only_its_project_value(tmp_path: Path) -> Non
     [
         (
             "en",
-            "Legacy pack concurrency",
-            ("compatibility", "sequentially", "within the current pack"),
+            "Parallel pack preparation",
+            ("Maximum", "fast", "prepare_all"),
         ),
         (
             "ru",
-            "Прежняя параллельность паков",
-            ("совместимости", "последовательно", "внутри текущего пака"),
+            "Параллельность паков",
+            ("Максимум", "fast", "prepare_all"),
         ),
     ],
 )

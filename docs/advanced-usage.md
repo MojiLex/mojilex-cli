@@ -63,6 +63,11 @@ preserves the saved value. Higher concurrency uses more memory and CPU; provider
 quotas and response time still limit speed. It never increases request or cost
 limits. Change defaults for future runs with `mojilex settings`.
 
+`processing.file_analysis_mode` controls a multi-pack file run: `fast` overlaps
+preparation of following packs with ordered AI work; `sequential` completes one
+pack at a time; `download_all` persists all originals before decoding; and
+`prepare_all` downloads and decodes packs concurrently before any AI request.
+
 The default budget is **100 AI requests for the whole run**, including retries,
 individual recovery requests, and optional model escalation. Resume retains the
 consumed count. Cache hits avoid requests. A new `add` run can set
@@ -141,6 +146,9 @@ profile = "dedupe-v1"
 max_candidates = 20
 
 [processing]
+file_analysis_mode = "fast"
+pack_concurrency = 3
+render_concurrency = 2
 static_batch_size = 16
 animated_batch_size = 8
 keyframes = 8
@@ -149,7 +157,8 @@ render_timeout_seconds = 15
 
 Environment overrides include `MOJILEX_MODEL`, `MOJILEX_AI_CONCURRENCY`,
 `MOJILEX_DOWNLOAD_CONCURRENCY`, `MOJILEX_MAX_AI_REQUESTS`, `MOJILEX_MAX_COST_USD`,
-`MOJILEX_REPO`, `MOJILEX_CACHE_DIR`, and `MOJILEX_RUNS_DIR`.
+`MOJILEX_FILE_ANALYSIS_MODE`, `MOJILEX_REPO`, `MOJILEX_CACHE_DIR`, and
+`MOJILEX_RUNS_DIR`.
 `mojilex config set-ui-language ru` changes only the saved interface language;
 `MOJILEX_UI_LANGUAGE` overrides it temporarily. Language changes apply on the next
 invocation. Commands, flags, and JSON field names remain in English.

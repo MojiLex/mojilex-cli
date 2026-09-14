@@ -291,7 +291,27 @@ def test_publication_uses_exact_ready_run_after_explicit_action(navigation, monk
 def test_failed_import_does_not_start_ai(navigation):
     calls = []
     ui._analyze("https://t.me/addemoji/NewsEmoji", lambda args: calls.append(args) or False)
-    assert calls == [["import", "https://t.me/addemoji/NewsEmoji"]]
+    assert calls == [["import", "https://t.me/addemoji/NewsEmoji", "--preparation", "metadata"]]
+
+
+@pytest.mark.parametrize(
+    ("mode", "preparation"),
+    [
+        ("fast", "metadata"),
+        ("sequential", "metadata"),
+        ("download_all", "download_all"),
+        ("prepare_all", "full"),
+    ],
+)
+def test_file_analysis_mode_selects_import_phases(navigation, monkeypatch, mode, preparation):
+    monkeypatch.setattr(
+        ui,
+        "load_config",
+        lambda: SimpleNamespace(processing=SimpleNamespace(file_analysis_mode=mode)),
+    )
+    calls = []
+    ui._analyze(r"C:\packs\links.txt", lambda args: calls.append(args) or False)
+    assert calls == [["import", r"C:\packs\links.txt", "--preparation", preparation]]
 
 
 def test_all_official_packs_skipped_is_successful_without_starting_ai(navigation, monkeypatch):
@@ -315,7 +335,7 @@ def test_all_official_packs_skipped_is_successful_without_starting_ai(navigation
     monkeypatch.setattr(ui, "_notice", lambda message: pytest.fail(message))
     calls = []
     ui._analyze(r"C:\packs\links.txt", lambda args: calls.append(args) or True)
-    assert calls == [["import", r"C:\packs\links.txt"]]
+    assert calls == [["import", r"C:\packs\links.txt", "--preparation", "metadata"]]
 
 
 @pytest.mark.parametrize("source", ["https://t.me/addemoji/NewsEmoji", r"C:\packs\links.txt"])
@@ -339,7 +359,7 @@ def test_menu_analysis_uses_imported_id_without_automatic_publication(
         repository="example/selected",
     )
     assert calls == [
-        ["import", source, "--repo", "example/selected"],
+        ["import", source, "--preparation", "metadata", "--repo", "example/selected"],
         ["describe", RUN],
     ]
 

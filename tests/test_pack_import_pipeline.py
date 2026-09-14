@@ -41,6 +41,7 @@ async def _harness(
     before_media: Callable[[SourceEmoji], Awaitable[None]],
     *,
     pack_concurrency: int = 3,
+    file_analysis_mode: str = "sequential",
 ) -> SimpleNamespace:
     snapshot = write_fixture(tmp_path / "d")
     (snapshot.root / ".gitignore").write_text(".mojilex/\n", encoding="utf-8")
@@ -59,7 +60,10 @@ async def _harness(
         )
     config = MojiLexConfig(
         repository={"target": str(snapshot.root), "publish": "local"},
-        processing=ProcessingConfig(pack_concurrency=pack_concurrency),
+        processing=ProcessingConfig(
+            pack_concurrency=pack_concurrency,
+            file_analysis_mode=file_analysis_mode,
+        ),
         telegram=TelegramConfig(download_concurrency=1),
         cache_dir=tmp_path / "c",
         runs_dir=tmp_path / "r",
@@ -72,6 +76,7 @@ async def _harness(
         processors=[],
         prepare_entered=[],
         prepare_finished=[],
+        first_decode_download_count=None,
         metadata_ready=asyncio.Event(),
         prepare_events={source.native_id: asyncio.Event() for source in sources},
     )
@@ -108,6 +113,8 @@ async def _harness(
 
     class Processor(_CountingProcessor):
         async def process_stream(self, *args, **kwargs):
+            if state.first_decode_download_count is None:
+                state.first_decode_download_count = len(state.downloads)
             value = await super().process_stream(*args, **kwargs)
             assert self.run.path is not None
             frame = self.run.path / f"frame-{self.decode_calls}.png"
@@ -200,6 +207,125 @@ async def test_import_finishes_current_pack_before_starting_next(
     assert len(checkpoint.elements) == 5
     assert len(checkpoint.safe_parameters["source_memberships"]) == 5
     assert checkpoint.ai_requests_used == 0
+
+
+async def test_prepare_all_starts_independent_packs_together(tmp_path_factory, monkeypatch):
+    release = asyncio.Event()
+
+    async def block(_item):
+        await release.wait()
+
+    sources = tuple(_pack(f"PreparePack{i}", f"prepare{i}") for i in range(3))
+    state = await _harness(
+        tmp_path_factory.mktemp("prepare-all"),
+        monkeypatch,
+        sources,
+        block,
+        pack_concurrency=3,
+        file_analysis_mode="prepare_all",
+    )
+    task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
+    try:
+        await asyncio.wait_for(state.metadata_ready.wait(), timeout=15)
+        assert set(state.prepare_entered) == {source.native_id for source in sources}
+        release.set()
+        result = await asyncio.wait_for(task, timeout=15)
+    finally:
+        await _cancel(task)
+    assert not result.errors
+    assert result.result["collections_imported"] == 3
+
+
+async def test_metadata_strategy_defers_all_media_to_describe(tmp_path_factory, monkeypatch):
+    async def unexpected(_item):
+        pytest.fail("metadata-only import started a media download")
+
+    sources = (_pack("MetadataOnly", "metadata-item"),)
+    state = await _harness(
+        tmp_path_factory.mktemp("metadata-only"), monkeypatch, sources, unexpected
+    )
+    result = await runner._run_import(
+        state.sources,
+        runner.PipelineOptions(import_strategy="metadata"),
+    )
+    assert not result.errors
+    assert result.result["collections_imported"] == 1
+    assert state.downloads == []
+    checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
+    assert checkpoint.elements == {}
+    assert checkpoint.safe_parameters["import_strategy"] == "metadata"
+
+
+async def test_download_all_finishes_network_phase_before_first_decode(
+    tmp_path_factory, monkeypatch
+):
+    async def allow(_item):
+        return None
+
+    sources = (
+        _pack("DownloadFirstA", "download-a"),
+        _pack("DownloadFirstB", "download-b"),
+    )
+    state = await _harness(
+        tmp_path_factory.mktemp("download-all"),
+        monkeypatch,
+        sources,
+        allow,
+        pack_concurrency=2,
+        file_analysis_mode="download_all",
+    )
+    result = await runner._run_import(
+        state.sources,
+        runner.PipelineOptions(import_strategy="download_all"),
+    )
+    assert not result.errors
+    assert state.first_decode_download_count == 2
+    assert sorted(state.downloads) == ["download-a", "download-b"]
+    checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
+    assert all(element.fingerprint_complete for element in checkpoint.elements.values())
+
+
+async def test_download_all_resume_reuses_each_persisted_original(tmp_path_factory, monkeypatch):
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block_second(item):
+        if item.native_id == "download-second":
+            blocked.set()
+            await release.wait()
+
+    state = await _harness(
+        tmp_path_factory.mktemp("raw-resume"),
+        monkeypatch,
+        (_pack("RawResume", "download-first", "download-second"),),
+        block_second,
+        file_analysis_mode="download_all",
+    )
+    task = asyncio.create_task(
+        runner._run_import(
+            state.sources,
+            runner.PipelineOptions(import_strategy="download_all"),
+        )
+    )
+    try:
+        await asyncio.wait_for(blocked.wait(), timeout=15)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        await _cancel(task)
+
+    checkpoint = RunStore(state.config.runs_dir).load(state.run_ids[0])
+    assert checkpoint.status == "interrupted"
+    assert checkpoint.elements["download-first"].stage == "media_verified"
+    assert state.downloads == ["download-first", "download-second"]
+
+    release.set()
+    resumed = await runner.run_resume(checkpoint.run_id)
+    assert not resumed.errors
+    assert resumed.status.value == "succeeded"
+    assert state.downloads == ["download-first", "download-second", "download-second"]
+    assert state.first_decode_download_count == 3
 
 
 async def test_unresolved_pack_failure_stops_queue_and_resume_continues_in_order(

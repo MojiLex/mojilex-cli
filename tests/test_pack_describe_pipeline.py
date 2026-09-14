@@ -26,7 +26,9 @@ def pipeline(request, monkeypatch):
             "repository": state.config.repository.model_copy(
                 update={"target": str(state.root), "publish": "local"}
             ),
-            "processing": state.config.processing.model_copy(update={"pack_concurrency": 2}),
+            "processing": state.config.processing.model_copy(
+                update={"pack_concurrency": 2, "file_analysis_mode": "sequential"}
+            ),
             "dedupe": state.config.dedupe.model_copy(update={"mode": "off"}),
         }
     )
@@ -269,6 +271,82 @@ async def test_collection_and_membership_changes_do_not_abort_source_merge(pipel
     assert consumed[1] is produced[0]
     checkpoint = RunStore(state.config.runs_dir).load(result.run_id)
     assert all(element.stage == "validated" for element in checkpoint.elements.values())
+
+
+async def test_fast_mode_prepares_next_pack_while_ai_stays_ordered(pipeline, monkeypatch):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 2}
+            )
+        }
+    )
+    alpha_ai = asyncio.Event()
+    beta_media = asyncio.Event()
+    release_alpha = asyncio.Event()
+    ai_order = []
+
+    async def media(snapshot, adapter, source, processor, **kwargs):
+        if source.native_id == "PackBeta":
+            beta_media.set()
+        return await state.media(snapshot, adapter, source, processor, **kwargs)
+
+    async def describe(snapshot, source, processed, **kwargs):
+        ai_order.append(source.native_id)
+        if source.native_id == "PackAlpha":
+            alpha_ai.set()
+            await release_alpha.wait()
+        return await state.describe(snapshot, source, processed, **kwargs)
+
+    monkeypatch.setattr(runner, "_prepare_collection_media", media)
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(alpha_ai.wait(), 5)
+        await asyncio.wait_for(beta_media.wait(), 5)
+        assert ai_order == ["PackAlpha"]
+        release_alpha.set()
+        result = await asyncio.wait_for(task, 5)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert not result.errors
+    assert ai_order == ["PackAlpha", "PackBeta"]
+
+
+async def test_fast_mode_does_not_spend_ai_on_prefetched_pack_after_prior_failure(
+    pipeline, monkeypatch
+):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 2}
+            )
+        }
+    )
+    beta_media = asyncio.Event()
+    ai_order = []
+
+    async def media(snapshot, adapter, source, processor, **kwargs):
+        if source.native_id == "PackBeta":
+            beta_media.set()
+        return await state.media(snapshot, adapter, source, processor, **kwargs)
+
+    async def describe(snapshot, source, processed, **kwargs):
+        ai_order.append(source.native_id)
+        if source.native_id == "PackAlpha":
+            await beta_media.wait()
+            raise CommandError("SOURCE_CHANGED_DURING_RUN", "synthetic", hint="retry")
+        pytest.fail("prefetched pack started AI after the prior pack failed")
+
+    monkeypatch.setattr(runner, "_prepare_collection_media", media)
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    with pytest.raises(CommandError):
+        await state.run()
+    assert ai_order == ["PackAlpha"]
 
 
 async def test_parallel_packs_write_real_collections_emojis_and_memberships(pipeline, monkeypatch):

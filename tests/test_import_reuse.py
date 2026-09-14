@@ -116,7 +116,7 @@ def test_completed_analysis_does_not_start_ai_again(saved_runs, monkeypatch):
         return True
 
     interactive._analyze(A, dispatch)
-    assert dispatched == [["import", A]]
+    assert dispatched == [["import", A, "--preparation", "metadata"]]
 
 
 def test_newer_completed_download_not_shadowed_by_old_analysis(saved_runs):

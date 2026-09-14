@@ -531,6 +531,10 @@ def import_sources(
     ] = None,
     check_media: Annotated[bool, typer.Option("--check-media")] = True,
     fail_fast: Annotated[bool, typer.Option("--fail-fast")] = False,
+    preparation: Annotated[
+        str,
+        typer.Option("--preparation", hidden=True),
+    ] = "full",
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
@@ -557,6 +561,7 @@ def import_sources(
                 download_concurrency=download_concurrency,
                 check_media=check_media,
                 fail_fast=fail_fast,
+                preparation=cast(Literal["full", "metadata", "download_all"], preparation),
             ),
             selected,
         )

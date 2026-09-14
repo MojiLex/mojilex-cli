@@ -65,6 +65,11 @@ mojilex resume NewsEmoji --download-concurrency 8 --ai-concurrency 4
 стоимости при этом не растут. Настройки будущих запусков меняются в
 `mojilex settings`.
 
+`processing.file_analysis_mode` задаёт режим файла с несколькими паками: `fast`
+готовит следующие паки параллельно с упорядоченным анализом ИИ; `sequential`
+полностью заканчивает один пак; `download_all` сначала сохраняет все оригиналы;
+`prepare_all` параллельно скачивает и декодирует все паки до запросов к ИИ.
+
 По умолчанию бюджет — **100 AI-запросов на весь запуск**, включая повторы,
 восстановление по одному эмодзи и необязательный переход к другой модели.
 `resume` сохраняет расход. Попадания в кеш не требуют запросов. Для нового
@@ -145,6 +150,9 @@ profile = "dedupe-v1"
 max_candidates = 20
 
 [processing]
+file_analysis_mode = "fast"
+pack_concurrency = 3
+render_concurrency = 2
 static_batch_size = 16
 animated_batch_size = 8
 keyframes = 8
@@ -153,7 +161,8 @@ render_timeout_seconds = 15
 
 Среди переменных окружения: `MOJILEX_MODEL`, `MOJILEX_AI_CONCURRENCY`,
 `MOJILEX_DOWNLOAD_CONCURRENCY`, `MOJILEX_MAX_AI_REQUESTS`, `MOJILEX_MAX_COST_USD`,
-`MOJILEX_REPO`, `MOJILEX_CACHE_DIR` и `MOJILEX_RUNS_DIR`.
+`MOJILEX_FILE_ANALYSIS_MODE`, `MOJILEX_REPO`, `MOJILEX_CACHE_DIR` и
+`MOJILEX_RUNS_DIR`.
 `mojilex config set-ui-language ru` меняет только сохранённый язык интерфейса;
 `MOJILEX_UI_LANGUAGE` временно его переопределяет. Новый язык действует со
 следующего вызова. Команды, флаги и поля JSON остаются английскими.

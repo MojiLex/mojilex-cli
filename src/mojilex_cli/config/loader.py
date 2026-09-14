@@ -35,6 +35,7 @@ _ENV_PATHS: dict[str, tuple[str, ...]] = {
     "MOJILEX_DEDUPE_PROFILE": ("dedupe", "profile"),
     "MOJILEX_KEYFRAMES": ("processing", "keyframes"),
     "MOJILEX_OFFICIAL_PACK_POLICY": ("processing", "official_pack_policy"),
+    "MOJILEX_FILE_ANALYSIS_MODE": ("processing", "file_analysis_mode"),
     "MOJILEX_PACK_CONCURRENCY": ("processing", "pack_concurrency"),
     "MOJILEX_RENDER_CONCURRENCY": ("processing", "render_concurrency"),
     "MOJILEX_RENDER_TIMEOUT_SECONDS": ("processing", "render_timeout_seconds"),

@@ -92,6 +92,7 @@ class ProcessingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     official_pack_policy: Literal["ask", "skip", "allow"] = "ask"
+    file_analysis_mode: Literal["fast", "sequential", "download_all", "prepare_all"] = "fast"
     pack_concurrency: int = Field(default=3, ge=1, le=8)
     render_concurrency: int = Field(default=2, ge=1, le=8)
     static_batch_size: int = Field(default=16, ge=1, le=16)

@@ -728,6 +728,7 @@ def _config_toml(config: MojiLexConfig) -> str:
             "",
             "[processing]",
             f"official_pack_policy = {_quoted(config.processing.official_pack_policy)}",
+            f"file_analysis_mode = {_quoted(config.processing.file_analysis_mode)}",
             f"pack_concurrency = {config.processing.pack_concurrency}",
             f"render_concurrency = {config.processing.render_concurrency}",
             f"static_batch_size = {config.processing.static_batch_size}",
