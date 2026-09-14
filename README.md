@@ -214,6 +214,12 @@ preparation time behind provider requests without multiplying the shared limits.
 | `download_all` | Persist and hash every original file first, decode all packs second, then start AI. |
 | `prepare_all` | Download and decode packs concurrently, wait for all local preparation, then start AI. |
 
+When analyzing saved packs again through the file/link workflow, `fast` and
+`sequential` hand unfinished imports directly to the analysis pipeline. Cached
+media and completed descriptions are reused. `describe` uses the current queue
+mode and download concurrency; saved AI budgets and usage remain unchanged.
+An explicit `resume` keeps saved settings unless overridden.
+
 Transient media failures are retried automatically (six attempts by default).
 Every completed file and AI batch is checkpointed. In `download_all`, retained
 originals are private local cache files and are hash-checked again before decoding.

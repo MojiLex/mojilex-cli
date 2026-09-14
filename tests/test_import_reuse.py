@@ -281,3 +281,16 @@ def test_multi_parent_analysis_retains_selected_pack_scope_and_one_approval(
     )
     assert calls == [(first.run_id, (A,)), (second.run_id, (C,)), (first.run_id, (B,))]
     assert approvals == [None]
+
+
+@pytest.mark.parametrize("phase", ["import", "describe"])
+def test_metadata_reuse_enters_analysis_without_finishing_import(saved_runs, monkeypatch, phase):
+    create, _, _ = saved_runs
+    checkpoint = create(phase=phase, status="interrupted")
+    monkeypatch.setattr(workflow, "run_import", forbid)
+    monkeypatch.setattr(workflow, "run_resume_sync", forbid)
+    result = do_import([A, B], preparation="metadata")
+    assert result.result["analysis_selectors"] == [
+        f"{checkpoint.run_id}:PackAlpha",
+        f"{checkpoint.run_id}:PackBravo",
+    ]

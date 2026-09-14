@@ -109,6 +109,8 @@ async def test_pipeline_concurrency_override_preserves_saved_budget(
             "languages": ["ru", "en"],
             "staging_repository": str(tmp_path),
             "ai_concurrency": 2,
+            "download_concurrency": 15,
+            "file_analysis_mode": "prepare_all",
             "max_ai_requests": 37,
             "max_cost_usd": "1.25",
         },
@@ -128,12 +130,19 @@ async def test_pipeline_concurrency_override_preserves_saved_budget(
     monkeypatch.setattr(runner, "_run_add", run_add)
     if command == "describe":
         await runner._run_describe(
-            checkpoint.run_id, runner.PipelineOptions(ai_concurrency=concurrency)
+            checkpoint.run_id,
+            runner.PipelineOptions(
+                ai_concurrency=concurrency, download_concurrency=24, file_analysis_mode="fast"
+            ),
         )
     else:
         await runner.run_resume(checkpoint.run_id, ai_concurrency=concurrency)
 
     assert captured["options"].ai_concurrency == (2 if concurrency is None else concurrency)
+    assert captured["options"].download_concurrency == (24 if command == "describe" else 15)
+    assert captured["options"].file_analysis_mode == (
+        "fast" if command == "describe" else "prepare_all"
+    )
     assert captured["options"].max_ai_requests == 37
     assert captured["options"].max_cost_usd == Decimal("1.25")
     assert captured["checkpoint"].run_id == checkpoint.run_id

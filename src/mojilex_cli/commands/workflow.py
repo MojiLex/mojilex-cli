@@ -266,7 +266,10 @@ def import_command(
                     not import_complete(checkpoint, saved_source)
                     and (parent_id, saved_source) not in resumed
                 ):
-                    if source_state(checkpoint, saved_source)["phase"] != "import":
+                    if (
+                        preparation != "metadata"
+                        and source_state(checkpoint, saved_source)["phase"] != "import"
+                    ):
                         name = _source_name(saved_source)
                         raise CommandError(
                             "CONFIG_INVALID",
@@ -274,7 +277,7 @@ def import_command(
                             hint=f"Use mojilex resume {parent_id}:{name} to continue safely.",
                         )
                     selected.append(saved_source)
-            if selected:
+            if selected and preparation != "metadata":
                 result = run_resume_sync(
                     parent_id,
                     selected_sources=tuple(dict.fromkeys(selected)),
@@ -330,6 +333,7 @@ def describe_command(
     official_pack_policy: str | None = None,
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
+    execution_config = load_config()
     if len(selectors) > 1 and all(value.startswith("mlxrun_") for value in selectors):
         from .packs import _sources, resolve_pack_run, selected_pack_sources
 
@@ -355,6 +359,8 @@ def describe_command(
                 run_id,
                 PipelineOptions(
                     selected_sources=tuple(dict.fromkeys(values)),
+                    download_concurrency=execution_config.telegram.download_concurrency,
+                    file_analysis_mode=execution_config.processing.file_analysis_mode,
                     provider=provider,
                     model=model,
                     ai_concurrency=ai_concurrency,
@@ -393,6 +399,8 @@ def describe_command(
             PipelineOptions(
                 provider=provider,
                 selected_sources=selected_sources,
+                download_concurrency=execution_config.telegram.download_concurrency,
+                file_analysis_mode=execution_config.processing.file_analysis_mode,
                 model=model,
                 ai_concurrency=ai_concurrency,
                 max_ai_requests=max_ai_requests,

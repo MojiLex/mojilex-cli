@@ -298,9 +298,10 @@ def settings_command(
                     "Приоритет настроек: параметры команды → окружение → проект → общие настройки.",
                 ),
                 _localized(
-                    "Changes apply to new operations. Saved runs keep their settings and limits.",
-                    "Изменения действуют для новых операций. "
-                    "Сохранённые запуски сохраняют свои настройки.",
+                    "Re-analyzing saved packs uses the current queue mode and downloads. "
+                    "Saved AI budgets remain unchanged; resume keeps saved settings.",
+                    "Повторный анализ использует текущий режим очереди и скачивания. "
+                    "Бюджет ИИ сохраняется; команда resume сохраняет настройки запуска.",
                 ),
                 _localized(
                     "Temporary failures are retried automatically. "

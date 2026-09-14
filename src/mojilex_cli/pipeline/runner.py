@@ -1858,13 +1858,22 @@ async def _run_import(
                     f"{config.telegram.download_concurrency}, "
                     f"декодеры={config.processing.render_concurrency}, "
                     f"параллельность паков={config.processing.pack_concurrency}. "
-                    "ИИ начнётся после импорта."
+                    + (
+                        "Сейчас читается список эмодзи; скачивание, обработка медиа и ИИ — "
+                        "на следующем этапе анализа, в выбранном режиме."
+                        if strategy == "metadata"
+                        else "Сейчас скачивание и обработка медиа, без запросов ИИ."
+                    )
                     if current_ui_language() == "ru"
                     else f"Queue mode: {mode}; downloads="
                     f"{config.telegram.download_concurrency}, "
                     f"decoders={config.processing.render_concurrency}, "
                     f"pack preparation={config.processing.pack_concurrency}. "
-                    "AI starts after import."
+                    + (
+                        "Reading emoji lists; download, decode and AI follow in the selected mode."
+                        if strategy == "metadata"
+                        else "Downloading and decoding media without AI requests."
+                    )
                 )
                 with batch_limits(
                     downloads=config.telegram.download_concurrency,
@@ -2061,6 +2070,12 @@ async def _run_describe(
     if overrides is not None:
         options = replace(
             options,
+            download_concurrency=(
+                overrides.download_concurrency
+                if overrides.download_concurrency is not None
+                else options.download_concurrency
+            ),
+            file_analysis_mode=overrides.file_analysis_mode or options.file_analysis_mode,
             provider=overrides.provider if overrides.provider is not None else options.provider,
             model=overrides.model if overrides.model is not None else options.model,
             ai_concurrency=(

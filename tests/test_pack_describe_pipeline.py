@@ -285,11 +285,13 @@ async def test_fast_mode_prepares_next_pack_while_ai_stays_ordered(pipeline, mon
     alpha_ai = asyncio.Event()
     beta_media = asyncio.Event()
     release_alpha = asyncio.Event()
+    release_beta_media = asyncio.Event()
     ai_order = []
 
     async def media(snapshot, adapter, source, processor, **kwargs):
         if source.native_id == "PackBeta":
             beta_media.set()
+            await release_beta_media.wait()
         return await state.media(snapshot, adapter, source, processor, **kwargs)
 
     async def describe(snapshot, source, processed, **kwargs):
@@ -306,6 +308,8 @@ async def test_fast_mode_prepares_next_pack_while_ai_stays_ordered(pipeline, mon
         await asyncio.wait_for(alpha_ai.wait(), 5)
         await asyncio.wait_for(beta_media.wait(), 5)
         assert ai_order == ["PackAlpha"]
+        assert not release_beta_media.is_set()
+        release_beta_media.set()
         release_alpha.set()
         result = await asyncio.wait_for(task, 5)
     finally:
