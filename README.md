@@ -213,7 +213,11 @@ Choose **Pack-file analysis mode** in `mojilex settings`. New installations use
 `fast`: while AI analyzes the current pack, bounded workers download and decode
 following packs. Each independent pack starts AI as soon as its media is ready;
 a slow earlier pack does not block it. All packs share the AI concurrency and
-request/cost budgets. Dataset merges remain ordered. This hides most local
+request/cost budgets, including packs resumed from different saved runs. Media
+preparation releases its slot before AI starts; a second bounded window lets
+following packs prepare while earlier packs await AI or final checks. Preparation
+may pause when both windows are full. Dataset merges remain ordered within each
+saved run. This hides most local
 preparation time behind provider requests without multiplying the shared limits.
 
 | Mode | Order |

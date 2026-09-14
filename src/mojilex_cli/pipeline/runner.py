@@ -79,7 +79,13 @@ from mojilex_cli.commands.runtime import (
     report_run_id,
     structured_exception,
 )
-from mojilex_cli.concurrency import OrderedTurns, PackDependencies, batch_limits, bounded_map
+from mojilex_cli.concurrency import (
+    OrderedTurns,
+    PackDependencies,
+    batch_limits,
+    bounded_map,
+    pack_pipeline_limits,
+)
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
     DatasetSnapshot,
@@ -413,6 +419,107 @@ def run_describe(run_id: str, overrides: PipelineOptions | None = None) -> Comma
     store = RunStore(cast(Path, config.runs_dir))
     with store.execution_lock(run_id):
         return asyncio.run(_run_describe(run_id, overrides))
+
+
+def run_describe_many(
+    groups: Sequence[tuple[str, Sequence[str]]], overrides: PipelineOptions
+) -> CommandResult:
+    """Resume independent saved runs in one bounded fast pipeline."""
+    return asyncio.run(_run_describe_many(groups, overrides))
+
+
+async def _run_describe_many(
+    groups: Sequence[tuple[str, Sequence[str]]], overrides: PipelineOptions
+) -> CommandResult:
+    from mojilex_cli.ai.base import request_budget_scope
+
+    config = _resolved_config(overrides)
+    store = RunStore(cast(Path, config.runs_dir))
+    # One writer per checkpoint, even when selectors alternate between old runs.
+    combined: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    for run_id, sources in groups:
+        values = combined.setdefault(run_id, [])
+        for source in sources:
+            if source not in seen:
+                values.append(source)
+                seen.add(source)
+    entries = [(key, tuple(values)) for key, values in combined.items() if values]
+    saved = [store.load_for_resume(key, schema_version=SCHEMA_VERSION) for key, _ in entries]
+    requests_used = sum(item.ai_requests_used for item in saved)
+    cost_reserved = sum((item.ai_cost_reserved_usd for item in saved), Decimal("0"))
+    if (config.ai.max_ai_requests is not None and requests_used > config.ai.max_ai_requests) or (
+        config.ai.max_cost_usd is not None and cost_reserved > config.ai.max_cost_usd
+    ):
+        raise CommandError(
+            "CONFIG_INVALID",
+            "The batch budget is below the combined usage already saved for these runs.",
+            hint="Increase the budget or disable its limit in settings.",
+        )
+    budget = RequestBudget(
+        max_requests=config.ai.max_ai_requests,
+        max_cost_usd=config.ai.max_cost_usd,
+        allow_unknown_cost=True,
+        requests_used=requests_used,
+        cost_reserved=cost_reserved,
+    )
+    stopped = asyncio.Event()
+
+    async def describe(entry: tuple[str, tuple[str, ...]]) -> CommandResult:
+        if stopped.is_set():
+            return CommandResult(status=RunStatus.NOOP)
+        run_id, sources = entry
+        try:
+            with store.execution_lock(run_id):
+                result = await _run_describe(run_id, replace(overrides, selected_sources=sources))
+            if result.status not in {RunStatus.SUCCEEDED, RunStatus.NOOP}:
+                stopped.set()
+            return result
+        except BaseException:
+            stopped.set()
+            raise
+
+    with (
+        request_budget_scope(budget),
+        pack_pipeline_limits(config.processing.pack_concurrency),
+        batch_limits(
+            downloads=config.telegram.download_concurrency,
+            renders=config.processing.render_concurrency,
+            ai=config.ai.ai_concurrency,
+            max_temp_bytes=config.processing.max_temp_bytes,
+        ),
+    ):
+        results = await bounded_map(
+            entries, describe, concurrency=config.processing.pack_concurrency
+        )
+    if not results:
+        return CommandResult(status=RunStatus.NOOP)
+    failures = [
+        item for item in results if item.status not in {RunStatus.SUCCEEDED, RunStatus.NOOP}
+    ]
+    result = failures[0] if failures else results[-1]
+    if not failures and any(item.status == RunStatus.SUCCEEDED for item in results):
+        result.status = RunStatus.SUCCEEDED
+    counts = {
+        key: sum(int(item.result.get(key, 0)) for item in results)
+        for key in (
+            "sources_processed",
+            "collections_created",
+            "collections_updated",
+            "items_added",
+            "items_updated",
+            "items_unchanged",
+            "ai_cache_hits",
+        )
+        if any(key in item.result for item in results)
+    }
+    result.result.update(counts)
+    result.result["ai_requests"] = budget.requests_used
+    result.result["ai_cost_reserved_usd"] = str(budget.cost_reserved)
+    result.result["run_ids"] = [item.run_id for item in results if item.run_id]
+    result.errors = [error for item in results for error in item.errors]
+    result.warnings = [warning for item in results for warning in item.warnings]
+    return result
 
 
 def run_resume_sync(
@@ -823,8 +930,14 @@ async def _run_add(
                 file_mode = config.processing.file_analysis_mode
 
                 async def process_source(entry: tuple[int, tuple[int, str]]) -> None:
+                    async with pack_slots.inflight:
+                        await process_source_active(entry)
+
+                async def process_source_active(entry: tuple[int, tuple[int, str]]) -> None:
                     nonlocal current, checkpoint
                     position, (source_index, source_text) = entry
+                    await pack_slots.preparation.acquire()
+                    preparing = True
                     pack_token = PACK.set(source_text)
                     report_pack_stage(source_text, "download")
                     collection_lock: Any | None = None
@@ -993,6 +1106,8 @@ async def _run_add(
                             )
                             request_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
                             report_pack_stage(source_text, "ai_wait")
+                            pack_slots.preparation.release()
+                            preparing = False
                             if file_mode == "fast":
                                 if cancelled_queue.is_set() or any(
                                     failed < position for failed in failed_positions
@@ -1203,6 +1318,8 @@ async def _run_add(
                         if options.fail_fast or terminal_error:
                             raise
                     finally:
+                        if preparing:
+                            pack_slots.preparation.release()
                         PACK.reset(pack_token)
                         dependencies.finish(position)
                         merge_turns.finish(position)
@@ -1225,11 +1342,14 @@ async def _run_add(
                     f"{config.processing.pack_concurrency}. AI is simultaneous requests, "
                     "not the total request limit."
                 )
-                with batch_limits(
-                    downloads=config.telegram.download_concurrency,
-                    renders=config.processing.render_concurrency,
-                    ai=config.ai.ai_concurrency,
-                    max_temp_bytes=config.processing.max_temp_bytes,
+                with (
+                    pack_pipeline_limits(config.processing.pack_concurrency) as pack_slots,
+                    batch_limits(
+                        downloads=config.telegram.download_concurrency,
+                        renders=config.processing.render_concurrency,
+                        ai=config.ai.ai_concurrency,
+                        max_temp_bytes=config.processing.max_temp_bytes,
+                    ),
                 ):
                     if file_mode == "sequential":
                         for entry in enumerate(source_entries):
@@ -1240,7 +1360,8 @@ async def _run_add(
                         await bounded_map(
                             enumerate(source_entries),
                             process_source,
-                            concurrency=config.processing.pack_concurrency,
+                            concurrency=config.processing.pack_concurrency
+                            * (2 if file_mode == "fast" else 1),
                         )
                     if errors:
                         report_progress(
@@ -2689,6 +2810,8 @@ async def _prepare_collection_media(
 ) -> tuple[SourceCollection, dict[str, ProcessedMedia]]:
     """Download media and reconcile global IDs already seen in another collection."""
 
+    if (progress_pack := PACK.get()) is not None:
+        report_pack_stage(progress_pack, "render")
     guarded = _cross_collection_existing_emojis(snapshot, collection)
     retained: RetainedMediaStore | None = None
     media_run = getattr(processor, "run", None)
@@ -2718,7 +2841,9 @@ async def _prepare_collection_media(
             {item.media_format for item in collection.items if item.native_id in resume_elements}
         )
         async with BatchProgress(
-            "Проверка кэша" if current_ui_language() == "ru" else "Checking cache", len(formats)
+            "Проверка кэша" if current_ui_language() == "ru" else "Checking cache",
+            len(formats),
+            unit="backends",
         ) as checking:
             for media_format in formats:
                 checking.phase(media_format, "verify")
@@ -3431,6 +3556,7 @@ async def _process_media(
     progress = BatchProgress(
         f"{'Медиа' if current_ui_language() == 'ru' else 'Media'} {collection.native_id}",
         len(collection.items),
+        unit="media",
     )
     first_failure: BaseException | None = None
     ready = {
@@ -3439,11 +3565,15 @@ async def _process_media(
         if resume_ready is not None and item.native_id in resume_ready
     }
     progress.completed = len(ready)
+    local_streams = isinstance(adapter, _RawMediaAdapter)
+    progress.cached = len(collection.items) if local_streams else len(ready)
 
     async def tracked_stream(item: SourceEmoji) -> AsyncIterator[bytes]:
-        progress.phase(item.native_id, "download")
+        progress.phase(item.native_id, "verify" if local_streams else "download")
         async for chunk in adapter.fetch_media(item):
             yield chunk
+        if not local_streams:
+            progress.downloaded_item(item.native_id)
         progress.phase(item.native_id, "render")
 
     async def process_one(item: SourceEmoji) -> tuple[str, ProcessedMedia] | BaseException:

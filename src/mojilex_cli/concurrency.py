@@ -209,3 +209,31 @@ class PackDependencies:
             done.set()
         # Metadata failure before registration must also unblock later sources.
         self._registration.finish(index)
+
+
+@dataclass(frozen=True)
+class PackPipelineLimits:
+    preparation: asyncio.Semaphore
+    inflight: asyncio.Semaphore
+
+
+_pack_pipeline: ContextVar[PackPipelineLimits | None] = ContextVar(
+    "mojilex_pack_pipeline", default=None
+)
+
+
+@contextmanager
+def pack_pipeline_limits(concurrency: int) -> Iterator[PackPipelineLimits]:
+    """One preparation window plus one bounded downstream window, shared across runs."""
+    if concurrency < 1:
+        raise ValueError("pack concurrency must be positive")
+    existing = _pack_pipeline.get()
+    if existing is not None:
+        yield existing
+        return
+    limits = PackPipelineLimits(asyncio.Semaphore(concurrency), asyncio.Semaphore(2 * concurrency))
+    token = _pack_pipeline.set(limits)
+    try:
+        yield limits
+    finally:
+        _pack_pipeline.reset(token)

@@ -16,6 +16,7 @@ from mojilex_cli.pipeline.runner import (
     repository_workspace,
     run_add,
     run_describe,
+    run_describe_many,
     run_import,
     run_resume_sync,
     run_submit,
@@ -369,6 +370,24 @@ def describe_command(
             if approved is None:
                 approved = bool(unknown_cost_confirmation and unknown_cost_confirmation(limit))
             return approved
+
+        if execution_config.processing.file_analysis_mode == "fast":
+            return run_describe_many(
+                groups,
+                PipelineOptions(
+                    download_concurrency=execution_config.telegram.download_concurrency,
+                    file_analysis_mode="fast",
+                    provider=provider,
+                    model=model,
+                    ai_concurrency=ai_concurrency,
+                    max_ai_requests=max_ai_requests,
+                    max_cost_usd=max_cost_usd,
+                    allow_unknown_cost=allow_unknown_cost,
+                    unknown_cost_confirmation=approve_once,
+                    official_pack_policy=official_pack_policy,
+                    official_confirmation=official_confirmation,
+                ),
+            )
 
         result = CommandResult()
         for run_id, values in groups:

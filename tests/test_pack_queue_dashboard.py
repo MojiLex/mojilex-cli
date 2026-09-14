@@ -165,3 +165,55 @@ def test_intermediate_import_does_not_print_a_duplicate_dashboard(monkeypatch):
             assert printed == []
         finally:
             runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_media_download_count_is_independent_of_decode_and_retries():
+    queue = PackQueue()
+    queue.register(["A"])
+    media = BatchProgress("Media", 10, unit="media")
+    media.cached = 2
+    media.completed = 2
+    media.downloaded_item("one")
+    media.downloaded_item("one")  # Decoder retry must not count the same file twice.
+    media.downloaded_item("two")
+    media.active = {"one": "render", "three": "download"}
+    queue.batches = {media: "A"}
+    output = StringIO()
+    with use_ui_language("en"):
+        Console(file=output, width=100, height=40).print(queue)
+    text = output.getvalue()
+    assert "A — downloading · 2/8 · cached: 2" in text
+    assert "A — processing on pc · 2/10" in text
+
+
+def test_cache_backend_probe_is_not_reported_as_media_download_count():
+    queue = PackQueue()
+    queue.register(["A"])
+    queue.stages["A"] = "render"
+    checking = BatchProgress("Checking cache", 1, unit="backends")
+    checking.completed = 1
+    queue.batches = {checking: "A"}
+    output = StringIO()
+    with use_ui_language("en"):
+        Console(file=output, width=100, height=40).print(queue)
+    text = output.getvalue()
+    assert "Downloading: 0" in text
+    assert "A — processing on pc · checking cache" in text
+    assert "1/1" not in text
+
+
+def test_intermediate_import_summary_is_silent_but_standalone_remains_visible(capsys):
+    from mojilex_cli.output import OutputEnvelope
+
+    envelope = OutputEnvelope(
+        ok=True,
+        command="import",
+        status="noop",
+        run_id="mlxrun_" + "a" * 32,
+        result={"analysis_selectors": ["saved:Pack"]},
+    )
+    with pack_queue_scope():
+        runtime._render_human(envelope)
+    assert capsys.readouterr().out == ""
+    runtime._render_human(envelope)
+    assert "MojiLex import" in capsys.readouterr().out

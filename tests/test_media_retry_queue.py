@@ -166,3 +166,40 @@ async def test_cancelled_pool_retrieves_delayed_gather_exception():
         assert not unhandled
     finally:
         loop.set_exception_handler(handler)
+
+
+async def test_download_progress_advances_before_decode_finishes(tmp_path, monkeypatch):
+    snapshot = write_fixture(tmp_path / "d")
+    item = _item("first", unique_id="first", file_id="first")
+    batches = []
+    original_progress = runner.BatchProgress
+
+    def progress(*args, **kwargs):
+        batch = original_progress(*args, **kwargs)
+        batches.append(batch)
+        return batch
+
+    monkeypatch.setattr(runner, "BatchProgress", progress)
+
+    class Processor(_CountingProcessor):
+        async def process_stream(self, chunks, **kwargs):
+            payload = [chunk async for chunk in chunks]
+            batch = batches[0]
+            assert batch.downloaded == {"first"}
+            assert batch.completed == 0
+            assert batch.active == {"first": "render"}
+
+            async def replay():
+                for chunk in payload:
+                    yield chunk
+
+            return await super().process_stream(replay(), **kwargs)
+
+    with TemporaryMediaRun(root=tmp_path) as temporary:
+        await runner._process_media(
+            _CountingAdapter({"first": _PAYLOAD}),
+            _collection((item,)),
+            Processor(temporary, _analysis(snapshot)),
+            concurrency=1,
+        )
+    assert batches[0].completed == 1

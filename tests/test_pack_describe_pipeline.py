@@ -633,3 +633,41 @@ async def test_fast_independent_packs_can_have_ai_in_flight_together(pipeline, m
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_fast_prefetch_continues_while_only_pack_slot_is_in_ai(pipeline, monkeypatch):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(
+                update={"file_analysis_mode": "fast", "pack_concurrency": 1}
+            )
+        }
+    )
+    alpha_ai = asyncio.Event()
+    beta_media = asyncio.Event()
+    release_ai = asyncio.Event()
+
+    async def media(snapshot, adapter, source, processor, **kwargs):
+        if source.native_id == "PackBeta":
+            assert alpha_ai.is_set()
+            beta_media.set()
+        return await state.media(snapshot, adapter, source, processor, **kwargs)
+
+    async def describe(snapshot, source, processed, **kwargs):
+        if source.native_id == "PackAlpha":
+            alpha_ai.set()
+            await release_ai.wait()
+        return await state.describe(snapshot, source, processed, **kwargs)
+
+    monkeypatch.setattr(runner, "_prepare_collection_media", media)
+    monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(beta_media.wait(), 10)
+        assert not task.done()
+    finally:
+        release_ai.set()
+        result = await asyncio.wait_for(task, 15)
+    assert result.status in {"succeeded", "noop"}
+    assert state.merges == ["PackAlpha", "PackBeta"]

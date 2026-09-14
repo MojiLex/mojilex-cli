@@ -35,12 +35,16 @@ class BatchProgress:
         total: int,
         *,
         interval: float = 5.0,
+        unit: str = "items",
         batch_total: int | None = None,
         request_budget: Callable[[], tuple[int, int | None]] | None = None,
     ) -> None:
         self.pack = PACK.get()
         self.label = label
         self.total = total
+        self.unit = unit
+        self.downloaded: set[str] = set()
+        self.cached = 0
         self.interval = interval
         self.completed = 0
         self.failed = 0
@@ -77,6 +81,11 @@ class BatchProgress:
         self.active[key] = phase
         self.active_counts[key] = count if count is not None else self.active_counts.get(key, 1)
         pause_live_progress("approval" in self.active.values(), key=self)
+        self._report_live()
+
+    def downloaded_item(self, key: str) -> None:
+        """Count each fully received stream once, independently of decoding/retries."""
+        self.downloaded.add(key)
         self._report_live()
 
     def stop_queue(self) -> None:

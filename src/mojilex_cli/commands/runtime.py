@@ -792,6 +792,14 @@ def execute(
 def _render_human(
     envelope: OutputEnvelope, *, no_color: bool = False, detailed: bool = False
 ) -> None:
+    if (
+        envelope.ok
+        and envelope.command == "import"
+        and SHARED.get() is not None
+        and envelope.run_id
+        and not envelope.warnings
+    ):
+        return
     console = Console(stderr=not envelope.ok, no_color=no_color)
     ru = current_ui_language() == "ru"
     if envelope.ok:

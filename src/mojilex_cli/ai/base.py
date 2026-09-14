@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import re
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -524,6 +526,23 @@ class VisionProvider(Protocol):
     async def describe(self, request: DescriptionRequest) -> DescriptionResult: ...
 
 
+_REQUEST_BUDGET: ContextVar[RequestBudget | None] = ContextVar("request_budget", default=None)
+
+
+@contextmanager
+def request_budget_scope(budget: RequestBudget) -> Iterator[None]:
+    """Charge budgets created in this context to a shared invocation budget too.
+
+    Construct the shared budget before entering the scope. Local counters and
+    durable reservations remain independent, including their resumed usage.
+    """
+    token = _REQUEST_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _REQUEST_BUDGET.reset(token)
+
+
 class RequestBudget:
     """Concurrency-safe reservation performed immediately before every request."""
 
@@ -554,6 +573,7 @@ class RequestBudget:
         self.reservation_recorder = reservation_recorder
         self.requests_used = requests_used
         self.cost_reserved = cost_reserved
+        self._parent = _REQUEST_BUDGET.get()
         # Consent is bounded by this budget and lasts only for this invocation.
         # A resumed invocation must obtain fresh consent for its remaining limit.
         self._unknown_cost_approved = allow_unknown_cost
@@ -608,6 +628,12 @@ class RequestBudget:
                     raise UnknownCostError(
                         "provider cost is unknown; explicit approval is required"
                     )
+            # Local refusal or exhaustion must not consume the shared budget.
+            # Charge the parent before recording locally so no request can escape
+            # the invocation limit. A local persistence failure may conservatively
+            # retain the parent reservation, but never permits a paid call.
+            if self._parent is not None:
+                await self._parent.reserve(estimate)
             next_requests = self.requests_used + estimate.requests
             next_cost = self.cost_reserved + (estimated_cost or Decimal("0"))
             # Persist the conservative reservation before the provider can observe

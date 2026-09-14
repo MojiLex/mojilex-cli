@@ -115,11 +115,28 @@ class PackQueue:
                 name = source.rstrip("/").rsplit("/", 1)[-1]
                 batches = [batch for batch, owner in self.batches.items() if owner == source]
                 suffix = ""
-                if batches:
+                media = [batch for batch in batches if getattr(batch, "unit", "") == "media"]
+                if key in {"download", "render"} and media:
+                    batch = max(media, key=lambda item: getattr(item, "total", 0))
+                    total = getattr(batch, "total", 0)
+                    cached = getattr(batch, "cached", 0)
+                    if key == "download":
+                        received = len(getattr(batch, "downloaded", set()))
+                        suffix = f" · {received}/{total - cached}"
+                        if cached:
+                            suffix += f" · {'из кэша' if ru else 'cached'}: {cached}"
+                    else:
+                        suffix = f" · {getattr(batch, 'completed', 0)}/{total}"
+                elif batches:
                     batch = max(batches, key=lambda item: getattr(item, "total", 0))
-                    suffix = f" · {getattr(batch, 'completed', 0)}/{getattr(batch, 'total', 0)}"
+                    if getattr(batch, "unit", "") == "backends":
+                        suffix = " · проверка кэша" if ru else " · checking cache"
+                    else:
+                        suffix = f" · {getattr(batch, 'completed', 0)}/{getattr(batch, 'total', 0)}"
                     if "approval" in getattr(batch, "active", {}).values():
                         suffix += " · требуется ответ" if ru else " · awaiting confirmation"
+                elif key == "download":
+                    suffix = " · получение списка файлов" if ru else " · fetching file list"
                 if source == shown[-1] and len(values) > len(shown):
                     suffix += f" (+{len(values) - len(shown)})"
                 yield Text(

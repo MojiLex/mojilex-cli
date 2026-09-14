@@ -251,10 +251,15 @@ def test_import_resume_does_not_include_sibling_with_downloaded_media(saved_runs
     ]
 
 
+@pytest.mark.parametrize("mode", ["sequential", "fast"])
 def test_multi_parent_analysis_retains_selected_pack_scope_and_one_approval(
-    saved_runs, monkeypatch
+    saved_runs, monkeypatch, mode
 ):
-    create, _, _ = saved_runs
+    create, _, config = saved_runs
+    config = config.model_copy(
+        update={"processing": config.processing.model_copy(update={"file_analysis_mode": mode})}
+    )
+    monkeypatch.setattr(workflow, "load_config", lambda **_: config)
     first = create()
     second = create((B, C))
     lookup = {first.run_id: first, second.run_id: second}
@@ -274,6 +279,16 @@ def test_multi_parent_analysis_retains_selected_pack_scope_and_one_approval(
         return CommandResult(run_id=run_id, status=RunStatus.SUCCEEDED)
 
     monkeypatch.setattr(workflow, "run_describe", describe)
+
+    def describe_many(groups, options):
+        assert mode == "fast"
+        for run_id, values in groups:
+            from dataclasses import replace
+
+            describe(run_id, replace(options, selected_sources=tuple(values)))
+        return CommandResult(status=RunStatus.SUCCEEDED)
+
+    monkeypatch.setattr(workflow, "run_describe_many", describe_many)
     workflow.describe_command(
         [f"{first.run_id}:PackAlpha", f"{second.run_id}:PackCharlie", f"{first.run_id}:PackBravo"],
         provider=None,
