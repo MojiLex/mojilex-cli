@@ -28,8 +28,8 @@ class MediaProcessor:
         *,
         render_concurrency: int = 2,
     ) -> None:
-        if type(render_concurrency) is not int or not 1 <= render_concurrency <= 8:
-            raise ValueError("render concurrency must be between 1 and 8")
+        if type(render_concurrency) is not int or render_concurrency < 1:
+            raise ValueError("render concurrency must be a positive integer")
         self.run = run
         self.worker = worker or SafeMediaWorker(run.limits)
         # Downloads can overlap freely within the pipeline's network limit. Only

@@ -61,7 +61,7 @@ def test_edit_user_does_not_copy_environment_or_project_values(tmp_path: Path) -
     ("key", "value"),
     [
         ("ai_concurrency", "0"),
-        ("ai_concurrency", "17"),
+        ("ai_concurrency", "-1"),
         ("ai_concurrency", "oops"),
         ("download_attempts", "9"),
         ("max_ai_requests", "-1"),

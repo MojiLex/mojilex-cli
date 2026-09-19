@@ -10,7 +10,7 @@ import pytest
 from mojilex_cli.media import MediaError, MediaProcessor, TemporaryMediaRun
 
 
-@pytest.mark.parametrize("value", [0, -1, 9, True, 1.5])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
 def test_render_concurrency_rejects_invalid_limits(tmp_path: Path, value: int) -> None:
     with TemporaryMediaRun(root=tmp_path) as run:
         with pytest.raises(ValueError, match="render concurrency"):

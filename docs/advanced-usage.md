@@ -57,9 +57,18 @@ mojilex add "https://t.me/addemoji/NewsEmoji" --dry-run --check-media
 mojilex resume NewsEmoji --download-concurrency 8 --ai-concurrency 4
 ```
 
-AI concurrency accepts 1–16 batches; download concurrency accepts 1–32 files.
-New runs default to 1 AI batch and 4 downloads. Omitting an override on resume
-preserves the saved value. Higher concurrency uses more memory and CPU; provider
+AI, download, decoder and pack concurrency accept any positive integer, with no
+fixed upper ceiling.
+The default `processing.performance_mode = "auto"` sizes concurrency at operation
+start from available CPU and RAM; larger configured values remain in effect.
+Choose `manual` in settings to use the four configured concurrency values exactly.
+The automatic targets are one decoder per available logical CPU, bounded by 75%
+of available RAM at 512 MiB per decoder; twice that many preparing packs, four
+downloads per CPU, and two AI requests per CPU. This is a startup estimate, not
+a guarantee that higher parallelism improves throughput. Automatic temporary storage
+can grow to twice available RAM, while remaining at most one quarter of free space
+on the temporary volume. If RAM or disk probing fails, its allowance is not increased.
+Manual mode preserves the configured temporary storage allowance. Higher concurrency uses more memory and CPU; provider
 quotas and response time still limit speed. It never increases request or cost
 limits. Change defaults for future runs with `mojilex settings`.
 

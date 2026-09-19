@@ -527,7 +527,7 @@ def import_sources(
     platform: Annotated[str, typer.Option("--platform")] = "auto",
     max_items: Annotated[int | None, typer.Option("--max-items", min=1)] = None,
     download_concurrency: Annotated[
-        int | None, typer.Option("--download-concurrency", min=1, max=32)
+        int | None, typer.Option("--download-concurrency", min=1)
     ] = None,
     check_media: Annotated[bool, typer.Option("--check-media")] = True,
     fail_fast: Annotated[bool, typer.Option("--fail-fast")] = False,
@@ -596,7 +596,7 @@ def describe(
     ] = None,
     max_cost_usd: Annotated[str | None, typer.Option("--max-cost-usd")] = None,
     allow_unknown_cost: Annotated[bool, typer.Option("--allow-unknown-cost")] = False,
-    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
+    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1)] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -1094,9 +1094,9 @@ def resume(
     official_packs: Annotated[
         str | None, typer.Option("--official-packs", help="ask, skip, or allow official packs.")
     ] = None,
-    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1, max=16)] = None,
+    ai_concurrency: Annotated[int | None, typer.Option("--ai-concurrency", min=1)] = None,
     download_concurrency: Annotated[
-        int | None, typer.Option("--download-concurrency", min=1, max=32)
+        int | None, typer.Option("--download-concurrency", min=1)
     ] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,

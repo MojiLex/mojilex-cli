@@ -27,7 +27,7 @@ def saved_interrupted_run(monkeypatch):
 
 
 @pytest.mark.parametrize("command", ["describe", "resume"])
-@pytest.mark.parametrize("concurrency", [1, 4, 16])
+@pytest.mark.parametrize("concurrency", [1, 4, 16, 64])
 def test_cli_forwards_ai_concurrency(monkeypatch, command, concurrency):
     captured = {}
 
@@ -46,7 +46,7 @@ def test_cli_forwards_ai_concurrency(monkeypatch, command, concurrency):
 
 
 @pytest.mark.parametrize("command", ["describe", "resume"])
-@pytest.mark.parametrize("concurrency", [0, 17])
+@pytest.mark.parametrize("concurrency", [0, -1])
 def test_cli_rejects_out_of_range_ai_concurrency(monkeypatch, command, concurrency):
     def unexpected(*args, **kwargs):
         pytest.fail("invalid concurrency must be rejected before starting work")

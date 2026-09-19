@@ -9,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -865,16 +866,25 @@ async def _run_add(
         dedupe_emoji_ids: set[str] = set()
         dedupe_report: dict[str, Any] | None = None
         progress_lock = asyncio.Lock()
+        media_checkpoint_at = time.monotonic()
+        media_checkpoint_items = 0
 
         async def record_media_completion(item: SourceEmoji, value: ProcessedMedia) -> None:
-            nonlocal checkpoint
+            nonlocal checkpoint, media_checkpoint_at, media_checkpoint_items
             if checkpoint is None or cache is None:
                 return
             async with progress_lock:
+                # Media and deterministic results are durable in their own caches.
+                # Coalesce the large summary file; pack boundaries and cancellation
+                # also flush the current checkpoint, without repeating paid AI work.
                 _cache_deterministic_analysis(cache, item, value)
-                updated = _checkpoint_media_item(checkpoint, item, value)
-                run_store.save(updated)
-                checkpoint = updated
+                checkpoint = _checkpoint_media_item(checkpoint, item, value)
+                media_checkpoint_items += 1
+                now = time.monotonic()
+                if media_checkpoint_items >= 32 or now - media_checkpoint_at >= 1:
+                    run_store.save(checkpoint)
+                    media_checkpoint_items = 0
+                    media_checkpoint_at = now
                 report_progress(f"Media verified: {item.native_id}", verbose=True)
 
         async def record_ai_chunk_completion(
@@ -939,7 +949,6 @@ async def _run_add(
                 merge_turns = OrderedTurns()
                 dependencies = PackDependencies()
                 cancelled_queue = asyncio.Event()
-                failed_positions: set[int] = set()
                 file_mode = config.processing.file_analysis_mode
 
                 async def process_source(entry: tuple[int, tuple[int, str]]) -> None:
@@ -956,10 +965,7 @@ async def _run_add(
                     collection_lock: Any | None = None
                     lock_entered = False
                     try:
-                        if file_mode == "fast" and (
-                            cancelled_queue.is_set()
-                            or any(failed < position for failed in failed_positions)
-                        ):
+                        if file_mode == "fast" and cancelled_queue.is_set():
                             return
                         if checkpoint is not None:
                             checkpoint = record_source_state(
@@ -1133,9 +1139,7 @@ async def _run_add(
                             pack_slots.preparation.release()
                             preparing = False
                             if file_mode == "fast":
-                                if cancelled_queue.is_set() or any(
-                                    failed < position for failed in failed_positions
-                                ):
+                                if cancelled_queue.is_set():
                                     return
                             report_pack_stage(source_text, "ai")
                             descriptions, generation_metadata = await _descriptions_for_collection(
@@ -1224,7 +1228,11 @@ async def _run_add(
                             report_pack_stage(source_text, "merge_wait")
                             await merge_turns.wait(position)
                             report_pack_stage(source_text, "finalize")
-                            plan = plan_collection_merge(
+                            # Building the candidate deep-clones the growing dataset.
+                            # Keep downloads and AI responsive while preserving the
+                            # ordered merge turn until validation and assignment finish.
+                            plan = await run_blocking(
+                                plan_collection_merge,
                                 current,
                                 source,
                                 processed,
@@ -1347,9 +1355,8 @@ async def _run_add(
                                 terminal=terminal_error,
                             )
                             run_store.save(checkpoint)
-                        if file_mode == "fast":
-                            failed_positions.add(position)
                         if options.fail_fast or terminal_error:
+                            cancelled_queue.set()
                             raise
                     finally:
                         if preparing:
@@ -1556,12 +1563,14 @@ async def _run_add(
                     config,
                 )
                 if dedupe_report is None:
-                    dedupe_report = scan_snapshot(
+                    dedupe_scan = await run_blocking(
+                        scan_snapshot,
                         current,
                         selected_emoji_ids=dedupe_emoji_ids,
                         max_candidates=config.dedupe.max_candidates,
                         mode=config.dedupe.mode,
-                    ).as_dict()
+                    )
+                    dedupe_report = dedupe_scan.as_dict()
                 if checkpoint is not None:
                     # Re-materialize element completion flags even on a global
                     # checkpoint hit: media verification deliberately cleared
@@ -2764,7 +2773,9 @@ def _resolved_config(options: PipelineOptions) -> MojiLexConfig:
         },
         "processing": {"file_analysis_mode": options.file_analysis_mode},
     }
-    return load_config(cli=layer)
+    from mojilex_cli.config.resources import resolved_resource_config
+
+    return resolved_resource_config(load_config(cli=layer))
 
 
 def _validate_saved_budget(config: MojiLexConfig, checkpoint: RunCheckpoint | None) -> None:

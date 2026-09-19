@@ -54,9 +54,7 @@ class MediaLimits(BaseModel):
     worker_memory_bytes: int = Field(
         default=HARD_MAX_WORKER_MEMORY, ge=64 * MIB, le=HARD_MAX_WORKER_MEMORY
     )
-    max_run_temp_bytes: int = Field(
-        default=HARD_MAX_RUN_TEMP_BYTES, ge=1, le=HARD_MAX_RUN_TEMP_BYTES
-    )
+    max_run_temp_bytes: int = Field(default=HARD_MAX_RUN_TEMP_BYTES, ge=1)
 
 
 class MediaMetadata(BaseModel):

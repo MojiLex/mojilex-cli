@@ -170,7 +170,11 @@ class TelegramBotAPI(SourceAdapter):
         if client is not None and client.follow_redirects:
             raise ValueError("Telegram client must disable redirects to protect credentials")
         self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds), follow_redirects=False
+            timeout=httpx.Timeout(timeout_seconds),
+            follow_redirects=False,
+            # Operation download/preparation slots own admission. Do not add an
+            # unrelated HTTP pool ceiling when the user increases parallelism.
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=20),
         )
         self._owns_client = client is None
         self._max_attempts = max_attempts

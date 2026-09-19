@@ -24,7 +24,7 @@ def saved_interrupted_run(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("concurrency", [None, 1, 8, 32])
+@pytest.mark.parametrize("concurrency", [None, 1, 8, 32, 128])
 def test_resume_cli_passes_optional_download_concurrency(monkeypatch, concurrency):
     captured = {}
 
@@ -43,7 +43,7 @@ def test_resume_cli_passes_optional_download_concurrency(monkeypatch, concurrenc
     assert captured["ai_concurrency"] == 3
 
 
-@pytest.mark.parametrize("concurrency", [0, 33])
+@pytest.mark.parametrize("concurrency", [0, -1])
 def test_resume_cli_rejects_invalid_download_concurrency(monkeypatch, concurrency):
     def unexpected(*args, **kwargs):
         pytest.fail("invalid concurrency must not start a run")

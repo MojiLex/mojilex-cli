@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -30,6 +31,27 @@ class PackQueue:
     stages: dict[str, str] = field(default_factory=dict)
     batches: dict[object, str] = field(default_factory=dict)
     counts: dict[str, dict[str, PackCounts]] = field(default_factory=dict)
+    disclosures: set[str] = field(default_factory=set)
+
+    def ai_activity_text(self) -> str:
+        """Describe current work, never the last request that happened to log."""
+        phases = Counter(
+            phase
+            for batch in self.batches
+            if getattr(batch, "batch_total", None) is not None
+            for phase in getattr(batch, "active", {}).values()
+        )
+        ru = current_ui_language() == "ru"
+        labels = {
+            "request": "ожидают ответа" if ru else "awaiting response",
+            "save": "сохраняют результат" if ru else "saving results",
+            "transport_retry": "повтор подключения" if ru else "reconnecting",
+            "retry": "повтор запроса" if ru else "retrying",
+            "recovery": "восстановление" if ru else "recovering",
+            "approval": "подтверждение" if ru else "awaiting approval",
+            "ai": "подготовка запроса" if ru else "preparing request",
+        }
+        return " · ".join(f"{label}: {phases[key]}" for key, label in labels.items() if phases[key])
 
     def report_counts(
         self, source: str, phase: str, completed: int, total: int, *, detail: str = ""
@@ -145,6 +167,8 @@ class PackQueue:
                     categories.add(
                         "download"
                         if phase == "download"
+                        else "finalize"
+                        if phase == "save" and getattr(batch, "batch_total", None) is not None
                         else "render"
                         if phase in {"render", "save", "verify", "media_retry"}
                         else "ai"

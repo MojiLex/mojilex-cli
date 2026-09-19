@@ -110,6 +110,43 @@ class _SafeTextMemo:
             self.size_bytes -= removed_size
 
 
+class _SafePayloadMemo:
+    """Bounded exact JSON payloads which passed the complete safety traversal.
+
+    Model instances and their nested dictionaries can be mutated through copies.
+    Only serialized content is a reusable identity, never an object ID or a hash.
+    """
+
+    MAX_ENTRIES = 16384
+    MAX_BYTES = 16 * 1024 * 1024
+
+    def __init__(self) -> None:
+        self.entries: OrderedDict[bytes, None] = OrderedDict()
+        self.size_bytes = 0
+
+    def clear(self) -> None:
+        self.entries.clear()
+        self.size_bytes = 0
+
+    def contains(self, payload: bytes) -> bool:
+        if payload not in self.entries:
+            return False
+        self.entries.move_to_end(payload)
+        return True
+
+    def remember(self, payload: bytes) -> None:
+        if len(payload) > self.MAX_BYTES:
+            return
+        if payload in self.entries:
+            self.entries.move_to_end(payload)
+            return
+        self.entries[payload] = None
+        self.size_bytes += len(payload)
+        while len(self.entries) > self.MAX_ENTRIES or self.size_bytes > self.MAX_BYTES:
+            removed, _ = self.entries.popitem(last=False)
+            self.size_bytes -= len(removed)
+
+
 class RunStoreError(RuntimeError):
     """Invalid or unavailable persisted run state."""
 
@@ -424,6 +461,7 @@ class RunStore:
             raise RunStoreError("run checkpoints must be outside the target repository")
         self.write_enabled = write_enabled
         self._safe_text = _SafeTextMemo()
+        self._safe_payloads = _SafePayloadMemo()
         if write_enabled:
             self.root.mkdir(parents=True, exist_ok=True)
             (self.root / "locks").mkdir(exist_ok=True)
@@ -466,8 +504,28 @@ class RunStore:
         memo: _SafeTextMemo | None = self._safe_text
         if _safety_rule_identity() != _ORIGINAL_SAFETY_RULES:
             self._safe_text.clear()
-            memo = None
-        _assert_safe(checkpoint.model_dump(mode="json"), memo=memo)
+            self._safe_payloads.clear()
+            _assert_safe(checkpoint.model_dump(mode="json"))
+            return
+        payload = checkpoint.model_dump(mode="json")
+        elements = payload.pop("elements")
+        _assert_safe(dict.fromkeys(payload), memo=memo)
+        for field, value in payload.items():
+            self._assert_payload_safe(value, path=f"checkpoint.{field}")
+        if not isinstance(elements, dict):
+            _assert_safe({"elements": elements}, memo=memo)
+            return
+        # Check container and element keys even when the corresponding value was
+        # seen under a different key. A safe value never legitimizes an unsafe key.
+        self._assert_payload_safe({"elements": dict.fromkeys(elements)}, path="checkpoint")
+        for key, element in elements.items():
+            self._assert_payload_safe(element, path=f"checkpoint.elements.{key}")
+
+    def _assert_payload_safe(self, value: object, *, path: str) -> None:
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if not self._safe_payloads.contains(serialized):
+            _assert_safe(value, path=path, memo=self._safe_text)
+            self._safe_payloads.remember(serialized)
 
     def load_for_resume(
         self,

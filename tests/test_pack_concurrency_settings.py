@@ -1,4 +1,4 @@
-"""Legacy pack concurrency stays compatible while pack execution remains sequential."""
+"""Pack preparation concurrency remains configurable without arbitrary ceilings."""
 
 from pathlib import Path
 
@@ -50,7 +50,7 @@ def test_file_analysis_modes_roundtrip_and_default_to_fast(tmp_path: Path) -> No
         assert load_config(**paths, environment={}).processing.file_analysis_mode == value
 
 
-@pytest.mark.parametrize("value", [1, 8])
+@pytest.mark.parametrize("value", [1, 8, 64])
 def test_pack_concurrency_boundary_values_roundtrip_init_config(tmp_path: Path, value: int) -> None:
     config = MojiLexConfig(
         processing=ProcessingConfig(pack_concurrency=value, render_concurrency=4),
@@ -65,7 +65,7 @@ def test_pack_concurrency_boundary_values_roundtrip_init_config(tmp_path: Path, 
     assert loaded.ai == config.ai
 
 
-@pytest.mark.parametrize("value", ["0", "9", "-1", "1.5", "invalid"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "invalid"])
 def test_invalid_environment_pack_limit_fails_closed(tmp_path: Path, value: str) -> None:
     with pytest.raises(ConfigError):
         load_config(**_paths(tmp_path), environment={"MOJILEX_PACK_CONCURRENCY": value})
@@ -90,7 +90,7 @@ def test_pack_concurrency_layer_precedence_and_environment_edit_protection(tmp_p
     assert {key: path.read_bytes() for key, path in paths.items()} == before
 
 
-@pytest.mark.parametrize("value", ["0", "9", "invalid"])
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
 def test_invalid_setting_preserves_existing_file(tmp_path: Path, value: str) -> None:
     paths = _paths(tmp_path)
     before = b"# Keep limits\n[processing]\nrender_concurrency=4\n"
@@ -144,7 +144,7 @@ def test_pack_setting_is_visible_with_bounds_and_localized_description(
     rows = {row["key"]: row for row in result["settings"]}
     row = rows["pack_concurrency"]
     assert row["value"] == 3
-    assert row["minimum"] == 1 and row["maximum"] == 8
+    assert row["minimum"] == 1 and row["maximum"] is None
     assert row["editable"] and row["source"] == "default"
     assert row["label"] == expected_label
     assert all(fragment in row["description"] for fragment in expected_fragments)

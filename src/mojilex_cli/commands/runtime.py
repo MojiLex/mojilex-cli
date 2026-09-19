@@ -71,6 +71,7 @@ class _CommandContext:
     pack_queue: PackQueue | None = None
     last_pack_refresh: float = 0.0
     command: str = ""
+    disclosures: set[str] = field(default_factory=set)
 
 
 class _ProgressDisplay:
@@ -276,6 +277,12 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
     context = _COMMAND_CONTEXT.get()
     if context is None or context.quiet or (verbose and not context.verbose):
         return
+    if message.startswith(("Derived contact-sheet PNG", "Подготовленные PNG")):
+        shared = SHARED.get()
+        disclosures = shared.disclosures if shared is not None else context.disclosures
+        if message in disclosures:
+            return
+        disclosures.add(message)
     if (
         context.pack_queue is not None
         and not context.verbose
@@ -310,6 +317,9 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
 
 
 def _refresh_live(context: _CommandContext) -> None:
+    note = context.progress_note
+    if context.pack_queue is not None and note.startswith(("AI batch ", "AI-пачка ")):
+        note = context.pack_queue.ai_activity_text()
     if context.pack_queue is not None:
         now = time.monotonic()
         if now - context.last_pack_refresh < 0.15:
@@ -319,7 +329,7 @@ def _refresh_live(context: _CommandContext) -> None:
         context.live.update(
             Group(
                 context.progress_view,
-                Text(context.progress_note, no_wrap=True, overflow="ellipsis"),
+                Text(note, no_wrap=True, overflow="ellipsis"),
             ),
             refresh=True,
         )

@@ -115,44 +115,48 @@ SETTINGS: dict[str, Setting] = {
         "decimal",
         0,
     ),
+    "performance_mode": Setting(
+        ("processing", "performance_mode"),
+        "Performance mode",
+        "auto (default): size concurrency for available CPU and memory at operation start; "
+        "manual: use configured values exactly. Provider quotas and request budgets still apply.",
+        "MOJILEX_PERFORMANCE_MODE",
+        choices=("auto", "manual"),
+    ),
     "pack_concurrency": Setting(
         ("processing", "pack_concurrency"),
         "Parallel pack preparation",
         "Maximum packs prepared at once in fast and prepare_all modes. Shared download, decoder "
-        "and AI limits are not multiplied.",
+        "and AI limits are not multiplied. Any positive integer is accepted.",
         "MOJILEX_PACK_CONCURRENCY",
         "integer",
         1,
-        8,
     ),
     "download_concurrency": Setting(
         ("telegram", "download_concurrency"),
         "Parallel media downloads",
-        "Maximum simultaneous media downloads across the active operation.",
+        "Maximum simultaneous media downloads across the active operation. No fixed upper limit.",
         "MOJILEX_DOWNLOAD_CONCURRENCY",
         "integer",
         1,
-        32,
     ),
     "render_concurrency": Setting(
         ("processing", "render_concurrency"),
         "Parallel media decoders",
         "Maximum simultaneous media decoders across the active operation. "
-        "Too many CPU-heavy decoders can cause timeouts.",
+        "No fixed upper limit; actual throughput depends on available CPU and memory.",
         "MOJILEX_RENDER_CONCURRENCY",
         "integer",
         1,
-        8,
     ),
     "ai_concurrency": Setting(
         ("ai", "ai_concurrency"),
         "Parallel AI requests",
         "Maximum simultaneous AI requests across the active operation, subject to provider limits "
-        "and the saved run budget.",
+        "and the saved run budget. No fixed upper limit.",
         "MOJILEX_AI_CONCURRENCY",
         "integer",
         1,
-        16,
     ),
     "download_attempts": Setting(
         ("telegram", "max_attempts"),
@@ -188,22 +192,28 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
         "паки, затем обработать все и запустить ИИ; prepare_all — параллельно скачать и "
         "обработать все паки, затем запустить ИИ.",
     ),
+    "performance_mode": (
+        "Максимальная скорость (авто) / вручную",
+        "auto (по умолчанию) — подобрать параллельность по процессору и свободной памяти "
+        "при старте операции; manual — использовать заданные значения. "
+        "Квоты сервиса и бюджет запросов продолжают действовать.",
+    ),
     "pack_concurrency": (
         "Параллельность паков",
         "Максимум одновременно подготавливаемых паков в режимах fast и prepare_all. "
-        "Общие лимиты скачиваний, декодеров и ИИ при этом не умножаются.",
+        "Общие лимиты скачиваний, декодеров и ИИ при этом не умножаются. Верхней границы нет.",
     ),
     "render_concurrency": (
         "Параллельные декодеры медиа",
         "Максимум одновременных декодеров медиа во всей активной операции. "
-        "Слишком много декодеров вызывает таймауты.",
+        "Верхней границы нет; скорость зависит от доступных процессора и памяти.",
     ),
     "provider": ("Сервис ИИ", "Сервис, который создаёт описания эмодзи."),
     "model": ("Модель ИИ", "Точное название модели; программа не выбирает модель автоматически."),
     "ai_concurrency": (
         "Параллельные запросы к ИИ",
         "Максимум одновременных запросов к ИИ во всей активной операции, с учётом квот сервиса "
-        "и бюджета запуска.",
+        "и бюджета запуска. Верхней границы нет.",
     ),
     "confirm_before_analysis": (
         "Подтверждать начало анализа ИИ",
@@ -221,7 +231,7 @@ _RUSSIAN: dict[str, tuple[str, str]] = {
     ),
     "download_concurrency": (
         "Параллельные скачивания",
-        "Максимум одновременных скачиваний файлов во всей активной операции.",
+        "Максимум одновременных скачиваний файлов во всей активной операции. Верхней границы нет.",
     ),
     "download_attempts": (
         "Попытки подключения при скачивании",

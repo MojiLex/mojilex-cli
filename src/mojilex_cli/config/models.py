@@ -40,7 +40,7 @@ class TelegramConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     timeout_seconds: float = Field(default=30.0, gt=0, le=120)
-    download_concurrency: int = Field(default=4, ge=1, le=32)
+    download_concurrency: int = Field(default=4, ge=1)
     max_attempts: int = Field(default=6, ge=1, le=8)
 
 
@@ -52,7 +52,7 @@ class AIConfig(BaseModel):
     languages: tuple[str, ...] = ("ru", "en")
     max_ai_requests: int | None = Field(default=100, ge=0)
     max_cost_usd: Decimal | None = Field(default=None, ge=0)
-    ai_concurrency: int = Field(default=1, ge=1, le=16)
+    ai_concurrency: int = Field(default=1, ge=1)
     confirm_before_analysis: bool = False
     allow_unknown_cost: bool = False
     model_routing: Literal["off", "rules"] = "off"
@@ -94,14 +94,15 @@ class ProcessingConfig(BaseModel):
 
     official_pack_policy: Literal["ask", "skip", "allow"] = "skip"
     file_analysis_mode: Literal["fast", "sequential", "download_all", "prepare_all"] = "fast"
-    pack_concurrency: int = Field(default=3, ge=1, le=8)
-    render_concurrency: int = Field(default=2, ge=1, le=8)
+    performance_mode: Literal["auto", "manual"] = "auto"
+    pack_concurrency: int = Field(default=3, ge=1)
+    render_concurrency: int = Field(default=2, ge=1)
     static_batch_size: int = Field(default=16, ge=1, le=16)
     animated_batch_size: int = Field(default=8, ge=1, le=16)
     keyframes: int = Field(default=8, ge=4, le=16)
     render_timeout_seconds: float = Field(default=15.0, gt=0, le=30)
     max_download_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=20 * 1024 * 1024)
-    max_temp_bytes: int = Field(default=2 * 1024**3, ge=1, le=2 * 1024**3)
+    max_temp_bytes: int = Field(default=2 * 1024**3, ge=1)
 
 
 class GitIdentityConfig(BaseModel):
