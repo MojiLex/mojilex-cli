@@ -45,7 +45,10 @@ def available_memory_bytes() -> int | None:
 
             status = MemoryStatus()
             status.length = ctypes.sizeof(status)
-            if getattr(ctypes, "windll").kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            windll = getattr(ctypes, "windll", None)
+            if windll is None:
+                return None
+            if windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
                 return int(status.available)
             return None
         sysconf = getattr(os, "sysconf", None)
