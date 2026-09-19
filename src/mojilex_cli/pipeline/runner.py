@@ -982,6 +982,9 @@ async def _run_add(
                         except SourceNotFoundError:
                             if not options.explicit_verification:
                                 raise
+                            # Missing-pack availability updates mutate the same
+                            # candidate as normal merges and must observe their order.
+                            await merge_turns.wait(position)
                             if not options.dry_run:
                                 collection_lock = run_store.collection_lock(
                                     reference.platform, reference.native_id

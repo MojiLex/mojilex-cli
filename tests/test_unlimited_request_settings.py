@@ -140,7 +140,8 @@ def test_settings_order_keeps_parallel_limits_together_and_defines_official_data
         "max_ai_requests",
         "max_cost_usd",
     ]
-    assert keys[8:12] == [
+    assert keys[8:13] == [
+        "performance_mode",
         "pack_concurrency",
         "download_concurrency",
         "render_concurrency",
