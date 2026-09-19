@@ -143,11 +143,11 @@ class _CountingProcessor(MediaProcessor):
         cached: ProcessedMedia,
         needs_repainting: bool = False,
     ) -> ProcessedMedia:
-        self.decode_calls += 1
         payload = b"".join([chunk async for chunk in chunks])
         digest = hashlib.sha256(payload).hexdigest()
         if digest != cached.metadata.sha256:
             raise SourceChangedDuringRunError("synthetic expected hash mismatch")
+        self.decode_calls += 1
         assert expected_format == cached.metadata.format
         assert declared_size in {None, len(payload)}
         dark_paths = (
@@ -416,7 +416,7 @@ def _seed_resume(
 
 
 @pytest.mark.asyncio
-async def test_two_descriptors_with_one_media_key_both_resume_without_decode_or_ai(
+async def test_two_descriptors_rebuild_missing_puzzle_tiles_without_repeating_ai(
     tmp_path: Path,
 ) -> None:
     snapshot = write_fixture(tmp_path / "dataset")
@@ -486,9 +486,10 @@ async def test_two_descriptors_with_one_media_key_both_resume_without_decode_or_
 
     assert set(descriptions) == {first.native_id, second.native_id}
     assert adapter.media_calls == ["first", "second"]
-    assert processor.decode_calls == 0
+    assert processor.decode_calls == 2
+    assert processor.analysis_calls == 0
     assert budget.requests_used == 0
-    assert all(not value.frame_paths for value in prepared.values())
+    assert all(value.frame_paths for value in prepared.values())
 
 
 @pytest.mark.asyncio

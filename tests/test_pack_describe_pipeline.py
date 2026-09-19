@@ -480,9 +480,62 @@ async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline
     assert not result.errors
     for source in pipeline.sources:
         phases = [phase for name, phase in events if name == source.canonical_url]
-        assert phases == ["download", "waiting", "render", "ai_wait", "ai", "finalize", "ready"]
+        assert phases == [
+            "download",
+            "waiting",
+            "render",
+            "ai_wait",
+            "ai",
+            "composition",
+            "merge_wait",
+            "finalize",
+            "merge_wait",
+            "finalize",
+            "ready",
+        ]
     first_ready = next(i for i, event in enumerate(events) if event[1] == "ready")
     assert all(event[1] != "ai" for event in events[first_ready:])
+
+
+async def test_fast_puzzle_verification_starts_before_other_pack_media_finishes(
+    pipeline, monkeypatch
+):
+    state = pipeline
+    state.config = state.config.model_copy(
+        update={
+            "processing": state.config.processing.model_copy(update={"file_analysis_mode": "fast"})
+        }
+    )
+    beta_waiting = asyncio.Event()
+    release_beta = asyncio.Event()
+    alpha_verified = asyncio.Event()
+
+    async def media(snapshot, adapter, source, processor, **kwargs):
+        if source.native_id == "PackBeta":
+            beta_waiting.set()
+            await release_beta.wait()
+        return await state.media(snapshot, adapter, source, processor, **kwargs)
+
+    async def verify(self, **kwargs):
+        if kwargs.get("key") == "PackAlpha":
+            await beta_waiting.wait()
+            assert not release_beta.is_set()
+            alpha_verified.set()
+        return {}
+
+    monkeypatch.setattr(runner, "_prepare_collection_media", media)
+    monkeypatch.setattr(state.queue, "verify", verify)
+    task = asyncio.create_task(state.run())
+    try:
+        await asyncio.wait_for(alpha_verified.wait(), 5)
+        release_beta.set()
+        result = await asyncio.wait_for(task, 5)
+        assert not result.errors
+    finally:
+        release_beta.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_fast_ai_overlaps_previous_packs_local_postprocessing(pipeline, monkeypatch):

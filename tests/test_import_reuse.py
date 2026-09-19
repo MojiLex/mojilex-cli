@@ -103,6 +103,10 @@ def test_other_repository_and_max_items_do_not_reuse(saved_runs):
 def test_completed_analysis_does_not_start_ai_again(saved_runs, monkeypatch):
     create, _, _ = saved_runs
     create(phase="describe")
+    # Metadata/proof refresh is covered with real saved records in its own tests.
+    monkeypatch.setattr(
+        import_reuse, "refresh_completed_imports", lambda existing, *a, **k: existing
+    )
     monkeypatch.setattr(workflow, "run_import", forbid)
     monkeypatch.setattr(workflow, "run_resume_sync", forbid)
     result = do_import([A])
@@ -361,7 +365,7 @@ def test_startup_progress_visible_before_scanning_checkpoints(saved_runs, monkey
     monkeypatch.setattr(workflow, "run_import", forbid)
     result = do_import([A], preparation="metadata")
     assert result.result["reused_packs"] == 1
-    assert len(stages) == 2
+    assert len(stages) == 3
 
 
 def test_cached_selector_index_still_rejects_foreign_pack(saved_runs, monkeypatch):

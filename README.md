@@ -201,10 +201,20 @@ ordinary media failure no longer prevents processing other files in the pack.
 
 Choose **My packs → Continue**, or run `mojilex resume RUN_ID`. Submitting the TXT
 or individual URLs again reuses completed imports in the same repository and
-resumes interrupted downloads. Use `mojilex import URL --refresh` to explicitly
-check for source updates. Valid retained frames are reused; missing or damaged
-cache entries may require downloading the file again for verification. Changed
-source media never silently replaces the saved input.
+resumes interrupted downloads. Fully completed packs receive a metadata-only
+check against Telegram: unchanged packs go straight to ready, without media
+downloads, frame restoration, or AI requests. If new emoji were appended and
+all previous entries still match, only the additions need analysis; the saved
+media, descriptions, and request ledger remain available. Removal, reordering,
+or changes to existing entries require an explicit `mojilex import URL --refresh`.
+Changed source media never silently replaces the saved input.
+
+Cached descriptions alone do not mean the whole pack is ready. An interrupted
+puzzle check or final save still has to finish. Exact saved descriptions reuse
+only the static image tiles needed for puzzle checks; animations do not reopen
+every retained frame. Missing puzzle tiles are rebuilt without repeating valid
+AI descriptions. The dashboard distinguishes puzzle checks and waiting to save,
+and description counters include already completed emoji.
 
 After import completes, its page offers **Analyze saved import with AI**.
 Resuming downloads does not itself start paid analysis.

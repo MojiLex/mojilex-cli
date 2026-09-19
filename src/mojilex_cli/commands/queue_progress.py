@@ -69,11 +69,27 @@ class PackQueue:
                     total,
                     detail="проверка кэша" if ru else "checking cache",
                 )
-        else:
-            phase = (
-                "ai" if getattr(batch, "batch_total", None) is not None else self.stages.get(source)
+        elif getattr(batch, "batch_total", None) is not None:
+            full_total = getattr(batch, "pack_total", None)
+            saved = getattr(batch, "cached", 0)
+            if full_total is None:
+                # Old callers may only know the current work subset. Preserve a
+                # known full-pack denominator without inventing saved successes.
+                source_counts = self.counts.get(source, {})
+                known = source_counts.get("render") or source_counts.get("download")
+                full_total = max(total + saved, known.total if known is not None else 0)
+            ru = current_ui_language() == "ru"
+            detail = (
+                f"{'сохранённые описания' if ru else 'saved descriptions'}: {saved}"
+                if saved
+                else ""
             )
-            if phase in {"download", "render", "ai", "finalize"}:
+            if not total and not saved:
+                detail = "нет новых заданий на описание" if ru else "no new description work"
+            self.report_counts(source, "ai", saved + completed, full_total, detail=detail)
+        else:
+            phase = self.stages.get(source)
+            if phase in {"download", "render", "ai", "composition", "merge_wait", "finalize"}:
                 self.report_counts(source, phase, completed, total)
 
     def suffix(self, source: str, phase: str, *, ru: bool) -> str:
@@ -84,9 +100,14 @@ class PackQueue:
         counts = values.get(phase)
         if counts is None and phase == "ai_wait":
             counts = values.get("render")
-        if counts is None and phase == "finalize":
-            counts = values.get("ai") or values.get("render")
-        suffix = f" · {counts.completed}/{counts.total}" if counts is not None else ""
+        count_label = ""
+        if counts is None and phase in {"composition", "merge_wait", "finalize"}:
+            counts = values.get("ai")
+            count_label = "описания " if ru else "descriptions "
+            if counts is None:
+                counts = values.get("render")
+                count_label = "медиа " if ru else "media "
+        suffix = f" · {count_label}{counts.completed}/{counts.total}" if counts is not None else ""
         if counts is not None and counts.detail:
             suffix += f" · {counts.detail}"
         if not suffix and phase == "download":
@@ -108,6 +129,8 @@ class PackQueue:
                 "ai",
                 "waiting",
                 "ai_wait",
+                "composition",
+                "merge_wait",
                 "finalize",
                 "ready",
                 "failed",
@@ -136,13 +159,26 @@ class PackQueue:
         ru = current_ui_language() == "ru"
         labels = dict(
             zip(
-                ("download", "render", "ai", "waiting", "ai_wait", "finalize", "ready", "failed"),
+                (
+                    "download",
+                    "render",
+                    "ai",
+                    "waiting",
+                    "ai_wait",
+                    "composition",
+                    "merge_wait",
+                    "finalize",
+                    "ready",
+                    "failed",
+                ),
                 (
                     "Скачивание",
                     "Обработка на ПК",
                     "ИИ",
                     "Ожидают очереди",
                     "Готовы к ИИ, ждут очереди",
+                    "Проверка пазлов",
+                    "Ожидает сохранения",
                     "Финальная проверка и сохранение",
                     "Готовы к GitHub",
                     "Остановлены / ошибки",
@@ -154,6 +190,8 @@ class PackQueue:
                     "AI",
                     "Waiting",
                     "Prepared, waiting for AI",
+                    "Checking puzzles",
+                    "Waiting to save",
                     "Final validation and saving",
                     "Ready to send to GitHub",
                     "Stopped / errors",
@@ -166,10 +204,19 @@ class PackQueue:
             ("Всего паков: " if ru else "Total packs: ") + str(len(self.stages)), style="bold"
         )
         # Reserve room for summaries and a prompt; distribute detail rows fairly.
-        detail_slots = max(0, console.size.height - 15)
+        detail_slots = max(0, console.size.height - len(groups) - 7)
         active = [
             key
-            for key in ("download", "render", "ai", "ai_wait", "finalize", "failed")
+            for key in (
+                "download",
+                "render",
+                "ai",
+                "ai_wait",
+                "composition",
+                "merge_wait",
+                "finalize",
+                "failed",
+            )
             if groups[key]
         ]
         per_group = detail_slots // max(1, len(active))

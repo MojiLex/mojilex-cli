@@ -32,7 +32,17 @@ def test_unique_packs_counted_in_each_actual_active_stage():
 @pytest.mark.parametrize("height,width", [(24, 80), (40, 120), (18, 45)])
 def test_dashboard_keeps_summary_visible_when_many_packs_active(height, width):
     queue = PackQueue()
-    for stage in ("download", "render", "ai", "ai_wait", "finalize", "ready", "failed"):
+    for stage in (
+        "download",
+        "render",
+        "ai",
+        "ai_wait",
+        "composition",
+        "merge_wait",
+        "finalize",
+        "ready",
+        "failed",
+    ):
         for i in range(30):
             queue.stages[f"https://t.me/addemoji/{stage}_{i}"] = stage
     output = StringIO()
@@ -42,7 +52,7 @@ def test_dashboard_keeps_summary_visible_when_many_packs_active(height, width):
     text = output.getvalue()
     assert "Ready to send to GitHub: 30" in text
     assert len(text.splitlines()) <= height - 5
-    assert "Total packs: 210" in text
+    assert "Total packs: 270" in text
 
 
 def test_confirmation_stays_still_while_background_packs_change(monkeypatch):
@@ -270,3 +280,54 @@ def test_retained_ai_count_survives_transition_to_final_validation():
     assert "133/133" in queue.suffix("A", "finalize", ru=False)
     queue.report_counts("A", "finalize", 25, 133, detail="validating")
     assert "25/133 · validating" in queue.suffix("A", "finalize", ru=False)
+
+
+@pytest.mark.parametrize("saved,completed,work", [(200, 0, 0), (170, 10, 30), (0, 10, 200)])
+def test_ai_progress_uses_full_pack_and_only_verified_saved_descriptions(saved, completed, work):
+    queue = PackQueue()
+    queue.register(["A"])
+    queue.report_counts("A", "render", 200, 200)
+    ai = BatchProgress("AI", work, batch_total=0 if not work else 2, pack_total=200)
+    ai.cached = saved
+    ai.completed = completed
+    with use_ui_language("en"):
+        queue.remember_batch(ai, "A")
+    for stage in ("ai", "composition", "merge_wait", "finalize"):
+        suffix = queue.suffix("A", stage, ru=False)
+        assert f"{saved + completed}/200" in suffix
+        if saved:
+            assert f"saved descriptions: {saved}" in suffix
+        if stage != "ai":
+            assert "descriptions " in suffix
+    assert ai.total == work  # Pending-work accounting remains unchanged.
+
+
+def test_zero_ai_work_does_not_invent_completed_descriptions():
+    queue = PackQueue()
+    queue.register(["A"])
+    queue.report_counts("A", "render", 200, 200)
+    ai = BatchProgress("AI", 0, batch_total=0)
+    with use_ui_language("en"):
+        queue.remember_batch(ai, "A")
+    suffix = queue.suffix("A", "finalize", ru=False)
+    assert "descriptions 0/200" in suffix
+    assert "no new description work" in suffix
+    assert "200/200" not in suffix
+    assert " 0/0" not in suffix
+
+
+def test_puzzle_and_save_wait_stages_are_visible_and_not_ready():
+    queue = PackQueue()
+    queue.register(["A", "B"])
+    queue.stages.update(A="composition", B="merge_wait")
+    queue.report_counts("A", "composition", 3, 7, detail="candidate groups")
+    queue.report_counts("B", "ai", 200, 200)
+    output = StringIO()
+    with use_ui_language("en"):
+        Console(file=output, width=120, height=40).print(queue)
+    text = output.getvalue()
+    assert "Checking puzzles: 1" in text
+    assert "A — checking puzzles · 3/7 · candidate groups" in text
+    assert "B — waiting to save · descriptions 200/200" in text
+    assert "Ready to send to GitHub: 0" in text
+    assert queue.groups()["ai"] == []

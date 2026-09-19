@@ -37,11 +37,15 @@ class BatchProgress:
         interval: float = 5.0,
         unit: str = "items",
         batch_total: int | None = None,
+        pack_total: int | None = None,
         request_budget: Callable[[], tuple[int, int | None]] | None = None,
     ) -> None:
         self.pack = PACK.get()
         self.label = label
         self.total = total
+        # Work totals may exclude already validated descriptions. Keep the full
+        # source denominator separately; cached counts are supplied by the caller.
+        self.pack_total = pack_total
         self.unit = unit
         self.downloaded: set[str] = set()
         self.cached = 0
@@ -90,6 +94,12 @@ class BatchProgress:
 
     def stop_queue(self) -> None:
         self.queue_stopped = True
+
+    @property
+    def display_counts(self) -> tuple[int, int]:
+        if self.pack_total is not None:
+            return self.cached + self.completed, self.pack_total
+        return self.completed, self.total
 
     def advance(self, key: str, *, count: int) -> None:
         """Record durable items without marking their entire batch complete."""
@@ -141,14 +151,15 @@ class BatchProgress:
             "verify": "проверка" if ru else "verifying",
         }
         detail = ", ".join(f"{labels.get(key, key)}: {value}" for key, value in phases.items())
-        percent = (100 * self.completed // self.total) if self.total else 100
+        completed, total = self.display_counts
+        percent = (100 * completed // total) if total else 100
         unit = (" эмодзи" if ru else " emojis") if self.batch_total is not None else ""
         text = (
-            f"{self.label}: {self.completed}/{self.total}{unit} ({percent}%) | "
+            f"{self.label}: {completed}/{total}{unit} ({percent}%) | "
             f"{'ошибок' if ru else 'errors'}: {self.failed} | "
             f"{'прошло' if ru else 'elapsed'} {elapsed // 60:02d}:{elapsed % 60:02d}"
         )
-        if self.batch_total is not None:
+        if self.batch_total:
             pending = max(
                 0, self.total - self.completed - self.failed - sum(self.active_counts.values())
             )
@@ -187,8 +198,9 @@ class BatchProgress:
         )
         pending = max(0, self.total - self.completed - self.failed - active)
         table = Table.grid(padding=(0, 3))
+        completed, total = self.display_counts
         rows = [
-            ("Готово" if ru else "Completed", f"{self.completed} / {self.total}"),
+            ("Готово" if ru else "Completed", f"{completed} / {total}"),
             ("Обрабатывается" if ru else "Processing", str(max(0, active - retrying))),
             ("Ожидает повтора" if ru else "Retrying", str(retrying)),
             ("Не начато" if ru else "Not started", str(pending)),
@@ -220,8 +232,9 @@ class BatchProgress:
             if phase in {"retry", "transport_retry", "recovery", "media_retry"}
         )
         elapsed = int(time.monotonic() - self.started)
+        completed, total = self.display_counts
         text = (
-            f"{self.label}: {self.completed}/{self.total} | "
+            f"{self.label}: {completed}/{total} | "
             f"{'в работе' if ru else 'active'} {active} | "
             f"{'повтор' if ru else 'retry'} {retrying} | "
             f"{'ошибок' if ru else 'errors'} {self.failed} | "

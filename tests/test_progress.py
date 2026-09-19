@@ -11,6 +11,13 @@ from rich.text import Text
 from mojilex_cli.commands import progress, runtime
 
 
+def test_saved_descriptions_display_full_pack_in_compact_view():
+    counter = progress.BatchProgress("AI", 0, batch_total=0, pack_total=200)
+    counter.cached = 200
+    assert "200/200" in counter.compact_view().plain
+    assert "0/0" not in counter.compact_view().plain
+
+
 async def test_heartbeat_reports_active_work_without_inventing_completion(monkeypatch):
     reports = []
     active_reported = asyncio.Event()

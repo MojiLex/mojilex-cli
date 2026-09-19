@@ -214,7 +214,7 @@ def import_command(
     from mojilex_cli.i18n import current_ui_language
     from mojilex_cli.runs.pack_scope import source_state
 
-    from .import_reuse import import_complete, reusable_imports
+    from .import_reuse import import_complete, refresh_completed_imports, reusable_imports
     from .official_packs import select_sources
     from .packs import _source_name
     from .runtime import begin_pack_queue, operation_progress, report_pack_stage, report_progress
@@ -243,6 +243,14 @@ def import_command(
             {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
         )
     if existing:
+        with operation_progress(
+            "Проверка обновлений готовых паков в Telegram"
+            if current_ui_language() == "ru"
+            else "Checking completed packs for Telegram updates"
+        ):
+            existing = refresh_completed_imports(
+                existing, config, download_concurrency=download_concurrency
+            )
         begin_pack_queue(list(selection.selected))
         for checkpoint, saved_source in existing.values():
             state = source_state(checkpoint, saved_source)

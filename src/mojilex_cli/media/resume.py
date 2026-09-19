@@ -216,7 +216,21 @@ class RetainedMediaStore:
         with self._lock:
             return self._get(key, expected)
 
-    def _get(self, key: str, expected: ProcessedMedia) -> ProcessedMedia | None:
+    def get_composition_tile(self, key: str, expected: ProcessedMedia) -> ProcessedMedia | None:
+        """Restore only a verified static tile for an independently reusable AI result.
+
+        This does not prove that semantic frames are available. Returned media
+        retains its render context but has no frame paths; callers needing AI
+        input images must use ``get`` instead. A missing tile is a cache miss.
+        """
+        if expected.metadata.kind != "static":
+            return None
+        with self._lock:
+            return self._get(key, expected, composition_only=True)
+
+    def _get(
+        self, key: str, expected: ProcessedMedia, *, composition_only: bool = False
+    ) -> ProcessedMedia | None:
         if not self._available or not _KEY.fullmatch(key):
             return None
         count = expected.semantic_frame_count
@@ -253,6 +267,8 @@ class RetainedMediaStore:
                     or not 1 <= record["bytes"] <= HARD_MAX_FILE_BYTES
                 ):
                     return None
+                if composition_only:
+                    continue
                 path = entry / name
                 data = _read(path, record["bytes"])
                 if (
@@ -265,6 +281,8 @@ class RetainedMediaStore:
             tile_path = None
             tile_sha256 = None
             tile = manifest.get("composition_tile")
+            if composition_only and tile is None:
+                return None
             if tile is not None:
                 if (
                     expected.metadata.kind != "static"
@@ -278,7 +296,7 @@ class RetainedMediaStore:
                 tile_path = entry / "composition-tile.png"
                 data = _read(tile_path, tile["bytes"])
                 tile_sha256 = hashlib.sha256(data).hexdigest()
-                if tile_sha256 != tile["sha256"]:
+                if len(data) != tile["bytes"] or tile_sha256 != tile["sha256"]:
                     return None
                 _composition_png(data, (expected.metadata.width, expected.metadata.height))
             return ProcessedMedia(

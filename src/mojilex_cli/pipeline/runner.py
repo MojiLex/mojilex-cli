@@ -1167,7 +1167,7 @@ async def _run_add(
                                     record_ai_chunk_completion(source, items, outcomes)
                                 ),
                             )
-                            report_pack_stage(source_text, "finalize")
+                            report_pack_stage(source_text, "composition")
                             analyses = _bind_deterministic_analyses(processed)
                             if checkpoint is not None:
                                 evidence = checkpoint.safe_parameters.get(
@@ -1180,6 +1180,12 @@ async def _run_add(
                                     processed,
                                     previous=evidence.get(source.native_id),
                                 )
+                                verified = await composition_queue.verify(
+                                    key=source.native_id,
+                                    api_key=credentials.gemini_api_key,
+                                    budget=budget,
+                                )
+                                groups = verified.get(source.native_id, groups)
                                 # Other packs can checkpoint composition candidates while
                                 # this pack awaits preparation; merge into the latest evidence.
                                 evidence = checkpoint.safe_parameters.get(
@@ -1215,7 +1221,9 @@ async def _run_add(
                                 run_store.save(checkpoint)
                             # Only canonical assembly waits for input order. Network,
                             # decoding and AI for other non-overlapping packs keep running.
+                            report_pack_stage(source_text, "merge_wait")
                             await merge_turns.wait(position)
+                            report_pack_stage(source_text, "finalize")
                             plan = plan_collection_merge(
                                 current,
                                 source,
@@ -1317,6 +1325,7 @@ async def _run_add(
                                 )
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
+                            report_pack_stage(source_text, "merge_wait")
                     except asyncio.CancelledError:
                         report_pack_stage(source_text, "failed")
                         if file_mode == "fast":
@@ -1423,6 +1432,8 @@ async def _run_add(
                 )
 
             if checkpoint is not None:
+                for source_index in successful_source_indexes:
+                    report_pack_stage(all_sources[source_index], "finalize")
                 verified_groups = await composition_queue.verify(
                     api_key=credentials.gemini_api_key, budget=budget
                 )
@@ -1589,7 +1600,8 @@ async def _run_add(
             if changed_paths:
                 publisher = GitPublisher(git)
                 guard = publisher.guard_targets(tuple(str(path) for path in changed_paths))
-                _apply_with_rollback(
+                await run_blocking(
+                    _apply_with_rollback,
                     initial,
                     current,
                     allow_policy_review=stage_only or local_only,
@@ -3006,6 +3018,43 @@ async def _prepare_collection_media(
                 )
             if expected_media is None:
                 continue
+            # Exact semantic results already bind the decoded bytes and current
+            # source metadata. Only static puzzle verification still needs pixels;
+            # reopening every retained animation frame does no useful work here.
+            semantics_ready = item.native_id in cached_outcomes or (
+                not import_only
+                and item.native_id in cached
+                and not _needs_generated_description(
+                    snapshot,
+                    collection.platform,
+                    item,
+                    expected_media,
+                    redescribe=redescribe,
+                    overwrite_reviewed=overwrite_reviewed,
+                )
+            )
+            if semantics_ready:
+                if (
+                    expected_media.metadata.kind != "static"
+                    or item.animated
+                    or item.video
+                    or item.needs_repainting
+                ):
+                    ready[item.native_id] = expected_media
+                    continue
+                tile = await run_blocking(
+                    retained.get_composition_tile,
+                    _source_descriptor_sha256(item),
+                    expected_media,
+                )
+                if tile is not None:
+                    ready[item.native_id] = tile
+                    continue
+                # The descriptions remain reusable, but static puzzle candidates
+                # need their tile rebuilt. A frameless media cache hit would skip
+                # decoding and silently lose the unfinished puzzle check.
+                cached_analysis[item.native_id] = cached.pop(item.native_id)
+                continue
             saved = await run_blocking(
                 retained.get, _source_descriptor_sha256(item), expected_media
             )
@@ -4028,25 +4077,34 @@ async def _descriptions_for_collection(
         else:
             candidates.append(item)
     chunks = _description_chunks(candidates, processed, config)
-    report_progress(
-        f"AI plan: {len(candidates)} item(s), {len(chunks)} candidate batch(es), "
-        f"provider={config.ai.provider}, model={config.ai.model}. Exact cache hits can reduce "
-        "requests; retries, escalation and puzzle checks share the run budget. "
-        + (
-            "Request count is unlimited."
-            if budget.max_requests is None
-            else f"Request limit: {budget.max_requests}."
+    if candidates:
+        report_progress(
+            f"AI plan: {len(candidates)} item(s), {len(chunks)} candidate batch(es), "
+            f"provider={config.ai.provider}, model={config.ai.model}. Exact cache hits can reduce "
+            "requests; retries, escalation and puzzle checks share the run budget. "
+            + (
+                "Request count is unlimited."
+                if budget.max_requests is None
+                else f"Request limit: {budget.max_requests}."
+            )
         )
-    )
+    else:
+        report_progress(
+            f"Описания восстановлены: {len(outcomes_by_native)}/{len(source.items)}."
+            if current_ui_language() == "ru"
+            else f"All descriptions restored: {len(outcomes_by_native)}/{len(source.items)}."
+        )
     taxonomy_version = str(snapshot.manifest["taxonomy_version"])
 
     semaphore = asyncio.Semaphore(config.ai.ai_concurrency)
     progress = BatchProgress(
         "AI-описания" if current_ui_language() == "ru" else "AI descriptions",
         len(candidates),
+        pack_total=len(source.items),
         batch_total=len(chunks),
         request_budget=lambda: (budget.requests_used, budget.max_requests),
     )
+    progress.cached = len(outcomes_by_native)
     first_failure: BaseException | None = None
     last_deferred: Exception | None = None
 

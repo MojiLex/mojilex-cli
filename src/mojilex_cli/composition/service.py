@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Mapping
 
 from mojilex_cli.ai.base import RequestBudget
+from mojilex_cli.concurrency import run_blocking
 from mojilex_cli.media.models import ProcessedMedia
 from mojilex_cli.sources.base import SourceCollection
 
@@ -68,7 +69,8 @@ async def _prepare_compositions(
         accepted = [
             old for old in reusable if all(occurrences[m.native_id] == 1 for m in old.members)
         ]
-        proposals = await asyncio.to_thread(candidates, tiles)
+        # Drain the worker on cancellation before closing the images it reads.
+        proposals = await run_blocking(candidates, tiles)
         for proposal in proposals:
             prior = next(
                 (
@@ -109,13 +111,25 @@ def _preserves_layout(old: Composition, new: Composition) -> bool:
 
 
 class CompositionQueue:
-    """Bounded in-memory PNG proposals, paid only after every source description."""
+    """Bounded proposals checked as soon as their source descriptions finish."""
 
     def __init__(self, *, model: str) -> None:
         self.model = model
         self._pending: list[tuple[str, Composition, bytes]] = []
         self._bytes = 0
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._attempts: dict[str, int] = {}
         self.accepted: dict[str, list[Composition]] = {}
+
+    def _lock(self, key: str) -> asyncio.Lock:
+        return self._locks.setdefault(key, asyncio.Lock())
+
+    def _release(self, selected: list[tuple[str, Composition, bytes]]) -> None:
+        # In-flight proposals stay reserved in _pending until their owner exits.
+        # Identity matters: equal proposals prepared later have another owner.
+        identities = {id(item) for item in selected}
+        self._pending = [item for item in self._pending if id(item) not in identities]
+        self._bytes = sum(len(png) for _, _, png in self._pending)
 
     async def prepare(
         self,
@@ -125,23 +139,56 @@ class CompositionQueue:
         *,
         previous: object = None,
     ) -> list[Composition]:
-        def enqueue(group: Composition, png: bytes) -> None:
-            if len(self._pending) >= 64 or self._bytes + len(png) > 16 * 1024 * 1024:
-                return
-            self._pending.append((key, group, png))
-            self._bytes += len(png)
+        async with self._lock(key):
+            added: list[tuple[str, Composition, bytes]] = []
 
-        self.accepted[key] = await _prepare_compositions(
-            source, processed, model=self.model, previous=previous, enqueue=enqueue
-        )
-        return self.accepted[key]
+            def enqueue(group: Composition, png: bytes) -> None:
+                if len(self._pending) >= 64 or self._bytes + len(png) > 16 * 1024 * 1024:
+                    return
+                item = (key, group, png)
+                self._pending.append(item)
+                added.append(item)
+                self._bytes += len(png)
+
+            try:
+                self.accepted[key] = await _prepare_compositions(
+                    source, processed, model=self.model, previous=previous, enqueue=enqueue
+                )
+            except BaseException:
+                self._release(added)
+                raise
+            return self.accepted[key]
 
     async def verify(
-        self, *, api_key: str | None, budget: RequestBudget
+        self, *, api_key: str | None, budget: RequestBudget, key: str | None = None
     ) -> dict[str, list[Composition]]:
-        attempts: dict[str, int] = {}
+        """Check one ready source, or drain the currently queued sources in order.
+
+        Different keys can run concurrently through the existing shared AI slots.
+        A source's preparation and verification serialize to protect its evidence.
+        The ten-audit limit belongs to this queue, including repeated calls.
+        """
+        if key is not None:
+            await self._verify_key(key, api_key=api_key, budget=budget)
+        else:
+            for source_key in dict.fromkeys(item[0] for item in self._pending):
+                await self._verify_key(source_key, api_key=api_key, budget=budget)
+        return self.accepted
+
+    async def _verify_key(self, key: str, *, api_key: str | None, budget: RequestBudget) -> None:
+        async with self._lock(key):
+            selected = [item for item in self._pending if item[0] == key]
+            await self._verify_selected(selected, api_key=api_key, budget=budget)
+
+    async def _verify_selected(
+        self,
+        selected: list[tuple[str, Composition, bytes]],
+        *,
+        api_key: str | None,
+        budget: RequestBudget,
+    ) -> None:
         try:
-            for key, proposal, png in self._pending:
+            for key, proposal, png in selected:
                 ids = {m.native_id for m in proposal.members}
                 overlapping = [
                     old
@@ -156,11 +203,11 @@ class CompositionQueue:
                     approved = True
                     for audit in ("continuity", "independent_objects", "layout"):
                         ids = {member.native_id for member in proposal.members}
-                        if any(attempts.get(native_id, 0) >= 10 for native_id in ids):
+                        if any(self._attempts.get(native_id, 0) >= 10 for native_id in ids):
                             approved = False
                             break
                         for native_id in ids:
-                            attempts[native_id] = attempts.get(native_id, 0) + 1
+                            self._attempts[native_id] = self._attempts.get(native_id, 0) + 1
                         if not await verify_composition(
                             png,
                             model=self.model,
@@ -186,10 +233,8 @@ class CompositionQueue:
                         ] + [verified]
                 except Exception:
                     continue
-            return self.accepted
         finally:
-            self._pending.clear()
-            self._bytes = 0
+            self._release(selected)
 
 
 async def analyze_compositions(
@@ -201,7 +246,7 @@ async def analyze_compositions(
     budget: RequestBudget,
     previous: object = None,
 ) -> list[Composition]:
-    """Single-source convenience API; batch callers defer with CompositionQueue."""
+    """Single-source convenience API using the same bounded verification queue."""
     queue = CompositionQueue(model=model)
     await queue.prepare("source", source, processed, previous=previous)
     return (await queue.verify(api_key=api_key, budget=budget))["source"]
