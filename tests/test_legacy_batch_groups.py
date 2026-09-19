@@ -178,14 +178,16 @@ async def test_shifted_legacy_batches_restore_exact_original_groups_without_ai(
             else {singleton.native_id}
         )
         assert set(verified) == expected
-        assert processor.decode_calls == (1 if mutation == "none" else 3)
-        assert not prepared[singleton.native_id].frame_paths
+        # No retained puzzle tiles were seeded. Rebuild pixels for every item,
+        # while exact paid descriptions and deterministic analysis remain reusable.
+        assert processor.decode_calls == len(source.items)
+        assert prepared[singleton.native_id].frame_paths
         assert verified[singleton.native_id].generation.prompt_version == "1.1.0"
         assert verified[singleton.native_id].generation.prompt_sha256 == hashes["1.1.0"]
         if mutation == "none":
             assert processor.analysis_calls == 1
             for item in (left, right):
-                assert not prepared[item.native_id].frame_paths
+                assert prepared[item.native_id].frame_paths
                 assert verified[item.native_id].generation.prompt_version == "1.2.0"
                 assert verified[item.native_id].generation.prompt_sha256 == hashes["1.2.0"]
         assert prepared[pending.native_id].frame_paths

@@ -122,8 +122,10 @@ async def test_legacy_paid_result_keeps_old_provenance_while_missing_item_uses_n
                 verified_semantic_outcomes=verified,
             )
             assert set(verified) == {first.native_id}
-            assert not prepared[first.native_id].frame_paths
-            assert processor.decode_calls == int(with_missing_item)
+            # Paid semantics are restored, but absent puzzle tiles still need
+            # their pixels rebuilt without repeating deterministic analysis or AI.
+            assert prepared[first.native_id].frame_paths
+            assert processor.decode_calls == 1 + int(with_missing_item)
             assert processor.analysis_calls == int(with_missing_item)
             old_generation = verified[first.native_id].generation
             assert old_generation.prompt_version == legacy_version
