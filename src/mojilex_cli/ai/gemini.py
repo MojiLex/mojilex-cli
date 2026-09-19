@@ -7,6 +7,7 @@ import base64
 import json
 import math
 import re
+import ssl
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
@@ -177,6 +178,11 @@ class GeminiVisionProvider:
         except Exception as exc:
             # Deliberately omit exception text: SDK errors can include request details.
             message = f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
+            if any(_certificate_failure(cause) for cause in _provider_causes(exc)):
+                message += (
+                    "; TLS certificate verification failed"
+                    " (check system clock and trusted certificates)"
+                )
             if _transient_provider_error(exc):
                 raise AITransientError(
                     message, retry_after_seconds=_retry_after_seconds(exc)
@@ -407,19 +413,44 @@ def _safe_provider_status(exc: Exception) -> str:
     return " (" + ", ".join(parts) + ")" if parts else ""
 
 
-def _transient_provider_error(exc: Exception) -> bool:
-    """Classify known failures, including SDK wrappers, without exposing their text."""
-    current: BaseException | None = exc
+def _provider_causes(exc: BaseException) -> list[BaseException]:
+    causes: list[BaseException] = []
     seen: set[int] = set()
+    current: BaseException | None = exc
     for _ in range(8):
         if current is None or id(current) in seen:
-            return False
+            break
         seen.add(id(current))
+        causes.append(current)
+        current = current.__cause__
+    return causes
+
+
+def _certificate_failure(exc: BaseException) -> bool:
+    return isinstance(exc, ssl.SSLCertVerificationError) or (
+        isinstance(exc, ssl.SSLError)
+        and getattr(exc, "reason", None) == "CERTIFICATE_VERIFY_FAILED"
+    )
+
+
+def _transient_provider_error(exc: Exception) -> bool:
+    """Retry transport interruptions, never certificate verification failures."""
+    causes = _provider_causes(exc)
+    if any(_certificate_failure(cause) for cause in causes):
+        return False
+    for current in causes:
         code = getattr(current, "code", getattr(current, "status_code", None))
         if type(code) is int and 100 <= code <= 599:
             # An explicit permanent HTTP response wins over an incidental cause.
             return code in {408, 429, 500, 502, 503, 504}
         if isinstance(current, (httpx.TransportError, ConnectionError, TimeoutError)):
+            return True
+        if isinstance(current, (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError)):
+            return True
+        if isinstance(current, ssl.SSLError) and getattr(current, "reason", None) in {
+            "UNEXPECTED_EOF_WHILE_READING",
+            "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
+        }:
             return True
         status = getattr(current, "status", None)
         if isinstance(status, str) and status in {
@@ -429,9 +460,6 @@ def _transient_provider_error(exc: Exception) -> bool:
             "INTERNAL",
         }:
             return True
-        # Interactions APITimeoutError/APIConnectionError wrap httpx failures
-        # using an explicit cause. Do not inspect or print arbitrary context.
-        current = current.__cause__
     return False
 
 

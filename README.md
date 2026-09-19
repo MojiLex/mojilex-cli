@@ -241,8 +241,9 @@ An explicit API retry interval pauses new AI requests across the operation and
 shows the reason in the dashboard. Downloads and local processing remain unblocked.
 An unlimited application budget does not remove the AI provider's quotas.
 AI text is checked against dataset constraints before caching; an incompatible
-old result is requested again. The current public schema excludes literal `<` or
-`>` characters, such as `</>`; the program does not substitute different symbols.
+old result is requested again. Recognized code and mathematical symbols such as `</>`, `<3`, and `x>y`
+are preserved verbatim. HTML tags and control characters remain forbidden;
+ordinary descriptions remain markup-free.
 
 | Mode | Order |
 |---|---|

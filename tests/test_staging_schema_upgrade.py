@@ -183,3 +183,38 @@ def test_schema_upgrade_does_not_enter_publication_metadata_diff(staging):
     assert _changed_paths(before, after) == ()
     after.manifest["description"] = "changed metadata"
     assert _changed_paths(before, after) == (PurePosixPath("dataset.json"),)
+
+
+def _old_literal_schema(staging):
+    relative = Path("schemas/v1/facets.schema.json")
+    bundled = Path(schema_upgrade.__file__).resolve().parents[1] / relative
+    target = staging[1] / relative
+    payload = json.loads(bundled.read_bytes())
+    value = payload["$defs"]["textItem"]["properties"]["value"]
+    value.pop("not")
+    value["pattern"] = r"^[^\u0000-\u001f\u007f<>]+$"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    return target, bundled
+
+
+def test_existing_staging_literal_contract_is_upgraded_independently(staging):
+    assert _upgrade(staging)  # PNG schema already current on the second call.
+    target, bundled = _old_literal_schema(staging)
+    assert _upgrade(staging)
+    assert target.read_bytes() == bundled.read_bytes()
+    assert _git(staging[1], "rev-parse", "HEAD") == staging[2]
+    assert not _upgrade(staging)
+
+
+@pytest.mark.parametrize("custom", [True, False])
+def test_custom_literal_schema_and_custom_repository_are_preserved(staging, custom):
+    assert _upgrade(staging)
+    target, _ = _old_literal_schema(staging)
+    if custom:
+        payload = json.loads(target.read_bytes())
+        payload["title"] = "Custom literal policy"
+        target.write_text(json.dumps(payload), encoding="utf-8")
+    original = target.read_bytes()
+    overrides = {} if custom else {"target_repository": "someone/mojilex"}
+    assert not _upgrade(staging, **overrides)
+    assert target.read_bytes() == original

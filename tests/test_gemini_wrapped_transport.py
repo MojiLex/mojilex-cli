@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import ssl
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -39,7 +40,7 @@ def test_flat_provider_error_reports_only_documented_code():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [httpx.ReadTimeout, httpx.ConnectError])
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout, httpx.ConnectError, ssl.SSLEOFError])
 @pytest.mark.parametrize("scenario", ["recovers", "exhausted", "budget"])
 async def test_sdk_wrapped_transport_uses_only_budgeted_outer_retries(
     monkeypatch, failure, scenario
@@ -56,6 +57,8 @@ async def test_sdk_wrapped_transport_uses_only_budgeted_outer_retries(
         nonlocal calls
         calls += 1
         if calls <= 2 or scenario != "recovers":
+            if issubclass(failure, ssl.SSLError):
+                raise failure("synthetic-private-network-body")
             raise failure("synthetic-private-network-body", request=request)
         return httpx.Response(
             200,
@@ -154,3 +157,14 @@ async def test_default_and_explicit_timeout_reach_both_sdk_and_outer_deadline(
     assert deadlines == [expected]
     assert sdk_options[0].timeout == int(expected * 1000)
     assert sdk_options[0].retry_options.attempts == 0
+
+
+def test_tls_certificate_failure_is_permanent_even_inside_transport_wrapper():
+    certificate = ssl.SSLCertVerificationError("private certificate details")
+    wrapped = httpx.ConnectError("private")
+    wrapped.__cause__ = certificate
+    assert not _transient_provider_error(wrapped)
+    assert not _transient_provider_error(certificate)
+    assert not _transient_provider_error(ssl.SSLError("unknown SSL failure"))
+    assert _transient_provider_error(ssl.SSLEOFError("private"))
+    assert _transient_provider_error(ssl.SSLZeroReturnError("private"))

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 from pathlib import Path
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from mojilex_cli.ai import (
@@ -18,6 +20,7 @@ from mojilex_cli.ai.prompts import gemini_request_parameters_sha256
 from mojilex_cli.cache import CacheError, CacheStore
 from mojilex_cli.config import AIConfig, MojiLexConfig
 from mojilex_cli.domain.hashes import jcs_sha256
+from mojilex_cli.domain.models import TextContentItem
 from mojilex_cli.media import TemporaryMediaRun
 from mojilex_cli.pipeline import runner
 from test_ai_gemini import _request
@@ -32,7 +35,7 @@ def _invalid_payload(case: str) -> dict:
     payload = _payload()
     item = payload["items"][0]
     if case == "literal":
-        item["facets"]["text_content"]["items"][0]["value"] = "</>"
+        item["facets"]["text_content"]["items"][0]["value"] = "<tag>"
     else:
         item["descriptions"]["en"]["text"] = {
             "nfc": "Cafe\u0301 symbol.",
@@ -67,20 +70,30 @@ def test_runtime_validation_does_not_change_request_contract_or_cache_hash() -> 
     )
 
 
-@pytest.mark.parametrize("literal", ["</>", "<3", "x>y", "<tag>"])
-def test_literal_angles_rejected_without_rewriting(literal: str) -> None:
+@pytest.mark.parametrize("literal", ["<tag>", "</script>", '<img src=x onerror="x">', "A\u0085B"])
+def test_literal_markup_and_controls_rejected_without_rewriting(literal: str) -> None:
     payload = _payload()["items"][0]["facets"]["text_content"]["items"][0]
     payload["value"] = literal
     with pytest.raises(ValidationError):
         SemanticTextItem.model_validate(payload)
+    with pytest.raises(ValidationError):
+        TextContentItem.model_validate(payload)
+    assert list(_literal_validator().iter_errors(literal))
     assert payload["value"] == literal
 
 
-@pytest.mark.parametrize("literal", ["404", "/", "()", "&", "é", "A  B"])
+def _literal_validator() -> Draft202012Validator:
+    schema = json.loads(files("mojilex_cli.schemas").joinpath("v1/facets.schema.json").read_text())
+    return Draft202012Validator(schema["$defs"]["textItem"]["properties"]["value"])
+
+
+@pytest.mark.parametrize("literal", ["404", "/", "()", "&", "é", "A  B", "</>", "<3", "x>y", "<="])
 def test_allowed_literal_preserved_exactly(literal: str) -> None:
     payload = _payload()["items"][0]["facets"]["text_content"]["items"][0]
     payload["value"] = literal
     assert SemanticTextItem.model_validate(payload).value == literal
+    assert TextContentItem.model_validate(payload).value == literal
+    _literal_validator().validate(literal)
 
 
 @pytest.mark.parametrize("field", ["text", "motion", "usage"])
@@ -90,6 +103,20 @@ def test_description_fields_match_domain_text_constraints(field: str, value: str
     payload[field] = [value] if field == "usage" else value
     with pytest.raises(ValidationError):
         LocalizedDescription.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_adapter_preserves_visible_code_symbol(monkeypatch) -> None:
+    payload = _payload()
+    payload["items"][0]["facets"]["text_content"]["items"][0]["value"] = "</>"
+    _sdk_client_factory(monkeypatch, httpx.MockTransport(lambda request: _response(payload)))
+    provider = GeminiVisionProvider(model="gemini-test", api_key="synthetic-key-not-real")
+    try:
+        result = await provider.describe(_request())
+        assert result.batch.items[0].facets.text_content.items[0].value == "</>"
+    finally:
+        await provider._client.aio.aclose()
+        provider._client.close()
 
 
 @pytest.mark.asyncio

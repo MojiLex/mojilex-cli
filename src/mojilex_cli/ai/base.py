@@ -266,12 +266,12 @@ class SemanticTextItem(BaseModel):
     @field_validator("value")
     @classmethod
     def safe_literal_text(cls, value: str) -> str:
-        # The public literal-text contract excludes every angle bracket,
-        # including code symbols that are not recognizable HTML tags.
-        forbidden_brackets = "<" in value or ">" in value
+        # Preserve visible code/math symbols verbatim, while retaining the
+        # domain contract's prohibition on HTML tags.
+        markup = re.search(r"</?[A-Za-z][^>]*>", value) is not None
         controls = any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
-        if unicodedata.normalize("NFC", value) != value or controls or forbidden_brackets:
-            raise ValueError("literal text must be NFC and contain no controls or angle brackets")
+        if unicodedata.normalize("NFC", value) != value or controls or markup:
+            raise ValueError("literal text must be NFC and contain no controls or HTML tags")
         return value
 
     @field_validator("language")

@@ -270,14 +270,26 @@ def _render_tgs(
     if not executable or shutil.which(executable) is None:
         raise RuntimeError("the MojiLex rlottie RGBA renderer is required for TGS")
     try:
-        expected_width = int(document["w"])
-        expected_height = int(document["h"])
-        timeline_frames = Decimal(str(document["op"])) - Decimal(str(document.get("ip", 0)))
-    except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+        width = Decimal(str(document["w"]))
+        height = Decimal(str(document["h"]))
+        first_frame = Decimal(str(document.get("ip", 0)))
+        last_frame = Decimal(str(document["op"]))
+        if not all(value.is_finite() for value in (width, height, first_frame, last_frame)):
+            raise ValueError("non-finite header")
+        if width <= 0 or height <= 0 or width != int(width) or height != int(height):
+            raise ValueError("invalid canvas")
+        expected_width, expected_height = int(width), int(height)
+        if last_frame < first_frame:
+            raise ValueError("reversed timeline")
+        # Pinned rlottie parses each endpoint with std::lround (ties away
+        # from zero). Match that playable interval, excluding its terminal
+        # frame. Rounding the difference or taking ceil would disagree with
+        # the native renderer for fractional endpoints.
+        total = int(last_frame.to_integral_value(rounding=ROUND_HALF_UP)) - int(
+            first_frame.to_integral_value(rounding=ROUND_HALF_UP)
+        )
+    except (InvalidOperation, KeyError, TypeError, ValueError, OverflowError) as exc:
         raise RuntimeError("TGS native canvas or timeline is invalid") from exc
-    if timeline_frames != timeline_frames.to_integral_value():
-        raise RuntimeError("TGS native canvas or timeline is invalid")
-    total = int(timeline_frames)
     maximum_frames = int(
         cast(dict[str, Any], load_analysis_profile("dedupe-v1").data["resource_limits"])[
             "max_full_frames"

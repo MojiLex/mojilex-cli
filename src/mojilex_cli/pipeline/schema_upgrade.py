@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,6 @@ from mojilex_cli.github import GitHubError, RepositoryRef
 from .workspaces import staging_workspace_path
 
 _SCHEMA = Path("schemas/v1/emoji.schema.json")
-_BUNDLED_SCHEMA = Path(__file__).resolve().parents[1] / _SCHEMA
 _MAX_SCHEMA_BYTES = 256 * 1024
 _PNG_VARIANT = {
     "properties": {
@@ -78,12 +78,54 @@ def upgrade_private_staging_schema(
     base_revision: str,
     target_repository: str,
 ) -> bool:
-    """Upgrade only the known pre-PNG contract in this run's exact private tree.
+    """Upgrade known old contracts only in this run's exact private tree.
 
     The caller must hold the run execution lock. Custom repositories, edited or
     future schemas, and mismatched workspaces are left unchanged. HEAD and the
     checkpoint base never change: publication derives only metadata differences.
     """
+    changed = False
+    for relative, previous in (
+        (_SCHEMA, _without_png),
+        (Path("schemas/v1/facets.schema.json"), _without_literal_symbols),
+    ):
+        changed = (
+            _upgrade_one_schema(
+                staging,
+                runs_dir=runs_dir,
+                run_id=run_id,
+                base_revision=base_revision,
+                target_repository=target_repository,
+                relative=relative,
+                previous=previous,
+            )
+            or changed
+        )
+    return changed
+
+
+def _without_literal_symbols(schema: Any) -> Any:
+    previous = deepcopy(schema)
+    value = previous["$defs"]["textItem"]["properties"]["value"]
+    if value.get("not") != {"pattern": "</?[A-Za-z][^>]*>"} or value.get("pattern") != (
+        r"^[^\u0000-\u001f\u007f-\u009f]+$"
+    ):
+        raise ValueError("bundled schema does not have the known literal symbol contract")
+    value.pop("not")
+    value["pattern"] = r"^[^\u0000-\u001f\u007f<>]+$"
+    return previous
+
+
+def _upgrade_one_schema(
+    staging: Path,
+    *,
+    runs_dir: Path,
+    run_id: str,
+    base_revision: str,
+    target_repository: str,
+    relative: Path,
+    previous: Callable[[Any], Any],
+) -> bool:
     if not _official(target_repository):
         return False
     try:
@@ -95,7 +137,7 @@ def upgrade_private_staging_schema(
             return False
         assert_no_link_or_reparse(candidate, boundary=runs_root)
         assert_no_link_or_reparse(candidate / ".git", boundary=candidate)
-        schema_path = candidate / _SCHEMA
+        schema_path = candidate / relative
         assert_no_link_or_reparse(schema_path, boundary=candidate)
         git = GitRunner(candidate)
         if (
@@ -105,9 +147,9 @@ def upgrade_private_staging_schema(
         ):
             return False
         original, current = _read_schema(schema_path)
-        replacement, bundled = _read_schema(_BUNDLED_SCHEMA)
+        replacement, bundled = _read_schema(Path(__file__).resolve().parents[1] / relative)
         if _canonical(current) == _canonical(bundled) or _canonical(current) != _canonical(
-            _without_png(bundled)
+            previous(bundled)
         ):
             return False
     except (

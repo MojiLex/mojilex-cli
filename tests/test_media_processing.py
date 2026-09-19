@@ -200,9 +200,20 @@ def test_tgs_analysis_consumes_the_full_renderer_timeline(
     assert not tuple(output.iterdir())
 
 
-@pytest.mark.parametrize("frame_count", [1, 2])
+@pytest.mark.parametrize(
+    ("first", "last", "frame_count"),
+    [
+        (0, 1, 1),
+        (0, 2, 2),
+        (0, 1.49, 1),
+        (0, 1.5, 2),
+        (0.6, 2.4, 1),
+        (0.4, 1.6, 2),
+        (7, 8.999999, 2),
+    ],
+)
 def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame_count: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: float, last: float, frame_count: int
 ) -> None:
     executable = tmp_path / "mojilex-rlottie-rgba.exe"
     executable.write_bytes(b"synthetic lossless renderer")
@@ -211,8 +222,8 @@ def test_tgs_rgba_contract_passes_native_dimensions_and_frame_count(
     document = {
         "v": "5.7",
         "fr": 2,
-        "ip": 0,
-        "op": frame_count,
+        "ip": first,
+        "op": last,
         "w": 2,
         "h": 2,
         "assets": [],
@@ -739,3 +750,103 @@ def test_unix_termination_targets_worker_process_group(monkeypatch: pytest.Monke
     )
     sandbox_module._terminate_worker(FakeProcess(), None, platform="posix")
     assert calls == [(123, getattr(sandbox_module.signal, "SIGKILL", 9))]
+
+
+@pytest.mark.parametrize("field", ["fr", "ip", "op"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_tgs_inspection_rejects_nonfinite_timeline(
+    tmp_path: Path, field: str, value: float
+) -> None:
+    document = {"v": "5.7", "fr": 30, "ip": 0, "op": 30, "w": 2, "h": 2, "assets": [], "layers": []}
+    document[field] = value
+    source = tmp_path / "invalid.tgs"
+    source.write_bytes(gzip.compress(json.dumps(document).encode(), mtime=0))
+    with pytest.raises(MediaError):
+        inspect_tgs(source, MediaLimits())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("w", 0),
+        ("h", -1),
+        ("w", 2.5),
+        ("w", float("inf")),
+        ("op", float("nan")),
+        ("ip", float("inf")),
+        ("op", -1),
+    ],
+)
+def test_tgs_worker_rejects_invalid_header_before_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: float
+) -> None:
+    monkeypatch.setattr(worker_module.shutil, "which", lambda value: value)
+    monkeypatch.setattr(
+        worker_module.subprocess, "Popen", lambda *a, **kw: pytest.fail("unsafe renderer launch")
+    )
+    document = {"w": 2, "h": 2, "ip": 0, "op": 2, "fr": 30}
+    document[field] = value
+    with pytest.raises(RuntimeError, match="native canvas or timeline is invalid"):
+        worker_module._render_tgs(
+            tmp_path / "source.tgs",
+            tmp_path,
+            document,
+            MediaLimits(),
+            "renderer",
+            needs_repainting=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("first", "last", "expected_count"),
+    [
+        (0, 1.49, 1),
+        (0, 1.5, 2),
+        (0.6, 2.4, 1),
+        (0.4, 1.6, 2),
+        (7, 8.999999, 2),
+    ],
+)
+def test_tgs_fractional_timeline_matches_real_rlottie(
+    tmp_path: Path, first: float, last: float, expected_count: int
+) -> None:
+    executable = sandbox_module._default_rlottie_renderer()
+    if shutil.which(executable) is None:
+        pytest.skip("native rlottie helper unavailable")
+    document = {
+        "v": "5.7.4",
+        "fr": 30,
+        "ip": first,
+        "op": last,
+        "w": 2,
+        "h": 2,
+        "assets": [],
+        "layers": [],
+    }
+    frames, analysis = worker_module._render_tgs(
+        tmp_path / "unused.tgs",
+        tmp_path,
+        document,
+        MediaLimits(),
+        executable,
+        needs_repainting=False,
+    )
+    try:
+        assert analysis is not None
+        expected = dict(document, ip=0, op=expected_count)
+        baseline_frames, baseline = worker_module._render_tgs(
+            tmp_path / "unused.tgs",
+            tmp_path,
+            expected,
+            MediaLimits(),
+            executable,
+            needs_repainting=False,
+        )
+        try:
+            assert analysis.fingerprint == baseline.fingerprint
+        finally:
+            for frame in baseline_frames:
+                frame.close()
+    finally:
+        for frame in frames:
+            frame.close()

@@ -508,7 +508,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64,
-          "pattern": "^[^\\u0000-\\u001f\\u007f<>]+$"
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "not": {
+            "pattern": "</?[A-Za-z][^>]*>"
+          }
         },
         "kind": {
           "enum": [

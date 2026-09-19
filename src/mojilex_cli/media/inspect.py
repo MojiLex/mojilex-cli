@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import os
 import subprocess
 from collections.abc import Mapping
@@ -140,7 +141,12 @@ def inspect_tgs(path: Path, limits: MediaLimits) -> tuple[dict[str, object], dic
         last_frame = float(document["op"])
     except (KeyError, TypeError, ValueError) as exc:
         raise MediaError("TGS dimensions or timeline are invalid") from exc
-    if document.get("v") is None or frame_rate <= 0 or last_frame <= first_frame:
+    if (
+        document.get("v") is None
+        or not all(math.isfinite(value) for value in (frame_rate, first_frame, last_frame))
+        or frame_rate <= 0
+        or last_frame <= first_frame
+    ):
         raise MediaError("TGS header or timeline is invalid")
     if width * height > min(limits.max_pixels, HARD_MAX_PIXELS):
         raise MediaLimitError("decoded TGS exceeds the pixel limit")
