@@ -37,6 +37,7 @@ from .validation import (
     DatasetValidationError,
     ValidationIssue,
     ValidationReport,
+    load_validated_dataset,
     validate_dataset,
     validate_snapshot,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "emoji_bucket_path",
     "emoji_shards",
     "load_dataset",
+    "load_validated_dataset",
     "memberships_path",
     "merge_collection",
     "merge_emoji",

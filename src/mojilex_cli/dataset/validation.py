@@ -1856,18 +1856,30 @@ def validate_snapshot(
     return ValidationReport(tuple(sorted(set(issues))))
 
 
-def validate_dataset(root: str | Path, *, strict: bool = True) -> ValidationReport:
+def load_validated_dataset(
+    root: str | Path, *, strict: bool = True
+) -> tuple[DatasetSnapshot | None, ValidationReport]:
+    """Load once and validate that exact snapshot with all dataset checks.
+
+    A snapshot is unavailable when a tracking guard or load error prevents loading.
+    Callers must check the report before using a returned snapshot.
+    """
     root_path = Path(root).resolve()
     tracked_issues = _tracked_transaction_issues(root_path)
     if tracked_issues:
-        return ValidationReport(tuple(sorted(set(tracked_issues))))
+        return None, ValidationReport(tuple(sorted(set(tracked_issues))))
     try:
         snapshot = load_dataset(root_path)
     except DatasetLoadError as exc:
-        return ValidationReport((ValidationIssue("LOAD", str(root), str(exc)),))
-    return validate_snapshot(
+        return None, ValidationReport((ValidationIssue("LOAD", str(root), str(exc)),))
+    return snapshot, validate_snapshot(
         snapshot,
         canonical=strict,
         schemas=strict,
         repository_files=strict,
     )
+
+
+def validate_dataset(root: str | Path, *, strict: bool = True) -> ValidationReport:
+    _, report = load_validated_dataset(root, strict=strict)
+    return report

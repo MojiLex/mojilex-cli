@@ -78,6 +78,7 @@ from mojilex_cli.commands.runtime import (
     CommandResult,
     begin_pack_queue,
     operation_progress,
+    preparation_progress,
     report_pack_counts,
     report_pack_stage,
     report_progress,
@@ -98,6 +99,7 @@ from mojilex_cli.dataset import (
     DatasetSnapshot,
     apply_snapshot,
     load_dataset,
+    load_validated_dataset,
     validate_dataset,
     validate_snapshot,
 )
@@ -453,7 +455,13 @@ async def _run_describe_many(
                 values.append(source)
                 seen.add(source)
     entries = [(key, tuple(values)) for key, values in combined.items() if values]
-    saved = [store.load_for_resume(key, schema_version=SCHEMA_VERSION) for key, _ in entries]
+    with preparation_progress(
+        "Чтение сохранённых запусков" if current_ui_language() == "ru" else "Reading saved runs"
+    ):
+        saved = [
+            await run_blocking(store.load_for_resume, key, schema_version=SCHEMA_VERSION)
+            for key, _ in entries
+        ]
     requests_used = sum(item.ai_requests_used for item in saved)
     cost_reserved = sum((item.ai_cost_reserved_usd for item in saved), Decimal("0"))
     if (config.ai.max_ai_requests is not None and requests_used > config.ai.max_ai_requests) or (
@@ -655,19 +663,32 @@ async def _run_add(
         ) as workspace,
     ):
         if stage_only and resume_checkpoint is not None:
-            upgrade_private_staging_schema(
-                workspace.root,
-                runs_dir=cast(Path, config.runs_dir),
-                run_id=resume_checkpoint.run_id,
-                base_revision=resume_checkpoint.base_revision,
-                target_repository=resume_checkpoint.target_repository,
+            with preparation_progress(
+                "Проверка формата сохранённой базы"
+                if current_ui_language() == "ru"
+                else "Checking saved dataset format"
+            ):
+                await run_blocking(
+                    upgrade_private_staging_schema,
+                    workspace.root,
+                    runs_dir=cast(Path, config.runs_dir),
+                    run_id=resume_checkpoint.run_id,
+                    base_revision=resume_checkpoint.base_revision,
+                    target_repository=resume_checkpoint.target_repository,
+                )
+        with preparation_progress(
+            "Чтение и проверка сохранённой базы"
+            if current_ui_language() == "ru"
+            else "Reading and validating saved dataset"
+        ):
+            initial, initial_report = await run_blocking(
+                load_validated_dataset, workspace.root, strict=True
             )
-        initial_report = await run_blocking(validate_dataset, workspace.root, strict=True)
         if not initial_report.valid and not (
             stage_only and _only_staging_review_issues(initial_report)
         ):
             initial_report.raise_for_errors()
-        initial = await run_blocking(load_dataset, workspace.root)
+        assert initial is not None  # A load failure was rejected by the report above.
         git = GitRunner(workspace.root, github_token=credentials.github_token)
         base_sha = git.current_sha()
         run_identifier = resume_id or new_run_id()
@@ -926,7 +947,12 @@ async def _run_add(
 
         generation_token = _GENERATION_INPUTS.set(None)
         try:
-            generation_inputs = await run_blocking(_load_generation_inputs, current, config)
+            with preparation_progress(
+                "Подготовка правил анализа ИИ"
+                if current_ui_language() == "ru"
+                else "Preparing AI analysis rules"
+            ):
+                generation_inputs = await run_blocking(_load_generation_inputs, current, config)
             _GENERATION_INPUTS.set(generation_inputs)
             if checkpoint is not None and generation_inputs is not None:
                 checkpoint = checkpoint.model_copy(
@@ -2162,7 +2188,14 @@ async def _run_describe(
 ) -> CommandResult:
     config = load_config()
     store = RunStore(cast(Path, config.runs_dir))
-    checkpoint = store.load_for_resume(run_id, schema_version=SCHEMA_VERSION)
+    with preparation_progress(
+        "Восстановление сохранённого прогресса"
+        if current_ui_language() == "ru"
+        else "Restoring saved progress"
+    ):
+        checkpoint = await run_blocking(
+            store.load_for_resume, run_id, schema_version=SCHEMA_VERSION
+        )
     report_run_id(checkpoint.run_id)
     if checkpoint.command not in {"import", "describe", "add"}:
         raise CommandError(

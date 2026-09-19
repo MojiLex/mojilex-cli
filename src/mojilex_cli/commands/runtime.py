@@ -10,9 +10,10 @@ import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, TypeVar, get_args
 
 import typer
@@ -61,6 +62,9 @@ class _CommandContext:
     progress_note: str = ""
     progress_paused: bool = False
     operations: list[tuple[str, float]] = field(default_factory=list)
+    preparations: list[tuple[str, float]] = field(default_factory=list)
+    preparation_stop: Event | None = None
+    preparation_thread: Thread | None = None
     operation_live: Live | None = None
     operation_spinner: Spinner = field(default_factory=lambda: Spinner("dots"))
     operation_bar: ProgressBar = field(
@@ -91,6 +95,15 @@ class _ProgressDisplay:
             view = Group(*rows)
         else:
             view = Group(*views.values())
+        if self.context.preparations:
+            label, started = self.context.preparations[-1]
+            elapsed = int(time.monotonic() - started)
+            concurrent = len(self.context.preparations) - 1
+            suffix = f" (+{concurrent})" if concurrent else ""
+            view = Group(
+                Text(f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}{suffix}", style="cyan"),
+                view,
+            )
         lines = console.render_lines(view, options.update(height=None), pad=False)
         if len(lines) > height:
             for line in lines[: height - 1]:
@@ -170,18 +183,66 @@ def operation_progress(label: str) -> Iterator[None]:
         yield
         return
     safe_label = ui_text(str(redact(label)))
-    context.operations.append((safe_label, time.monotonic()))
+    operation = (safe_label, time.monotonic())
+    context.operations.append(operation)
     try:
         _resume_operation_live(context)
         if context.operation_live is None and context.live is None:
             report_progress(safe_label)
         yield
     finally:
-        context.operations.pop()
+        context.operations[:] = [entry for entry in context.operations if entry is not operation]
         if context.operations:
             _resume_operation_live(context)
         else:
             _stop_operation_live(context)
+
+
+@contextmanager
+def preparation_progress(label: str) -> Iterator[None]:
+    """Keep a named startup stage visible even after the pack dashboard starts."""
+    context = _COMMAND_CONTEXT.get()
+    if context is None or context.quiet or context.json_output:
+        yield
+        return
+    safe_label = ui_text(str(redact(label)))
+    preparation = (safe_label, time.monotonic())
+    context.preparations.append(preparation)
+
+    def refresh() -> None:
+        if not context.progress_paused and not context.prompt_depth:
+            context.last_pack_refresh = 0.0
+            _refresh_live(context)
+
+    try:
+        # The regular operation indicator handles startup before a queue exists.
+        # Once it exists, refresh that same dashboard instead of nesting Lives.
+        with operation_progress(safe_label):
+            refresh()
+            if context.preparation_thread is None:
+                stopped = Event()
+
+                def tick() -> None:
+                    while not stopped.wait(0.5):
+                        refresh()
+
+                inherited = copy_context()
+                context.preparation_stop = stopped
+                context.preparation_thread = Thread(target=lambda: inherited.run(tick), daemon=True)
+                context.preparation_thread.start()
+            yield
+    finally:
+        context.preparations[:] = [
+            entry for entry in context.preparations if entry is not preparation
+        ]
+        if not context.preparations:
+            if context.preparation_stop is not None:
+                context.preparation_stop.set()
+            if context.preparation_thread is not None:
+                context.preparation_thread.join()
+            context.preparation_stop = None
+            context.preparation_thread = None
+        refresh()
 
 
 @contextmanager

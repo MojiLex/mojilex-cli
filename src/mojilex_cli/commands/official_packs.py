@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 
 from mojilex_cli.config import load_config
-from mojilex_cli.dataset import load_dataset, validate_dataset
+from mojilex_cli.dataset import load_validated_dataset
 from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.output import RunStatus
 from mojilex_cli.pipeline.runner import repository_workspace
@@ -78,8 +78,9 @@ def _load_official_pack_names() -> frozenset[str]:
     # The official main branch, never a user's local draft, fork, or pending PR.
     # One bounded checkout per input batch, not one GitHub request per URL.
     with repository_workspace("MojiLex/mojilex", "main") as workspace:
-        validate_dataset(workspace.root, strict=True).raise_for_errors()
-        snapshot = load_dataset(workspace.root)
+        snapshot, report = load_validated_dataset(workspace.root, strict=True)
+        report.raise_for_errors()
+        assert snapshot is not None
         return frozenset(
             collection.native_id.casefold()
             for collection in snapshot.collections.values()

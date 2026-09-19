@@ -99,11 +99,6 @@ def test_index_uses_only_official_main_and_correct_namespace(tmp_path, monkeypat
         yield SimpleNamespace(root=tmp_path)
 
     monkeypatch.setattr(official_packs, "repository_workspace", workspace)
-    monkeypatch.setattr(
-        official_packs,
-        "validate_dataset",
-        lambda *_args, **_kwargs: SimpleNamespace(raise_for_errors=lambda: None),
-    )
     collections = [
         SimpleNamespace(
             platform="telegram",
@@ -117,8 +112,11 @@ def test_index_uses_only_official_main_and_correct_namespace(tmp_path, monkeypat
     ]
     monkeypatch.setattr(
         official_packs,
-        "load_dataset",
-        lambda _: SimpleNamespace(collections=dict(enumerate(collections))),
+        "load_validated_dataset",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(collections=dict(enumerate(collections))),
+            SimpleNamespace(raise_for_errors=lambda: None),
+        ),
     )
     assert official_packs.official_pack_names() == {"published"}
     assert opened == [("MojiLex/mojilex", "main")]
@@ -517,8 +515,11 @@ def test_official_snapshot_failure_is_not_cached_and_validation_stays_strict(tmp
         return SimpleNamespace(raise_for_errors=raise_for_errors)
 
     monkeypatch.setattr(official_packs, "repository_workspace", workspace)
-    monkeypatch.setattr(official_packs, "validate_dataset", validate)
-    monkeypatch.setattr(official_packs, "load_dataset", lambda _: SimpleNamespace(collections={}))
+    monkeypatch.setattr(
+        official_packs,
+        "load_validated_dataset",
+        lambda root, strict: (SimpleNamespace(collections={}), validate(root, strict=strict)),
+    )
     with official_packs.official_pack_scope():
         with pytest.raises(RuntimeError, match="invalid official dataset"):
             official_packs.official_pack_names()

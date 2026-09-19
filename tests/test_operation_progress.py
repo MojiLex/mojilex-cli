@@ -42,9 +42,11 @@ def test_operation_animates_while_synchronous_work_is_blocked(terminal):
         first = len(output.getvalue())
         time.sleep(0.6)
         assert len(output.getvalue()) > first
+        original = context.operations[-1]
         context.operations[-1] = ("Uploading to GitHub", time.monotonic() - 65)
         context.operation_live.refresh()
         assert "01:05" in output.getvalue()
+        context.operations[-1] = original
         assert "%" not in output.getvalue()
     assert context.operation_live is None
     assert context.operations == []
@@ -189,3 +191,64 @@ def test_startup_displays_pulsing_bar_immediately_without_invented_percentage(te
             assert bars[0] in nested.renderables
         runtime.begin_pack_queue(["Alpha"])
         assert context.operation_live is None and context.live is not None
+
+
+def test_preparation_dashboard_keeps_elapsed_alive_and_clears_on_error(terminal):
+    context, output = terminal
+    runtime.begin_pack_queue(["Alpha"])
+    with pytest.raises(RuntimeError), runtime.preparation_progress("Loading saved dataset"):
+        assert "Loading saved dataset" in output.getvalue()
+        assert context.operation_live is None
+        assert context.live is not None
+        before = len(output.getvalue())
+        time.sleep(0.7)
+        assert len(output.getvalue()) > before
+        assert context.pack_queue.stages == {"Alpha": "waiting"}
+        raise RuntimeError("failed")
+    assert context.preparations == []
+    assert context.preparation_thread is None
+    assert context.operations == []
+    plain = StringIO()
+    Console(file=plain).print(context.progress_view)
+    assert "Loading saved dataset" not in plain.getvalue()
+
+
+def test_concurrent_preparations_survive_out_of_order_exit(terminal):
+    context, output = terminal
+    runtime.begin_pack_queue(["Alpha", "Beta"])
+    first = runtime.preparation_progress("Loading Alpha")
+    second = runtime.preparation_progress("Loading Beta")
+    first.__enter__()
+    second.__enter__()
+    heartbeat = context.preparation_thread
+    assert "(+1)" in output.getvalue()
+    first.__exit__(None, None, None)
+    assert [label for label, _ in context.preparations] == ["Loading Beta"]
+    assert [label for label, _ in context.operations] == ["Loading Beta"]
+    assert context.preparation_thread is heartbeat
+    second.__exit__(None, None, None)
+    assert context.preparations == []
+    assert context.operations == []
+    assert context.preparation_thread is None
+
+
+def test_preparation_heartbeat_does_not_redraw_prompt(terminal):
+    context, output = terminal
+    runtime.begin_pack_queue(["Alpha"])
+    with runtime.preparation_progress("Loading dataset"):
+        with runtime.suspend_progress():
+            before = output.getvalue()
+            time.sleep(0.7)
+            assert output.getvalue() == before
+        assert context.preparations
+
+
+@pytest.mark.parametrize("quiet,json_output", [(True, False), (False, True)])
+def test_preparation_stays_silent_for_machine_and_quiet(terminal, quiet, json_output):
+    context, output = terminal
+    context.quiet = quiet
+    context.json_output = json_output
+    with runtime.preparation_progress("Hidden"):
+        assert context.preparation_thread is None
+        assert not context.preparations
+    assert output.getvalue() == ""
