@@ -59,10 +59,12 @@ async def test_dependency_waiters_do_not_occupy_media_preparation_slots(request,
         await asyncio.wait_for(alpha_ai.wait(), 10)
         await asyncio.wait_for(delta_media.wait(), 5)
         assert not active_dependent_media
-        assert state.merges == []
+        assert not set(state.merges).intersection(names[:3])
     finally:
         release_alpha.set()
         result = await asyncio.wait_for(task, 15)
     assert not result.errors
-    assert state.merges == list(names)
+    # Independent packs may finish first; shared identities retain source order.
+    assert sorted(state.merges) == sorted(names)
+    assert [name for name in state.merges if name != "PackDelta"] == list(names[:3])
     assert active_dependent_media == ["PackBeta", "PackGamma"]
