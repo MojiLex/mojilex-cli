@@ -319,6 +319,18 @@ class Uncertainty(StrEnum):
     MOTION = "motion"
 
 
+# The dataset also reserves the legacy ui-icon facet spelling.
+CONTROLLED_SEMANTIC_TAGS = frozenset(
+    {
+        *(item.value for item in ContentType),
+        *(item.value for item in Style),
+        *(item.value for item in SuggestedUse),
+        *(item.value for item in Uncertainty),
+        "ui-icon",
+    }
+)
+
+
 class FingerprintStatus(StrEnum):
     COMPLETE = "complete"
     PARTIAL = "partial"
