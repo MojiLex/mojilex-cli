@@ -32,6 +32,9 @@ class PackQueue:
     batches: dict[object, str] = field(default_factory=dict)
     counts: dict[str, dict[str, PackCounts]] = field(default_factory=dict)
     disclosures: set[str] = field(default_factory=set)
+    # Completed packs are checked alongside useful work in the interactive fast
+    # pipeline. Only identities live here; durable progress remains in RunStore.
+    completed_checks: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     def ai_activity_text(self) -> str:
         """Describe current work, never the last request that happened to log."""

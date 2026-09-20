@@ -72,7 +72,7 @@ from mojilex_cli.cache import (
     media_digest as cache_media_digest,
 )
 from mojilex_cli.commands.progress import BatchProgress
-from mojilex_cli.commands.queue_progress import PACK
+from mojilex_cli.commands.queue_progress import PACK, SHARED
 from mojilex_cli.commands.runtime import (
     CommandError,
     CommandResult,
@@ -455,13 +455,23 @@ async def _run_describe_many(
                 values.append(source)
                 seen.add(source)
     entries = [(key, tuple(values)) for key, values in combined.items() if values]
+    finite_budget = config.ai.max_ai_requests is not None or config.ai.max_cost_usd is not None
     with preparation_progress(
         "Чтение сохранённых запусков" if current_ui_language() == "ru" else "Reading saved runs"
     ):
-        saved = [
-            await run_blocking(store.load_for_resume, key, schema_version=SCHEMA_VERSION)
-            for key, _ in entries
-        ]
+
+        async def load_saved(entry: tuple[str, tuple[str, ...]]) -> RunCheckpoint:
+            return await run_blocking(
+                store.load_for_resume, entry[0], schema_version=SCHEMA_VERSION
+            )
+
+        # Finite shared budgets need the entire prior ledger before spending.
+        # Unlimited runs can start independently as each checkpoint is restored.
+        saved = (
+            await bounded_map(entries, load_saved, concurrency=config.processing.pack_concurrency)
+            if finite_budget
+            else []
+        )
     requests_used = sum(item.ai_requests_used for item in saved)
     cost_reserved = sum((item.ai_cost_reserved_usd for item in saved), Decimal("0"))
     if (config.ai.max_ai_requests is not None and requests_used > config.ai.max_ai_requests) or (
@@ -480,6 +490,30 @@ async def _run_describe_many(
         cost_reserved=cost_reserved,
     )
     stopped = asyncio.Event()
+    accounted = {key for key, _ in entries} if finite_budget else set()
+
+    async def account_saved(run_id: str) -> None:
+        if run_id not in accounted:
+            checkpoint = await load_saved((run_id, ()))
+            # No await between these updates: all budget accounting is on this
+            # event loop, and each run has one writer. Limited budgets preload.
+            budget.requests_used += checkpoint.ai_requests_used
+            budget.cost_reserved += checkpoint.ai_cost_reserved_usd
+            accounted.add(run_id)
+
+    queue = SHARED.get()
+    selected_pairs = {(key, source) for key, values in entries for source in values}
+    completed_checks = (
+        {source: pair for source, pair in queue.completed_checks.items() if pair in selected_pairs}
+        if queue is not None
+        else {}
+    )
+    deferred_pairs = set(completed_checks.values())
+    work_entries = [
+        (key, tuple(source for source in values if (key, source) not in deferred_pairs))
+        for key, values in entries
+    ]
+    work_entries = [(key, values) for key, values in work_entries if values]
 
     async def describe(entry: tuple[str, tuple[str, ...]]) -> CommandResult:
         if stopped.is_set():
@@ -487,6 +521,7 @@ async def _run_describe_many(
         run_id, sources = entry
         try:
             with store.execution_lock(run_id):
+                await account_saved(run_id)
                 result = await _run_describe(run_id, replace(overrides, selected_sources=sources))
             if result.status not in {RunStatus.SUCCEEDED, RunStatus.NOOP}:
                 stopped.set()
@@ -497,7 +532,11 @@ async def _run_describe_many(
 
     with (
         prompt_contract_scope(),
-        schema_validation_scope(),
+        schema_validation_scope(
+            persistent_cache=Path(config.cache_dir) / "schema-validation"
+            if config.cache_dir is not None
+            else None
+        ),
         request_budget_scope(budget),
         pack_pipeline_limits(config.processing.pack_concurrency),
         batch_limits(
@@ -507,9 +546,79 @@ async def _run_describe_many(
             max_temp_bytes=config.processing.max_temp_bytes,
         ),
     ):
-        results = await bounded_map(
-            entries, describe, concurrency=config.processing.pack_concurrency
+        from mojilex_cli.commands.import_reuse import (
+            _completed_source,
+            _fetch_completed_metadata,
+            refresh_completed_imports,
         )
+
+        # Fetch only metadata concurrently. Checkpoint changes wait for active
+        # writers, so appending newly discovered emojis cannot overwrite work.
+        metadata = (
+            asyncio.create_task(
+                _fetch_completed_metadata(
+                    tuple(completed_checks),
+                    config,
+                    concurrency=config.telegram.download_concurrency,
+                )
+            )
+            if completed_checks
+            else None
+        )
+        try:
+            results = await bounded_map(
+                work_entries, describe, concurrency=config.processing.pack_concurrency
+            )
+            if metadata is not None:
+                try:
+                    fresh = await metadata
+                    for key in dict.fromkeys(pair[0] for pair in completed_checks.values()):
+                        await account_saved(key)
+                    latest = {
+                        key: await run_blocking(
+                            store.load_for_resume, key, schema_version=SCHEMA_VERSION
+                        )
+                        for key in dict.fromkeys(pair[0] for pair in completed_checks.values())
+                    }
+                    matches = {
+                        source: (latest[key], saved_source)
+                        for source, (key, saved_source) in completed_checks.items()
+                    }
+                    with preparation_progress(
+                        "Проверка обновлений готовых паков"
+                        if current_ui_language() == "ru"
+                        else "Checking completed pack updates"
+                    ):
+                        refreshed = await run_blocking(
+                            refresh_completed_imports,
+                            matches,
+                            config,
+                            download_concurrency=config.telegram.download_concurrency,
+                            fresh=fresh,
+                        )
+                    changed: dict[str, list[str]] = {}
+                    for checkpoint, source in refreshed.values():
+                        if not _completed_source(checkpoint, source):
+                            changed.setdefault(checkpoint.run_id, []).append(source)
+                            report_pack_stage(source, "waiting")
+                    if queue is not None:
+                        for source in completed_checks:
+                            queue.completed_checks.pop(source, None)
+                    results.extend(
+                        await bounded_map(
+                            [(key, tuple(values)) for key, values in changed.items()],
+                            describe,
+                            concurrency=config.processing.pack_concurrency,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(
+                        CommandResult(status=RunStatus.FAILED, errors=[structured_exception(exc)])
+                    )
+        finally:
+            if metadata is not None:
+                metadata.cancel()
+                await asyncio.gather(metadata, return_exceptions=True)
     if not results:
         return CommandResult(status=RunStatus.NOOP)
     failures = [
@@ -655,7 +764,11 @@ async def _run_add(
     )
     with (
         prompt_contract_scope(),
-        schema_validation_scope(),
+        schema_validation_scope(
+            persistent_cache=Path(config.cache_dir) / "schema-validation"
+            if config.cache_dir is not None
+            else None
+        ),
         repository_workspace(
             config.repository.target,
             config.repository.base_branch,

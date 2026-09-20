@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from threading import Lock
+from typing import Any, TypeVar, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from mojilex_cli.domain.models import Collection, Emoji, Membership, Tombstone, VisualRelation
 
@@ -31,6 +36,63 @@ from .serialization import (
     serialize_visual_relations,
 )
 from .transaction import locked_dataset_transaction_view
+
+_MODEL_CACHE_BYTES = 16 * 1024 * 1024
+_MODEL_CACHE_ENTRIES = 8192
+_Model = TypeVar("_Model", bound=BaseModel)
+
+
+class _ModelMemo:
+    def __init__(self) -> None:
+        self.entries: OrderedDict[tuple[type[BaseModel], bytes, bool], tuple[BaseModel, ...]] = (
+            OrderedDict()
+        )
+        self.size = 0
+        self.lock = Lock()
+
+
+_MODEL_MEMO: ContextVar[_ModelMemo | None] = ContextVar("dataset_model_memo", default=None)
+
+
+@contextmanager
+def dataset_read_scope() -> Iterator[None]:
+    """Reuse exact bytes within one operation, never filesystem metadata or mutable results."""
+    if _MODEL_MEMO.get() is not None:
+        yield
+        return
+    token = _MODEL_MEMO.set(_ModelMemo())
+    try:
+        yield
+    finally:
+        _MODEL_MEMO.reset(token)
+
+
+def _read_models(data: bytes, model: type[_Model], *, source: str, many: bool) -> list[_Model]:
+    # Each caller has freshly read and checked the file before reaching this cache.
+    # The model distinguishes JSON/JSONL record kinds; only validated values enter.
+    memo = _MODEL_MEMO.get()
+    key = (model, data, many)
+    if memo is not None:
+        with memo.lock:
+            cached = memo.entries.get(key)
+            if cached is not None:
+                memo.entries.move_to_end(key)
+                return [cast(_Model, value.model_copy(deep=True)) for value in cached]
+    values = parse_jsonl(data, source=source) if many else [parse_json(data, source=source)]
+    result = [model.model_validate(raw) for raw in values]
+    if memo is not None and len(data) <= _MODEL_CACHE_BYTES:
+        saved = tuple(item.model_copy(deep=True) for item in result)
+        with memo.lock:
+            if key not in memo.entries:
+                while memo.entries and (
+                    memo.size + len(data) > _MODEL_CACHE_BYTES
+                    or len(memo.entries) >= _MODEL_CACHE_ENTRIES
+                ):
+                    old_key, _ = memo.entries.popitem(last=False)
+                    memo.size -= len(old_key[1])
+                memo.entries[key] = saved
+                memo.size += len(data)
+    return result
 
 
 class DatasetLoadError(ValueError):
@@ -133,17 +195,11 @@ def _read(path: Path, root: Path, source: dict[PurePosixPath, bytes]) -> bytes:
         assert_no_link_or_reparse(path, boundary=root)
     except ValueError as exc:
         raise DatasetLoadError(str(exc)) from exc
-    try:
-        path.resolve(strict=True).relative_to(root)
-    except (OSError, ValueError) as exc:
-        raise DatasetLoadError(f"path escapes dataset root: {path}") from exc
-    current = path
-    while current != root:
-        if current.is_symlink():
-            raise DatasetLoadError(f"symlink is forbidden: {current}")
-        current = current.parent
-    if path.is_symlink():
-        raise DatasetLoadError(f"symlink is forbidden: {path}")
+    # The guard above already checks lexical containment and every component
+    # (including root and the file) for links/reparse points. Repeating resolve()
+    # and another ancestor is_symlink() walk adds several stats per record on
+    # Windows without strengthening that same check. read_bytes still verifies
+    # that the file exists and is readable; no filesystem metadata is cached.
     data = path.read_bytes()
     source[PurePosixPath(path.relative_to(root).as_posix())] = data
     return data
@@ -188,22 +244,35 @@ def _load_dataset_unlocked(
         if data_root.exists():
             assert_no_link_or_reparse(data_root, boundary=root_path)
             for collection_file in sorted(data_root.glob("*/collections/*/*/collection.json")):
-                value = parse_json(
-                    _read(collection_file, root_path, source), source=str(collection_file)
-                )
-                collection = Collection.model_validate(value)
+                collection = _read_models(
+                    _read(collection_file, root_path, source),
+                    Collection,
+                    source=str(collection_file),
+                    many=False,
+                )[0]
                 _insert(snapshot.collections, collection, collection_file)
                 memberships_file = collection_file.with_name("memberships.jsonl")
                 if not memberships_file.is_file() or memberships_file.is_symlink():
                     raise DatasetLoadError(
                         f"missing or unsafe memberships file: {memberships_file}"
                     )
-                for raw in parse_jsonl(
-                    _read(memberships_file, root_path, source), source=str(memberships_file)
+                for membership in _read_models(
+                    _read(memberships_file, root_path, source),
+                    Membership,
+                    source=str(memberships_file),
+                    many=True,
                 ):
-                    membership = Membership.model_validate(raw)
                     _insert(snapshot.memberships, membership, memberships_file)
             for bucket_file in sorted(data_root.glob("*/emojis/*/*.jsonl")):
+                if not allow_missing_fingerprints:
+                    for emoji in _read_models(
+                        _read(bucket_file, root_path, source),
+                        Emoji,
+                        source=str(bucket_file),
+                        many=True,
+                    ):
+                        _insert(snapshot.emojis, emoji, bucket_file)
+                    continue
                 for raw in parse_jsonl(
                     _read(bucket_file, root_path, source), source=str(bucket_file)
                 ):
@@ -232,19 +301,23 @@ def _load_dataset_unlocked(
             relation_root = data_root / "relations" / "visual"
             if relation_root.exists():
                 for relation_file in sorted(relation_root.glob("*/*.jsonl")):
-                    for raw in parse_jsonl(
-                        _read(relation_file, root_path, source), source=str(relation_file)
+                    for relation in _read_models(
+                        _read(relation_file, root_path, source),
+                        VisualRelation,
+                        source=str(relation_file),
+                        many=True,
                     ):
-                        relation = VisualRelation.model_validate(raw)
                         _insert(snapshot.relations, relation, relation_file)
         tombstone_root = root_path / "tombstones"
         if tombstone_root.exists():
             assert_no_link_or_reparse(tombstone_root, boundary=root_path)
             for tombstone_file in sorted(tombstone_root.glob("*/*.json")):
-                raw = parse_json(
-                    _read(tombstone_file, root_path, source), source=str(tombstone_file)
-                )
-                tombstone = Tombstone.model_validate(raw)
+                tombstone = _read_models(
+                    _read(tombstone_file, root_path, source),
+                    Tombstone,
+                    source=str(tombstone_file),
+                    many=False,
+                )[0]
                 _insert(snapshot.tombstones, tombstone, tombstone_file)
         return snapshot
     except (OSError, ValueError, ValidationError) as exc:

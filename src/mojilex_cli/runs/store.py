@@ -480,6 +480,12 @@ class RunStore:
             raise RunStoreError("checkpoint exceeds the safe size limit")
         with self.run_lock(checkpoint.run_id, timeout=5):
             _atomic_write(destination, serialized)
+            from .index import save_index
+
+            try:
+                save_index(self.root, checkpoint, serialized)
+            except OSError:
+                pass  # Discovery cache failure cannot invalidate a durable checkpoint.
         return destination
 
     def load(self, run_id: str) -> RunCheckpoint:
@@ -493,11 +499,29 @@ class RunStore:
             raise RunStoreError(f"cannot read checkpoint {run_id}") from exc
         if len(payload) > _MAX_CHECKPOINT_BYTES:
             raise RunStoreError("checkpoint exceeds the safe size limit")
+        return self._load_payload(payload)
+
+    def _load_payload(self, payload: bytes) -> RunCheckpoint:
+        """Validate exactly the bytes read by a caller, without a second file read."""
+        from .parse_cache import lookup, remember
+
+        rules = (
+            *_safety_rule_identity(),
+            RunCheckpoint.__pydantic_validator__,
+            getattr(
+                RunCheckpoint.model_validate_json, "__func__", RunCheckpoint.model_validate_json
+            ),
+            type(self)._assert_checkpoint_safe,
+        )
+        cached = lookup(payload, rules)
+        if cached is not None:
+            return cached
         try:
             checkpoint = RunCheckpoint.model_validate_json(payload)
         except ValueError as exc:
             raise RunStoreError("checkpoint is malformed") from exc
         self._assert_checkpoint_safe(checkpoint)
+        remember(payload, rules, checkpoint)
         return checkpoint
 
     def _assert_checkpoint_safe(self, checkpoint: RunCheckpoint) -> None:

@@ -66,7 +66,8 @@ from .layout import (
     tombstone_path,
     visual_relations_path,
 )
-from .repository import DatasetLoadError, DatasetSnapshot, load_dataset
+from .repository import DatasetLoadError, DatasetSnapshot, dataset_read_scope, load_dataset
+from .schema_cache import SchemaSuccessCache
 from .serialization import parse_json, pretty_json
 
 _SECRET_PATTERNS = {
@@ -179,8 +180,14 @@ _SCHEMA_MEMO_LIMIT = 65_536
 
 
 class _SchemaMemo:
-    def __init__(self) -> None:
-        self.successes: dict[bytes, None] = {}
+    def __init__(self, persistent_cache: Path | None = None) -> None:
+        self.persistent = (
+            SchemaSuccessCache(persistent_cache) if persistent_cache is not None else None
+        )
+        self.successes: dict[bytes, None] = (
+            dict.fromkeys(self.persistent.loaded) if self.persistent is not None else {}
+        )
+        self.graphs: dict[bytes, tuple[Any, dict[str, dict[str, Any]]]] = {}
         self.lock = Lock()
 
 
@@ -188,16 +195,20 @@ _SCHEMA_MEMO: ContextVar[_SchemaMemo | None] = ContextVar("mojilex_schema_memo",
 
 
 @contextmanager
-def schema_validation_scope() -> Iterator[None]:
-    """Reuse successful exact schema checks only within this operation."""
+def schema_validation_scope(*, persistent_cache: Path | None = None) -> Iterator[None]:
+    """Reuse exact checks in this operation, optionally with authenticated local history."""
     if _SCHEMA_MEMO.get() is not None:
         yield
         return
-    token = _SCHEMA_MEMO.set(_SchemaMemo())
+    memo = _SchemaMemo(persistent_cache)
+    token = _SCHEMA_MEMO.set(memo)
     try:
-        yield
+        with dataset_read_scope():
+            yield
     finally:
         _SCHEMA_MEMO.reset(token)
+        if memo.persistent is not None:
+            memo.persistent.close(memo.successes)
 
 
 def _json_native(value: object) -> bool:
@@ -228,11 +239,19 @@ def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], by
     graph = hashlib.sha256()
     from .serialization import parse_json
 
-    for path in sorted(schema_root.rglob("*.json")):
-        raw = path.read_bytes()
+    documents = [(path, path.read_bytes()) for path in sorted(schema_root.rglob("*.json"))]
+    for path, raw in documents:
         uri = path.as_uri().encode("utf-8")
         # Include registry URI bindings and exact bytes read, avoiding a second read.
         graph.update(len(uri).to_bytes(8, "big") + uri + len(raw).to_bytes(8, "big") + raw)
+    digest = graph.digest()
+    memo = _SCHEMA_MEMO.get()
+    if memo is not None:
+        with memo.lock:
+            cached = memo.graphs.get(digest)
+            if cached is not None:
+                return cached[0], cached[1], digest
+    for path, raw in documents:
         schema = parse_json(raw, source=str(path))
         by_name[path.name] = schema
         resource = Resource.from_contents(schema, default_specification=DRAFT202012)
@@ -241,7 +260,12 @@ def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], by
         schema_id = schema.get("$id")
         if isinstance(schema_id, str):
             registry = registry.with_resource(schema_id, resource)
-    return registry, by_name, graph.digest()
+    if memo is not None:
+        with memo.lock:
+            if digest not in memo.graphs and len(memo.graphs) >= 8:
+                memo.graphs.pop(next(iter(memo.graphs)))
+            memo.graphs[digest] = (registry, by_name)
+    return registry, by_name, digest
 
 
 def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:

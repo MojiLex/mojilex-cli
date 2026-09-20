@@ -243,14 +243,33 @@ def import_command(
             {} if refresh else reusable_imports(selection.selected, config, max_items=max_items)
         )
     if existing:
+        from .queue_progress import SHARED
+
+        queue = SHARED.get()
+        defer_completed = (
+            preparation == "metadata"
+            and config.processing.file_analysis_mode == "fast"
+            and queue is not None
+        )
+        if defer_completed:
+            assert queue is not None
+            queue.completed_checks.update(
+                {
+                    source: (checkpoint.run_id, saved_source)
+                    for source, (checkpoint, saved_source) in existing.items()
+                    if source_state(checkpoint, saved_source)["phase"] == "describe"
+                    and source_state(checkpoint, saved_source)["status"] in {"succeeded", "noop"}
+                }
+            )
         with operation_progress(
             "Проверка обновлений готовых паков в Telegram"
             if current_ui_language() == "ru"
             else "Checking completed packs for Telegram updates"
         ):
-            existing = refresh_completed_imports(
-                existing, config, download_concurrency=download_concurrency
-            )
+            if not defer_completed:
+                existing = refresh_completed_imports(
+                    existing, config, download_concurrency=download_concurrency
+                )
         begin_pack_queue(list(selection.selected))
         for checkpoint, saved_source in existing.values():
             state = source_state(checkpoint, saved_source)
@@ -317,7 +336,11 @@ def import_command(
                 checkpoint, saved_source = existing[source]
                 name = _source_name(saved_source)
                 state = source_state(checkpoint, saved_source)
-                if state["phase"] != "describe" or state["status"] not in {"succeeded", "noop"}:
+                if (
+                    state["phase"] != "describe"
+                    or state["status"] not in {"succeeded", "noop"}
+                    or (defer_completed and queue is not None and source in queue.completed_checks)
+                ):
                     selectors.append(f"{parent_id}:{name}")
             result.run_id = parent_id
         result.result["analysis_selectors"] = list(dict.fromkeys(selectors))
@@ -360,7 +383,12 @@ def describe_command(
     official_confirmation: Callable[[str], bool] | None = None,
 ) -> CommandResult:
     execution_config = load_config()
-    if len(selectors) > 1 and all(value.startswith("mlxrun_") for value in selectors):
+    from .queue_progress import SHARED
+
+    queue = SHARED.get()
+    if (len(selectors) > 1 or (selectors and queue is not None and queue.completed_checks)) and all(
+        value.startswith("mlxrun_") for value in selectors
+    ):
         from mojilex_cli.runs import RunCheckpoint
 
         from .packs import _selector_name, _source_name, _sources, resolve_pack_run

@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 
 from mojilex_cli.concurrency import bounded_map
 from mojilex_cli.config import MojiLexConfig, load_credentials
-from mojilex_cli.dataset import load_dataset
+from mojilex_cli.dataset.pack_reader import load_pack_snapshot
 from mojilex_cli.dataset.repository import DatasetSnapshot
 from mojilex_cli.git import GitRunner
 from mojilex_cli.pipeline.runner import _reference_from_remote, _source_descriptor_sha256
-from mojilex_cli.runs import ElementCheckpoint, RunCheckpoint, RunStore
+from mojilex_cli.runs import RunCheckpoint, RunStore
 from mojilex_cli.runs.pack_scope import (
     initialize_source_states,
     record_source_state,
@@ -40,53 +40,78 @@ def import_complete(checkpoint: RunCheckpoint, source: str) -> bool:
 def _source_progress_index(
     checkpoint: RunCheckpoint, names: Sequence[str]
 ) -> dict[str, tuple[int, int, bool]]:
-    """Count only this pack's durable work, visiting its membership IDs once."""
-    raw = checkpoint.safe_parameters.get("source_memberships", {})
-    memberships = (
-        {name.casefold(): ids for name, ids in raw.items() if isinstance(name, str)}
-        if isinstance(raw, dict)
-        else {}
-    )
-    progress: dict[str, tuple[int, int, bool]] = {}
-    for name in names:
-        members = memberships.get(name)
-        if isinstance(members, (list, tuple)):
-            identifiers = {value for value in members if isinstance(value, str)}
-            elements: Iterable[ElementCheckpoint | None] = (
-                checkpoint.elements.get(identifier) for identifier in identifiers
-            )
-            total = len(identifiers)
-        elif len(names) == 1:
-            elements = checkpoint.elements.values()
-            total = len(checkpoint.elements)
-        else:
-            elements = ()
-            total = 0
-        ai = 0
-        media = 0
-        for element in elements:
-            if element is None:
-                continue
-            ai += int(
-                bool(getattr(element, "ai_facets_complete", False))
-                and bool(getattr(element, "ai_cache_key", None))
-            )
-            media += int(element.fingerprint_complete)
-        progress[name] = ai, media, total > 0 and media == total
-    return progress
+    from mojilex_cli.runs.index import source_progress_index
+
+    return source_progress_index(checkpoint, names)
+
+
+def _candidate_runs(
+    sources: Sequence[str], config: MojiLexConfig, target: str, max_items: int | None
+) -> list[RunCheckpoint]:
+    """Read compact discovery summaries, then deserialize only winning runs."""
+    if config.runs_dir is None:
+        return _runs(config)[0]
+    from mojilex_cli.runs import RunStoreError
+    from mojilex_cli.runs.index import build_index, read_index
+
+    from .packs import _MAX_RUNS, _RUN_ID
+
+    store = RunStore(config.runs_dir)
+    wanted = {name.casefold() for source in sources if (name := _source_name(source))}
+    winners: dict[str, tuple[tuple[bool, int, int, bool, datetime], str]] = {}
+    indexes = {}
+    paths = [path for path in store.root.glob("mlxrun_*.json") if _RUN_ID.fullmatch(path.stem)]
+    if len(paths) > _MAX_RUNS:
+        raise CommandError(
+            "CONFIG_INVALID",
+            "There are too many saved runs to list safely.",
+            hint="Use an exact RunID to open the required run.",
+        )
+    for path in sorted(paths):
+        try:
+            index = read_index(store, path.stem)
+        except (RunStoreError, OSError, ValueError):
+            continue
+        if index.target_repository.casefold() != target.casefold() or index.max_items != max_items:
+            continue
+        staging = index.staging_repository
+        if not staging or not Path(staging).is_absolute() or not Path(staging).is_dir():
+            continue
+        indexes[index.run_id] = index
+        for entry in index.sources:
+            if entry.name in wanted and (
+                entry.name not in winners or (entry.rank, index.run_id) > winners[entry.name]
+            ):
+                winners[entry.name] = entry.rank, index.run_id
+    runs = []
+    for run_id in sorted({value[1] for value in winners.values()}):
+        try:
+            run = store.load(run_id)
+            actual = build_index(run, b"")
+            expected = indexes[run_id]
+            excluded = {"checkpoint_sha256", "summary_sha256"}
+            if actual.model_dump(exclude=excluded) != expected.model_dump(exclude=excluded):
+                # Concurrent replacement or invalid discovery metadata: rank the
+                # authoritative checkpoints again instead of trusting the hint.
+                return _runs(config)[0]
+            runs.append(run)
+        except (RunStoreError, OSError, ValueError):
+            continue
+    runs.sort(key=lambda run: (run.updated_at, run.run_id), reverse=True)
+    return runs
 
 
 def reusable_imports(
     sources: Sequence[str], config: MojiLexConfig, *, max_items: int | None
 ) -> dict[str, tuple[RunCheckpoint, str]]:
     """Match the repository and source, keeping the original run and its ledger."""
-    runs, _ = _runs(config)
-    if not runs:
-        return {}
     target = config.repository.target
     path = Path(target).expanduser()
     if path.is_dir():
         target = str(_reference_from_remote(GitRunner(path.resolve()).remote_url()))
+    runs = _candidate_runs(sources, config, target, max_items)
+    if not runs:
+        return {}
     # Index each durable run once. Large input files must not repeat filesystem
     # probes and scan all of a run's sources for every requested link.
     candidates: dict[str, tuple[RunCheckpoint, str]] = {}
@@ -237,6 +262,7 @@ def refresh_completed_imports(
     config: MojiLexConfig,
     *,
     download_concurrency: int | None,
+    fresh: dict[str, SourceCollection] | None = None,
 ) -> dict[str, tuple[RunCheckpoint, str]]:
     """Refresh append-only membership without discarding paid work or media hints.
 
@@ -246,13 +272,20 @@ def refresh_completed_imports(
     completed = {source: match for source, match in existing.items() if _completed_source(*match)}
     if not completed:
         return existing
-    fresh = asyncio.run(
-        _fetch_completed_metadata(
-            tuple(completed),
-            config,
-            concurrency=download_concurrency or config.telegram.download_concurrency,
+    if fresh is None:
+        fresh = asyncio.run(
+            _fetch_completed_metadata(
+                tuple(completed),
+                config,
+                concurrency=download_concurrency or config.telegram.download_concurrency,
+            )
         )
-    )
+    if set(fresh) != set(completed):
+        raise CommandError(
+            "SOURCE_CHANGED_DURING_RUN",
+            "Completed pack metadata does not match the requested sources.",
+            hint="Retry the import; saved work has not been changed.",
+        )
     if config.runs_dir is None:
         raise CommandError(
             "CONFIG_INVALID",
@@ -263,6 +296,12 @@ def refresh_completed_imports(
     originals = {checkpoint.run_id: checkpoint for checkpoint, _ in completed.values()}
     snapshots: dict[str, DatasetSnapshot] = {}
     snapshots_by_path: dict[Path, DatasetSnapshot] = {}
+    names_by_path: dict[Path, set[str]] = {}
+    for checkpoint, saved_source in completed.values():
+        staging = checkpoint.safe_parameters.get("staging_repository")
+        name = _source_name(saved_source)
+        if isinstance(staging, str) and name is not None:
+            names_by_path.setdefault(Path(staging), set()).add(name)
     updates: dict[str, RunCheckpoint] = {}
     with ExitStack() as locks:
         for run_id in sorted(originals):
@@ -287,7 +326,9 @@ def refresh_completed_imports(
                 )
             staging_path = Path(staging)
             if staging_path not in snapshots_by_path:
-                snapshots_by_path[staging_path] = load_dataset(staging_path)
+                snapshots_by_path[staging_path] = load_pack_snapshot(
+                    staging_path, names_by_path.get(staging_path, set())
+                )
             snapshots[run_id] = snapshots_by_path[staging_path]
         for source, (original, saved_source) in completed.items():
             ready = _ready_members(original, saved_source, snapshots[original.run_id])

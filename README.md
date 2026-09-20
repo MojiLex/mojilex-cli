@@ -258,6 +258,21 @@ media and completed descriptions are reused. `describe` uses the current queue
 mode and download concurrency; saved AI budgets and usage remain unchanged.
 An explicit `resume` keeps saved settings unless overridden.
 
+Startup uses a rebuildable local run index to select saved work without parsing
+every historical checkpoint. Index entries are tied to checkpoint contents; stale
+or damaged entries fall back to the original checkpoint. Ready-pack checks read
+only the emoji buckets needed by those packs. In the interactive `fast` workflow,
+Telegram update checks for completed packs run alongside unfinished work. Updates
+are applied after active checkpoint writers finish, and newly discovered work is
+then analyzed. Other queue modes keep their stage ordering.
+
+Repeated parsing within an operation reuses exact-content results. Successful JSON
+schema checks can also be reused between launches through a bounded, authenticated
+local cache. Changes to contents, schemas, validation code or dependencies invalidate
+those results; cache damage falls back to validation. Global integrity, canonical
+format and filesystem checks still run. Partial readiness views never replace the
+full integrity checks used before publication.
+
 In an interactive terminal, one compact dashboard shows pack counts and active names
 for downloads, local processing, AI, and final validation. A pack can download and
 decode simultaneously. Completed local drafts are counted as ready only after saving;

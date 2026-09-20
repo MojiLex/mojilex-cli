@@ -141,7 +141,7 @@ def test_missing_final_proof_resumes_validation_preserving_cache(ready_pack, mon
             state.snapshot.emojis.clear()
         else:
             state.snapshot.memberships.clear()
-        monkeypatch.setattr(import_reuse, "load_dataset", lambda _: state.snapshot)
+        monkeypatch.setattr(import_reuse, "load_pack_snapshot", lambda *_: state.snapshot)
     updated = refresh(state)
     assert updated.elements == state.checkpoint.elements
     assert source_state(updated, state.source) == {"phase": "import", "status": "succeeded"}
@@ -238,16 +238,16 @@ def test_shared_snapshot_loaded_once_and_collection_lock_deduplicated(ready_pack
     state.store.save(second)
     alias = state.source.replace("t.me", "telegram.me")
     calls = []
-    original_load = import_reuse.load_dataset
+    original_load = import_reuse.load_pack_snapshot
 
-    def load(path):
+    def load(path, names):
         calls.append(path)
-        return original_load(path)
+        return original_load(path, names)
 
     async def fetch(*args, **kwargs):
         return {state.source: state.fresh, alias: state.fresh}
 
-    monkeypatch.setattr(import_reuse, "load_dataset", load)
+    monkeypatch.setattr(import_reuse, "load_pack_snapshot", load)
     monkeypatch.setattr(import_reuse, "_fetch_completed_metadata", fetch)
     existing = {state.source: (state.checkpoint, state.source), alias: (second, state.source)}
     assert (
@@ -255,3 +255,34 @@ def test_shared_snapshot_loaded_once_and_collection_lock_deduplicated(ready_pack
         == existing
     )
     assert calls == [state.snapshot.root]
+
+
+def test_supplied_metadata_avoids_second_network_fetch(ready_pack, monkeypatch):
+    state = ready_pack
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("Already fetched metadata must be reused")
+
+    monkeypatch.setattr(import_reuse, "_fetch_completed_metadata", unexpected)
+    existing = {state.source: (state.checkpoint, state.source)}
+    assert (
+        import_reuse.refresh_completed_imports(
+            existing,
+            state.config,
+            download_concurrency=4,
+            fresh={state.source: state.fresh},
+        )
+        == existing
+    )
+
+
+def test_supplied_metadata_requires_exact_sources(ready_pack):
+    state = ready_pack
+    with pytest.raises(CommandError, match="metadata does not match"):
+        import_reuse.refresh_completed_imports(
+            {state.source: (state.checkpoint, state.source)},
+            state.config,
+            download_concurrency=4,
+            fresh={},
+        )
+    assert state.store.load(state.checkpoint.run_id) == state.checkpoint
