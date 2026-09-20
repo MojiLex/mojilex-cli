@@ -36,11 +36,25 @@ def test_auto_uses_hardware_snapshot_without_changing_budget(monkeypatch, memory
     original = MojiLexConfig()
     resolved = resources.resolved_resource_config(original)
     assert resolved.processing.render_concurrency == render
-    assert resolved.processing.pack_concurrency == render * 2
+    assert resolved.processing.pack_concurrency == render * 4
     assert resolved.telegram.download_concurrency == 48
-    assert resolved.ai.ai_concurrency == 24
+    assert resolved.ai.ai_concurrency == render * 4
     assert resolved.ai.max_ai_requests == original.ai.max_ai_requests
     assert original.processing.render_concurrency == 2
+
+
+def test_auto_io_overlap_does_not_multiply_cpu_decoder_processes(monkeypatch):
+    monkeypatch.setattr(resources.os, "process_cpu_count", lambda: 12, raising=False)
+    monkeypatch.setattr(resources, "available_memory_bytes", lambda: 32 * 1024**3)
+    config = MojiLexConfig(ai={"max_ai_requests": None})
+
+    resolved = resources.resolved_resource_config(config)
+
+    assert resolved.processing.pack_concurrency == 48
+    assert resolved.ai.ai_concurrency == 48
+    assert resolved.processing.render_concurrency == 12
+    assert resolved.telegram.download_concurrency == 48
+    assert resolved.ai.max_ai_requests is None
 
 
 def test_manual_does_not_probe_hardware(monkeypatch):

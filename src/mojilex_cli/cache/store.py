@@ -90,6 +90,7 @@ class CacheStore:
         if repository_root is not None and self.path.is_relative_to(repository_root.resolve()):
             raise CacheError("persistent cache must be outside the target repository")
         self.read_only = read_only
+        self._pending_touches: dict[str, dict[str, int]] = {}
         if not read_only:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -123,7 +124,31 @@ class CacheStore:
         self.close()
 
     def close(self) -> None:
-        self._connection.close()
+        try:
+            self._flush_accesses()
+        finally:
+            self._connection.close()
+
+    def _touch(self, table: str, key: str, now: int) -> None:
+        pending = self._pending_touches.setdefault(table, {})
+        pending[key] = max(now, pending.get(key, now))
+        if sum(len(values) for values in self._pending_touches.values()) >= 256:
+            self._flush_accesses()
+
+    def _flush_accesses(self) -> None:
+        # Access timestamps are eviction hints, not cache records. Coalesce
+        # them without delaying any payload/checkpoint writes. Flush before
+        # pruning so a recently read record cannot be evicted as stale.
+        if not self._pending_touches:
+            return
+        with self._connection:
+            for table, values in self._pending_touches.items():
+                column = "alias_key" if table == "ai_cache_alias" else "cache_key"
+                self._connection.executemany(
+                    f"UPDATE {table} SET accessed_at = MAX(accessed_at, ?) WHERE {column} = ?",
+                    [(timestamp, key) for key, timestamp in values.items()],
+                )
+        self._pending_touches.clear()
 
     def _initialize(self) -> None:
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
@@ -165,16 +190,14 @@ class CacheStore:
 
     def get_metadata(self, key: str, *, base_sha: str | None = None) -> dict[str, Any] | None:
         row = self._connection.execute(
-            "SELECT payload_json, base_sha FROM metadata_cache WHERE cache_key = ?", (key,)
+            "SELECT payload_json, base_sha, accessed_at FROM metadata_cache WHERE cache_key = ?",
+            (key,),
         ).fetchone()
         if row is None or (base_sha is not None and row["base_sha"] != base_sha):
             return None
-        if not self.read_only:
-            self._connection.execute(
-                "UPDATE metadata_cache SET accessed_at = ? WHERE cache_key = ?",
-                (int(time.time()), key),
-            )
-            self._connection.commit()
+        now = int(time.time())
+        if not self.read_only and now > row["accessed_at"]:
+            self._touch("metadata_cache", key, now)
         value = cast(dict[str, Any], json.loads(row["payload_json"]))
         _assert_cache_safe(value)
         return value
@@ -236,16 +259,9 @@ class CacheStore:
             return None
         if not self.read_only:
             now = int(time.time())
-            self._connection.execute(
-                "UPDATE ai_cache SET accessed_at = ? WHERE cache_key = ?",
-                (now, row["cache_key"]),
-            )
+            self._touch("ai_cache", row["cache_key"], now)
             if used_alias:
-                self._connection.execute(
-                    "UPDATE ai_cache_alias SET accessed_at = ? WHERE alias_key = ?",
-                    (now, key),
-                )
-            self._connection.commit()
+                self._touch("ai_cache_alias", key, now)
         return str(row["cache_key"]), entry
 
     def put_ai(
@@ -448,6 +464,7 @@ class CacheStore:
 
     def prune(self, *, older_than_epoch: int) -> dict[str, int]:
         self._ensure_writable()
+        self._flush_accesses()
         with self._connection:
             metadata = self._connection.execute(
                 "DELETE FROM metadata_cache WHERE accessed_at < ?", (older_than_epoch,)

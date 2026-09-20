@@ -140,6 +140,7 @@ from mojilex_cli.media import (
 from mojilex_cli.media.raw_store import RawMediaStore, get_raw_store
 from mojilex_cli.media.resume import RetainedMediaStore, get_retained_store
 from mojilex_cli.output.models import RunStatus, StructuredError
+from mojilex_cli.pipeline.early_batches import EarlyBatches
 from mojilex_cli.policy import (
     ROUTING_POLICY_VERSION,
     ModelQualificationRegistry,
@@ -1230,27 +1231,134 @@ async def _run_add(
                                 temporary, render_concurrency=config.processing.render_concurrency
                             )
                             verified_resume_outcomes: dict[str, _SemanticOutcome] = {}
-                            source, processed = await _prepare_collection_media(
-                                current,
-                                adapter,
-                                source,
-                                processor,
-                                concurrency=config.telegram.download_concurrency,
-                                expected_hashes=expected_hashes,
-                                cache=None if options.dry_run else cache,
-                                resume_elements=(
-                                    checkpoint.elements if checkpoint is not None else None
-                                ),
-                                config=config,
-                                taxonomy_version=str(current.manifest["taxonomy_version"]),
-                                cache_alias_scope=run_identifier,
-                                redescribe=options.redescribe,
-                                overwrite_reviewed=options.overwrite_reviewed,
-                                verified_semantic_outcomes=verified_resume_outcomes,
-                                on_item_completed=(
-                                    None if options.dry_run else record_media_completion
-                                ),
-                            )
+                            early_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
+                            early_ids: set[str] = set()
+
+                            async def describe_ready_batch(
+                                pairs: list[tuple[SourceEmoji, ProcessedMedia]],
+                            ) -> None:
+                                if cancelled_queue.is_set():
+                                    return
+                                assert cache is not None
+                                items = tuple(
+                                    sorted((item for item, _ in pairs), key=lambda i: i.position)
+                                )
+                                partial = source.model_copy(
+                                    update={"items": items, "item_count": len(items)}
+                                )
+                                values = {item.native_id: value for item, value in pairs}
+                                batch_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
+
+                                async def save_early(
+                                    completed: Sequence[SourceEmoji],
+                                    outcomes: Mapping[str, _SemanticOutcome],
+                                ) -> None:
+                                    await record_ai_chunk_completion(partial, completed, outcomes)
+                                    verified_resume_outcomes.update(outcomes)
+
+                                descriptions, generations = await _descriptions_for_collection(
+                                    current,
+                                    partial,
+                                    values,
+                                    config=config,
+                                    cache=cache,
+                                    budget=budget,
+                                    ai_state=ai_state,
+                                    api_key=credentials.gemini_api_key,
+                                    redescribe=options.redescribe,
+                                    overwrite_reviewed=options.overwrite_reviewed,
+                                    temporary=temporary,
+                                    cache_alias_scope=run_identifier,
+                                    verified_resume_outcomes=verified_resume_outcomes,
+                                    request_traces_out=batch_traces,
+                                    resume_ai_cache_keys={
+                                        key: value.ai_cache_key
+                                        for key, value in checkpoint.elements.items()
+                                        if value.ai_cache_key is not None
+                                    }
+                                    if checkpoint is not None
+                                    else None,
+                                    resume_request_traces=_request_traces_from_checkpoint(
+                                        items, checkpoint.elements if checkpoint is not None else {}
+                                    ),
+                                    on_chunk_completed=save_early,
+                                    pack_total=source.item_count,
+                                )
+                                early_ids.update(descriptions)
+                                early_traces.update(batch_traces)
+                                for native_id, description in descriptions.items():
+                                    verified_resume_outcomes[native_id] = _SemanticOutcome(
+                                        description=description,
+                                        generation=generations[native_id],
+                                        request_trace=batch_traces.get(native_id, ()),
+                                    )
+
+                            def early_group(
+                                item: SourceEmoji, value: ProcessedMedia
+                            ) -> tuple[object, int]:
+                                return (
+                                    (value.metadata.animated, value.semantic_has_dark_render),
+                                    config.processing.animated_batch_size
+                                    if value.metadata.animated
+                                    else config.processing.static_batch_size,
+                                )
+
+                            early = EarlyBatches(describe_ready_batch, early_group)
+                            ready_callbacks: set[str] = set()
+
+                            async def record_ready(
+                                item: SourceEmoji, value: ProcessedMedia
+                            ) -> None:
+                                await record_media_completion(item, value)
+                                ready_callbacks.add(item.native_id)
+                                if (
+                                    file_mode == "fast"
+                                    and len(ready_callbacks) < source.item_count
+                                    and not cancelled_queue.is_set()
+                                    and item.native_id not in verified_resume_outcomes
+                                    and _needs_generated_description(
+                                        current,
+                                        source.platform,
+                                        item,
+                                        value,
+                                        redescribe=options.redescribe,
+                                        overwrite_reviewed=options.overwrite_reviewed,
+                                    )
+                                ):
+                                    await early.add(item, value)
+
+                            async def prepare_media() -> tuple[
+                                SourceCollection, dict[str, ProcessedMedia]
+                            ]:
+                                return await _prepare_collection_media(
+                                    current,
+                                    adapter,
+                                    source,
+                                    processor,
+                                    concurrency=config.telegram.download_concurrency,
+                                    expected_hashes=expected_hashes,
+                                    cache=None if options.dry_run else cache,
+                                    resume_elements=(
+                                        checkpoint.elements if checkpoint is not None else None
+                                    ),
+                                    config=config,
+                                    taxonomy_version=str(current.manifest["taxonomy_version"]),
+                                    cache_alias_scope=run_identifier,
+                                    redescribe=options.redescribe,
+                                    overwrite_reviewed=options.overwrite_reviewed,
+                                    verified_semantic_outcomes=verified_resume_outcomes,
+                                    on_item_completed=(None if options.dry_run else record_ready),
+                                )
+
+                            try:
+                                source, processed = await prepare_media()
+                                if file_mode == "fast" and not options.dry_run:
+                                    pack_slots.preparation.release()
+                                    preparing = False
+                                    report_pack_stage(source_text, "ai_wait")
+                                await early.finish(flush_pending=False)
+                            finally:
+                                await early.close()
                             if checkpoint is not None:
                                 checkpoint = _checkpoint_media(checkpoint, source, processed)
                                 run_store.save(checkpoint)
@@ -1276,10 +1384,13 @@ async def _run_add(
                                 source.items,
                                 checkpoint.elements if checkpoint is not None else {},
                             )
-                            request_traces: dict[str, tuple[_AICacheTrace, ...]] = {}
+                            request_traces: dict[str, tuple[_AICacheTrace, ...]] = dict(
+                                early_traces
+                            )
                             report_pack_stage(source_text, "ai_wait")
-                            pack_slots.preparation.release()
-                            preparing = False
+                            if preparing:
+                                pack_slots.preparation.release()
+                                preparing = False
                             if file_mode == "fast":
                                 if cancelled_queue.is_set():
                                     return
@@ -1312,6 +1423,7 @@ async def _run_add(
                                 on_chunk_completed=lambda items, outcomes: (
                                     record_ai_chunk_completion(source, items, outcomes)
                                 ),
+                                already_counted_cache_ids=frozenset(early_ids),
                             )
                             report_pack_stage(source_text, "composition")
                             analyses = _bind_deterministic_analyses(processed)
@@ -3099,7 +3211,7 @@ async def _prepare_collection_media(
                 break
             with use_prompt_version(legacy_version):
                 legacy_inputs = (
-                    _load_generation_inputs(snapshot, config)
+                    await run_blocking(_load_generation_inputs, snapshot, config)
                     if _GENERATION_INPUTS.get() is not None
                     else None
                 )
@@ -3132,7 +3244,7 @@ async def _prepare_collection_media(
             element = resume_elements.get(item.native_id)
             if element is None or item.native_id in guarded:
                 continue
-            restored = _restore_deterministic_cache_entry(
+            restored = await _restore_deterministic_cache_entry_async(
                 cache, item, processor, element, backend_candidates=backend_candidates
             )
             if restored is not None:
@@ -3173,7 +3285,7 @@ async def _prepare_collection_media(
                 continue
             expected_media = cached.get(item.native_id) or cached_analysis.get(item.native_id)
             if expected_media is None:
-                expected_media = _restore_deterministic_cache_entry(
+                expected_media = await _restore_deterministic_cache_entry_async(
                     cache, item, processor, element, backend_candidates=backend_candidates
                 )
             if expected_media is None:
@@ -3315,8 +3427,9 @@ async def _resume_cached_processed_media(
         or set(config.ai.languages) != {"ru", "en"}
     ):
         return {}, {}, {}
-    qualifications = ModelQualificationRegistry.load(snapshot.root)
-    routing_registry = RoutingReasonRegistry.load(snapshot.root)
+    qualifications = await run_blocking(ModelQualificationRegistry.load, snapshot.root)
+    routing_registry = await run_blocking(RoutingReasonRegistry.load, snapshot.root)
+    existing_by_native = _latest_emojis_by_native(snapshot, collection.platform)
     restored: dict[str, ProcessedMedia] = {}
     semantic_outcomes: dict[str, _SemanticOutcome] = {}
     candidates: dict[str, ProcessedMedia] = {}
@@ -3351,7 +3464,7 @@ async def _resume_cached_processed_media(
             continue
         candidate = (deterministic_candidates or {}).get(item.native_id)
         if candidate is None:
-            candidate = _restore_deterministic_cache_entry(
+            candidate = await _restore_deterministic_cache_entry_async(
                 cache,
                 item,
                 processor,
@@ -3368,6 +3481,7 @@ async def _resume_cached_processed_media(
             candidate,
             redescribe=redescribe,
             overwrite_reviewed=overwrite_reviewed,
+            existing_by_native=existing_by_native,
         ):
             restored[item.native_id] = candidate
             continue
@@ -3391,6 +3505,7 @@ async def _resume_cached_processed_media(
             candidates[item.native_id],
             redescribe=redescribe,
             overwrite_reviewed=overwrite_reviewed,
+            existing_by_native=existing_by_native,
         )
     ]
     # A prior run may have batched a different subset (for example, after
@@ -3411,6 +3526,8 @@ async def _resume_cached_processed_media(
     ]
     recovery_chunks.extend(_description_chunks(ai_items, candidates, config))
     for chunk in recovery_chunks:
+        # Exact cache-only recovery may finish without yielding to network tasks.
+        await asyncio.sleep(0)
         if all(item.native_id in semantic_outcomes for item in chunk):
             continue
         chunk_traces = _recover_ai_request_traces(
@@ -3693,12 +3810,60 @@ def _restore_deterministic_cache_entry(
     backend_candidates: dict[str, tuple[str, ...]] | None = None,
 ) -> ProcessedMedia | None:
     key = checkpoint.deterministic_cache_key
+    if key is None:
+        return None
+    try:
+        context = _deterministic_render_context_sha256(source)
+        payload = cache.get_metadata(_deterministic_cache_storage_key(key, context))
+    except (AnalysisError, CacheError, TypeError, ValueError):
+        return None
+    return _validated_deterministic_cache_entry(
+        source, processor, checkpoint, payload, backend_candidates=backend_candidates
+    )
+
+
+async def _restore_deterministic_cache_entry_async(
+    cache: CacheStore,
+    source: SourceEmoji,
+    processor: MediaProcessor,
+    checkpoint: ElementCheckpoint,
+    *,
+    backend_candidates: dict[str, tuple[str, ...]] | None = None,
+) -> ProcessedMedia | None:
+    key = checkpoint.deterministic_cache_key
+    if key is None:
+        return None
+    try:
+        context = _deterministic_render_context_sha256(source)
+        # The SQLite connection belongs to the event-loop thread. Only pure
+        # validation/backend probing goes to the worker, never the connection.
+        payload = cache.get_metadata(_deterministic_cache_storage_key(key, context))
+    except (AnalysisError, CacheError, TypeError, ValueError):
+        return None
+    return await run_blocking(
+        _validated_deterministic_cache_entry,
+        source,
+        processor,
+        checkpoint,
+        payload,
+        backend_candidates=backend_candidates,
+    )
+
+
+def _validated_deterministic_cache_entry(
+    source: SourceEmoji,
+    processor: MediaProcessor,
+    checkpoint: ElementCheckpoint,
+    payload: dict[str, Any] | None,
+    *,
+    backend_candidates: dict[str, tuple[str, ...]] | None = None,
+) -> ProcessedMedia | None:
+    key = checkpoint.deterministic_cache_key
     descriptor_sha256 = checkpoint.source_descriptor_sha256
     if key is None or descriptor_sha256 is None or len(checkpoint.media_sha256) != 1:
         return None
     try:
         render_context_sha256 = _deterministic_render_context_sha256(source)
-        payload = cache.get_metadata(_deterministic_cache_storage_key(key, render_context_sha256))
         if payload is None or set(payload) != {
             "analysis",
             "deterministic_cache_key",
@@ -3975,8 +4140,9 @@ def _cross_collection_existing_emojis(
         memberships_by_emoji.setdefault(membership.emoji_id, set()).add(membership.collection_id)
 
     result: dict[str, Emoji] = {}
+    existing_by_native = _latest_emojis_by_native(snapshot, source.platform)
     for item in source.items:
-        existing = _existing_emoji(snapshot, source.platform, item.native_id)
+        existing = existing_by_native.get(item.native_id)
         if existing is None:
             continue
         for collection_id in memberships_by_emoji.get(existing.id, ()):
@@ -4211,13 +4377,16 @@ async def _descriptions_for_collection(
     request_traces_out: dict[str, tuple[_AICacheTrace, ...]] | None = None,
     resume_request_traces: Mapping[str, Sequence[_AICacheTrace]] | None = None,
     on_chunk_completed: _AIChunkCompletion | None = None,
+    pack_total: int | None = None,
+    already_counted_cache_ids: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, DescriptionItem], dict[str, SemanticGenerationMetadata]]:
+    existing_by_native = _latest_emojis_by_native(snapshot, source.platform)
     outcomes_by_native: dict[str, _SemanticOutcome] = {}
     candidates: list[SourceEmoji] = []
     qualifications = ModelQualificationRegistry.load(snapshot.root)
     routing_registry = RoutingReasonRegistry.load(snapshot.root)
     for item in source.items:
-        existing = _existing_emoji(snapshot, source.platform, item.native_id)
+        existing = existing_by_native.get(item.native_id)
         should_generate = _needs_generated_description(
             snapshot,
             source.platform,
@@ -4225,6 +4394,7 @@ async def _descriptions_for_collection(
             processed[item.native_id],
             redescribe=redescribe,
             overwrite_reviewed=overwrite_reviewed,
+            existing_by_native=existing_by_native,
         )
         if not should_generate and existing is not None:
             outcomes_by_native[item.native_id] = _SemanticOutcome(
@@ -4233,7 +4403,8 @@ async def _descriptions_for_collection(
             )
         elif verified_resume_outcomes is not None and item.native_id in verified_resume_outcomes:
             outcomes_by_native[item.native_id] = verified_resume_outcomes[item.native_id]
-            ai_state.cache_hits += 1
+            if item.native_id not in already_counted_cache_ids:
+                ai_state.cache_hits += 1
         else:
             candidates.append(item)
     chunks = _description_chunks(candidates, processed, config)
@@ -4260,7 +4431,7 @@ async def _descriptions_for_collection(
     progress = BatchProgress(
         "AI-описания" if current_ui_language() == "ru" else "AI descriptions",
         len(candidates),
-        pack_total=len(source.items),
+        pack_total=len(source.items) if pack_total is None else pack_total,
         batch_total=len(chunks),
         request_budget=lambda: (budget.requests_used, budget.max_requests),
     )
@@ -4545,10 +4716,15 @@ def _needs_generated_description(
     *,
     redescribe: str,
     overwrite_reviewed: bool,
+    existing_by_native: Mapping[str, Emoji] | None = None,
 ) -> bool:
     """Mirror the top-level semantic reuse decision without touching rendered frames."""
 
-    existing = _existing_emoji(snapshot, platform, item.native_id)
+    existing = (
+        _existing_emoji(snapshot, platform, item.native_id)
+        if existing_by_native is None
+        else existing_by_native.get(item.native_id)
+    )
     current_media = [processed.dataset_metadata()]
     same_media = existing is not None and domain_media_digest(existing.media) == cache_media_digest(
         cast(Sequence[Mapping[str, object]], current_media)
@@ -6357,6 +6533,16 @@ def _cache_key(
         request_identity_sha256=request_identity_sha256,
         item_label=item_label,
     )
+
+
+def _latest_emojis_by_native(snapshot: DatasetSnapshot, platform: str) -> dict[str, Emoji]:
+    result: dict[str, Emoji] = {}
+    for value in snapshot.emojis.values():
+        if value.platform == platform:
+            previous = result.get(value.native_id)
+            if previous is None or value.identity_epoch > previous.identity_epoch:
+                result[value.native_id] = value
+    return result
 
 
 def _existing_emoji(snapshot: DatasetSnapshot, platform: str, native_id: str) -> Emoji | None:

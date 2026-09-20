@@ -247,7 +247,7 @@ ordinary descriptions remain markup-free.
 
 | Mode | Order |
 |---|---|
-| `fast` — default | Prepare following packs while AI handles the current pack; start AI in readiness order and merge results in input order. |
+| `fast` — default | Send verified media batches to AI while the rest of the same pack is still being prepared; prepare following packs concurrently and merge results in input order. |
 | `sequential` | Download, decode and analyze one complete pack before starting the next. |
 | `download_all` | Persist and hash every original file first, decode all packs second, then start AI. |
 | `prepare_all` | Download and decode packs concurrently, wait for all local preparation, then start AI. |
@@ -291,10 +291,15 @@ request and cost budgets and the temporary media storage limit cover the entire
 operation across all queued packs. Shared repository updates and
 Git writes remain ordered.
 
-Two decoders run by default; downloads can continue while waiting for a decoder
-without consuming its timeout. Increase decoder concurrency gradually: too many
-processes can make processing slower. Overlapping stages reduces idle time, but
-the speedup depends on CPU capacity, network speed and provider quotas.
+Automatic performance mode sizes decoders from CPU count and available RAM, with
+four times that capacity for pack preparation and AI requests. Manual mode keeps
+explicit settings. Downloads can continue while waiting for a decoder without
+consuming its timeout. Increasing every number can make processing slower;
+throughput still depends on CPU capacity, network speed and provider quotas.
+In `fast`, ready media are grouped by animation and render context. A partial batch
+can start after one second rather than wait for a slow sibling. This can use more
+small requests; all requests still share the configured budget. Puzzle checks wait
+for the complete pack, and completed AI batches are saved for resume.
 
 The **AI request limit for the whole operation** is shared by every pack in the
 input file, including retries, model escalation and puzzle checks. It defaults

@@ -72,6 +72,11 @@ def resolved_resource_config(config: MojiLexConfig) -> MojiLexConfig:
     render_target = cpu_count
     if available is not None:
         render_target = min(cpu_count, max(1, available * 3 // 4 // _WORKER_MEMORY))
+    # Packs and provider calls spend time waiting for I/O. Keep more work ready
+    # than CPU decoders, but scale this overlap down with available memory too:
+    # pending packs and AI image sheets also occupy RAM. More download sockets
+    # are not automatically faster, so retain the separately sized network pool.
+    overlap_target = render_target * 4
     temp_bytes = config.processing.max_temp_bytes
     free_disk = available_temp_disk_bytes()
     if free_disk is not None:
@@ -83,7 +88,7 @@ def resolved_resource_config(config: MojiLexConfig) -> MojiLexConfig:
             "processing": config.processing.model_copy(
                 update={
                     "render_concurrency": max(config.processing.render_concurrency, render_target),
-                    "pack_concurrency": max(config.processing.pack_concurrency, render_target * 2),
+                    "pack_concurrency": max(config.processing.pack_concurrency, overlap_target),
                     "max_temp_bytes": temp_bytes,
                 }
             ),
@@ -96,7 +101,7 @@ def resolved_resource_config(config: MojiLexConfig) -> MojiLexConfig:
             ),
             "ai": config.ai.model_copy(
                 update={
-                    "ai_concurrency": max(config.ai.ai_concurrency, cpu_count * 2),
+                    "ai_concurrency": max(config.ai.ai_concurrency, overlap_target),
                 }
             ),
         }
