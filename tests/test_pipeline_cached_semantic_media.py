@@ -48,8 +48,8 @@ class _Retained:
     [
         ("static", True, True, False, ["tile"], 0, 0),
         ("repainting", True, False, False, [], 0, 0),
-        ("animation", True, False, False, [], 0, 0),
-        ("video", True, False, False, [], 0, 0),
+        ("animation", True, False, False, ["frames"], 0, 0),
+        ("video", True, False, False, ["frames"], 0, 0),
         ("static", True, False, True, ["tile"], 1, 1),
         ("static", True, False, False, ["tile"], 1, 1),
         ("static", False, True, True, ["frames"], 0, 0),
@@ -131,6 +131,78 @@ async def test_exact_semantic_cache_restores_only_pixels_still_needed(
             assert processor.analysis_calls == 0, "Exact analysis can still be reused"
     finally:
         cache.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_animation_observation_is_cached_without_repeating_ai_or_frame_restore(
+    tmp_path, monkeypatch
+):
+    from test_motion_evidence import _frames
+
+    snapshot = write_fixture(tmp_path / "dataset")
+    config = MojiLexConfig(
+        ai=AIConfig(provider="gemini", model="primary-model", model_routing="off")
+    )
+    item = _item("new-native-1", unique_id="saved-unique", file_id="first").model_copy(
+        update={"media_format": "tgs", "animated": True}
+    )
+    value = _processed(snapshot)
+    value = value.model_copy(
+        update={
+            "metadata": value.metadata.model_copy(
+                update={
+                    "kind": "animation",
+                    "format": "tgs",
+                    "mime_type": "application/x-tgsticker",
+                    "animated": True,
+                    "duration_ms": 1000,
+                }
+            ),
+            "frame_paths": tuple(tmp_path / f"missing-{i}.png" for i in range(8)),
+        }
+    )
+    source = _collection((item,))
+    frames = _frames(tmp_path, "light")
+    restores = []
+
+    class Retained:
+        def get(self, key, expected):
+            restores.append(key)
+            return expected.model_copy(update={"frame_paths": frames})
+
+    monkeypatch.setattr(runner, "get_retained_store", lambda *args, **kwargs: Retained())
+    monkeypatch.setattr(
+        runner,
+        "_decoder_backend_candidates",
+        lambda *args: (value.analysis.decoder_backend_fingerprint,),
+    )
+    adapter = _CountingAdapter({"first": _PAYLOAD})
+    with CacheStore(tmp_path / "cache.sqlite3", repository_root=snapshot.root) as cache:
+        elements = _seed_resume(cache, source, value, config, with_ai=True)
+    for _ in range(2):
+        with CacheStore(tmp_path / "cache.sqlite3", repository_root=snapshot.root) as cache:
+            outcomes = {}
+            with TemporaryMediaRun(root=tmp_path) as temporary:
+                processor = _CountingProcessor(temporary, _analysis(snapshot))
+                _, result = await runner._prepare_collection_media(
+                    snapshot,
+                    adapter,
+                    source,
+                    processor,
+                    concurrency=1,
+                    cache=cache,
+                    resume_elements=elements,
+                    config=config,
+                    taxonomy_version="1.0.0",
+                    cache_alias_scope="mlxrun_" + "a" * 32,
+                    verified_semantic_outcomes=outcomes,
+                )
+            assert result[item.native_id].observed_frame_variation is False
+            assert result[item.native_id].frame_paths == ()
+            assert outcomes, "Already paid semantic result must be reused without an AI key"
+            assert processor.decode_calls == 0
+            assert adapter.media_calls == []
+    assert len(restores) == 1
 
 
 @pytest.mark.asyncio

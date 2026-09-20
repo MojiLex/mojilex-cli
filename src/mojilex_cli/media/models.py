@@ -106,6 +106,9 @@ class ProcessedMedia(BaseModel):
         default=None, ge=1, le=HARD_MAX_FRAMES, exclude=True, repr=False
     )
     has_dark_render: bool | None = Field(default=None, exclude=True, repr=False)
+    observed_frame_variation: bool | None = Field(
+        default=None, strict=True, exclude=True, repr=False
+    )
     composition_tile_path: Path | None = Field(default=None, exclude=True, repr=False)
     composition_tile_sha256: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$", exclude=True, repr=False

@@ -40,6 +40,7 @@ from mojilex_cli.domain import (
 )
 from mojilex_cli.domain.models import CONTROLLED_SEMANTIC_TAGS, MotionStatus
 from mojilex_cli.media import PIPELINE_VERSION, ProcessedMedia
+from mojilex_cli.media.motion import observed_frame_variation
 from mojilex_cli.sources import SourceCollection, SourceEmoji
 
 
@@ -419,10 +420,14 @@ def _emoji(
     # A missing motion assessment is uncertainty, never evidence of static media.
     # Preserve the original text and cached response; do not invent movement.
     if media.animated:
-        for value in localized.values():
-            if value.motion_status is MotionStatus.NOT_APPLICABLE:
-                value.motion_status = MotionStatus.UNDETERMINED
-                value.motion = None
+        identical_frames = observed_frame_variation(processed) is False
+        for language, value in localized.items():
+            if value.motion_status is MotionStatus.NOT_APPLICABLE or (
+                identical_frames and value.motion_status is MotionStatus.DESCRIBED
+            ):
+                localized[language] = LocalizedDescription.model_validate(
+                    {**value.as_dict(), "motion_status": "undetermined", "motion": None}
+                )
                 facets.uncertainties = sorted({*facets.uncertainties, Uncertainty.MOTION})
     # Older cached AI responses rejected only tags matching selected facets.
     # The dataset reserves the entire controlled vocabulary, even values absent

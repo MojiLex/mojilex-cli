@@ -92,7 +92,7 @@ def saved_add(tmp_path, monkeypatch):
     @contextmanager
     def workspace(target, branch, **kwargs):
         state.workspace_calls.append((target, branch))
-        yield SimpleNamespace(root=root, target=state.target)
+        yield runner.RepositoryWorkspace(root=root, target=state.target, temporary=False)
 
     monkeypatch.setattr(runner, "load_config", lambda: config)
     monkeypatch.setattr(runner, "repository_workspace", workspace)

@@ -20,6 +20,11 @@ mojilex publish NewsEmoji
 `publish --local` validates the completed draft without uploading it; `publish`
 creates or updates a GitHub pull request without repeating AI analysis.
 
+`add --publish local` retains its destination for `resume`, even when the current
+directory changes. With `--repo OWNER/REPO`, local results are kept in a persistent
+workspace under the configured runs directory. The returned path remains available
+after the command exits. Resume retains the consumed request budget and cached answers.
+
 Previously saved descriptions remain compatible. Dataset writes use filenames
 with an 8-character hash prefix; this needs no new AI analysis. When `main` changes
 after publication, the repository's enabled **Refresh open data PRs** workflow
@@ -63,8 +68,8 @@ The default `processing.performance_mode = "auto"` sizes concurrency at operatio
 start from available CPU and RAM; larger configured values remain in effect.
 Choose `manual` in settings to use the four configured concurrency values exactly.
 The automatic targets are one decoder per available logical CPU, bounded by 75%
-of available RAM at 512 MiB per decoder; twice that many preparing packs, four
-downloads per CPU, and two AI requests per CPU. This is a startup estimate, not
+of available RAM at 512 MiB per decoder; four times that decoder target for both
+preparing packs and AI requests, and four downloads per CPU. This is a startup estimate, not
 a guarantee that higher parallelism improves throughput. Automatic temporary storage
 can grow to twice available RAM, while remaining at most one quarter of free space
 on the temporary volume. If RAM or disk probing fails, its allowance is not increased.
@@ -73,7 +78,9 @@ quotas and response time still limit speed. It never increases request or cost
 limits. Change defaults for future runs with `mojilex settings`.
 
 `processing.file_analysis_mode` controls a multi-pack file run: `fast` overlaps
-preparation of following packs with ordered AI work; `sequential` completes one
+preparation with AI work and saves independent packs as they become ready. Packs
+sharing emoji identities keep dependency order, and dataset writes use one writer.
+`sequential` completes one
 pack at a time; `download_all` persists all originals before decoding; and
 `prepare_all` downloads and decodes packs concurrently before any AI request.
 
@@ -85,7 +92,7 @@ consumed count. Cache hits avoid requests. A new `add` run can set
 Telegram transient connection failures allow up to 6 attempts by default
 (`telegram.max_attempts`: 1–8). A broken download restarts with a fresh bounded
 buffer. Gemini transient failures allow up to 3 attempts with 1- and 2-second
-waits; each attempt counts toward the budget and has a 30-second timeout.
+waits; each attempt counts toward the budget and has a 90-second timeout.
 Authentication and ordinary invalid requests are not retried.
 
 Invalid AI responses and exhausted transient retries defer unfinished emojis
