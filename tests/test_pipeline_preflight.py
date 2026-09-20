@@ -73,8 +73,11 @@ def test_pipeline_failure_reports_the_durable_checkpoint_id(
 
     monkeypatch.setattr(runner, "_resolved_config", lambda _options: config)
     monkeypatch.setattr(runner, "repository_workspace", workspace)
-    monkeypatch.setattr(runner, "validate_dataset", lambda *_a, **_kw: SimpleNamespace(valid=True))
-    monkeypatch.setattr(runner, "load_dataset", lambda _path: DatasetSnapshot(repository, {}))
+    monkeypatch.setattr(
+        runner,
+        "load_validated_dataset",
+        lambda *_a, **_kw: (DatasetSnapshot(repository, {}), SimpleNamespace(valid=True)),
+    )
     monkeypatch.setattr(
         runner, "GitRunner", lambda *_a, **_kw: SimpleNamespace(current_sha=lambda: "a" * 40)
     )
