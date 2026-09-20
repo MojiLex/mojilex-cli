@@ -157,8 +157,16 @@ def plan_collection_merge(
     updated = 0
     changed_ids: list[str] = [collection.id]
     current_memberships: list[Membership] = []
+    existing_by_identity = _latest_emoji_index(snapshot)
     for source_item in source.items:
-        existing_emoji = _find_emoji(snapshot, source.platform, source_item)
+        existing_emoji = existing_by_identity.get(
+            (
+                source.platform,
+                source_item.native_namespace,
+                source_item.scope_id,
+                source_item.native_id,
+            )
+        )
         emoji_epoch = existing_emoji.identity_epoch if existing_emoji is not None else 0
         incoming = _emoji(
             source.platform,
@@ -280,19 +288,20 @@ def _resolve_collection_identity(
     )
 
 
-def _find_emoji(snapshot: DatasetSnapshot, platform: str, source: SourceEmoji) -> Emoji | None:
-    matches = [
-        value
-        for value in snapshot.emojis.values()
-        if (
+def _latest_emoji_index(snapshot: DatasetSnapshot) -> dict[tuple[str, str, str, str], Emoji]:
+    latest: dict[tuple[str, str, str, str], Emoji] = {}
+    for value in snapshot.emojis.values():
+        identity = (
             value.platform,
             value.native_namespace,
             value.scope_id,
             value.native_id,
         )
-        == (platform, source.native_namespace, source.scope_id, source.native_id)
-    ]
-    return max(matches, key=lambda value: value.identity_epoch) if matches else None
+        previous = latest.get(identity)
+        # Keep the first record on equal epochs, matching max() over the old scan.
+        if previous is None or value.identity_epoch > previous.identity_epoch:
+            latest[identity] = value
+    return latest
 
 
 def _availability(now: str) -> Availability:

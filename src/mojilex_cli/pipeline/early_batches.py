@@ -1,4 +1,4 @@
-"""Deliver verified media batches before the slowest media in a pack finishes."""
+"""Start full media batches early, retaining partial batches until preparation ends."""
 
 from __future__ import annotations
 
@@ -15,19 +15,13 @@ class EarlyBatches(Generic[T, V]):
         self,
         consume: Callable[[list[tuple[T, V]]], Awaitable[None]],
         grouping: Callable[[T, V], tuple[object, int]],
-        *,
-        flush_delay: float = 1.0,
     ) -> None:
         self.consume = consume
         self.grouping = grouping
         self.pending: dict[object, list[tuple[T, V]]] = {}
         self.tasks: list[asyncio.Task[None]] = []
-        self.flush_delay = flush_delay
-        self.timer: asyncio.Task[None] | None = None
 
     def check(self) -> None:
-        if self.timer is not None and self.timer.done():
-            self.timer.result()
         for task in self.tasks:
             if task.done():
                 task.result()
@@ -43,8 +37,6 @@ class EarlyBatches(Generic[T, V]):
         if len(batch) >= size:
             self.pending[key] = []
             self.tasks.append(asyncio.create_task(self.consume_batch(batch)))
-        if self.timer is None or self.timer.done():
-            self.timer = asyncio.create_task(self.flush_later())
         # Let a ready AI batch start even when every media callback hits cache.
         await asyncio.sleep(0)
 
@@ -55,16 +47,8 @@ class EarlyBatches(Generic[T, V]):
                 self.tasks.append(asyncio.create_task(self.consume_batch(batch)))
         self.pending.clear()
 
-    async def flush_later(self) -> None:
-        await asyncio.sleep(self.flush_delay)
-        self.flush()
-
     async def finish(self, *, flush_pending: bool = True) -> None:
         self.check()
-        if self.timer is not None:
-            self.timer.cancel()
-            await asyncio.gather(self.timer, return_exceptions=True)
-            self.timer = None
         if flush_pending:
             self.flush()
         else:
@@ -73,7 +57,7 @@ class EarlyBatches(Generic[T, V]):
             await asyncio.gather(*self.tasks)
 
     async def close(self) -> None:
-        tasks = [*self.tasks, *([self.timer] if self.timer is not None else [])]
+        tasks = self.tasks
         for task in tasks:
             if not task.done():
                 task.cancel()

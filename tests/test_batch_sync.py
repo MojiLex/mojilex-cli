@@ -4,9 +4,11 @@ from mojilex_cli.pipeline.batch import _add_missing_packs
 from test_dataset_helpers import make_snapshot
 
 
-@pytest.mark.parametrize("mode", ["publish", "local", "existing", "decline", "unavailable"])
+@pytest.mark.parametrize(
+    "mode", ["publish", "local", "existing", "decline", "unavailable", "new_base", "auth_failed"]
+)
 def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
-    from contextlib import nullcontext
+    from contextlib import contextmanager, nullcontext
     from types import SimpleNamespace
 
     from mojilex_cli.commands.runtime import CommandResult
@@ -29,6 +31,8 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
         )
         for digit in ("1", "2")
     ]
+    if mode == "new_base":
+        checkpoints[1].base_revision = "b" * 40
     checkpoints.extend(
         [
             SimpleNamespace(command="describe", status="failed", target_repository="owner/repo"),
@@ -37,6 +41,18 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
         ]
     )
     monkeypatch.setattr(batch, "load_config", lambda: config)
+    monkeypatch.setattr(batch, "load_credentials", lambda: SimpleNamespace(github_token=None))
+    auth_calls = []
+
+    def auth_status(self):
+        from mojilex_cli.github import GitHubError
+
+        auth_calls.append(True)
+        assert not checked and not base_reads
+        if mode == "auth_failed":
+            raise GitHubError("Timeout trying to log in to github.com")
+
+    monkeypatch.setattr(batch.GitHubCLI, "auth_status", auth_status)
     monkeypatch.setattr(batch, "_runs", lambda _: (checkpoints, 0))
     monkeypatch.setattr(
         batch.RunStore,
@@ -50,10 +66,32 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
         "repository_workspace",
         lambda *a, **kw: nullcontext(SimpleNamespace(root=tmp_path, target="owner/repo")),
     )
-    monkeypatch.setattr(
-        batch, "validate_dataset", lambda *a, **kw: SimpleNamespace(raise_for_errors=lambda: None)
-    )
-    monkeypatch.setattr(batch, "load_dataset", lambda _: snapshot)
+    from mojilex_cli.dataset.validation import _SCHEMA_MEMO
+
+    checked = []
+    base_reads = []
+    verified_bases = []
+    progress = []
+
+    def validate(root, **kwargs):
+        assert _SCHEMA_MEMO.get() is not None
+        assert kwargs == {"strict": True}
+        checked.append(root)
+        return snapshot, SimpleNamespace(raise_for_errors=lambda: None)
+
+    def load_base(root):
+        base_reads.append(root)
+        return snapshot
+
+    @contextmanager
+    def stage(russian, english):
+        progress.append(english)
+        yield
+
+    monkeypatch.setattr(batch, "load_validated_dataset", validate)
+    monkeypatch.setattr(batch, "load_dataset", load_base)
+    monkeypatch.setattr(batch, "_verify_saved_base", lambda *args: verified_bases.append(args))
+    monkeypatch.setattr(batch, "_publication_progress", stage)
 
     def staging(run):
         if mode == "unavailable" and run is checkpoints[0]:
@@ -61,7 +99,18 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
         return tmp_path
 
     monkeypatch.setattr(batch, "_staging_path_from_checkpoint", staging)
-    monkeypatch.setattr(batch, "snapshot_at_revision", lambda *a: nullcontext(tmp_path))
+    active_bases = []
+
+    @contextmanager
+    def base_checkout(root, revision):
+        assert not active_bases, "Do not retain checkouts for every historical revision"
+        active_bases.append(revision)
+        try:
+            yield tmp_path
+        finally:
+            active_bases.remove(revision)
+
+    monkeypatch.setattr(batch, "snapshot_at_revision", base_checkout)
     additions = iter((["first"], ["second"]))
     monkeypatch.setattr(batch, "_add_missing_packs", lambda *a: (snapshot, next(additions), []))
     monkeypatch.setattr(
@@ -81,12 +130,29 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
         confirmations.append(message)
         return mode != "decline"
 
+    if mode == "auth_failed":
+        from mojilex_cli.github import GitHubError
+
+        with pytest.raises(GitHubError, match="Timeout"):
+            batch.sync_packs_command(confirmation=confirm)
+        assert not checked and not base_reads and not confirmations and not calls
+        return
     if mode == "decline":
         with pytest.raises(batch.CommandError, match="not confirmed"):
             batch.sync_packs_command(confirmation=confirm)
         assert len(confirmations) == 1 and not calls
         return
     result = batch.sync_packs_command(local=mode == "local", confirmation=confirm)
+    assert len(auth_calls) == (0 if mode == "local" else 1)
+    assert len(checked) == (2 if mode == "unavailable" else 3)
+    assert len(base_reads) == (2 if mode == "new_base" else 1)
+    assert len(verified_bases) == (0 if mode in {"unavailable", "new_base"} else 1)
+    assert not active_bases
+    assert _SCHEMA_MEMO.get() is None
+    assert "Validating the current GitHub dataset" in progress
+    assert "Finding changes for the pull request" in progress
+    if mode != "existing":
+        assert "Validating and saving the pull request candidate" in progress
     if mode in {"local", "existing"}:
         assert not calls and not confirmations
         assert result.publication.get("preview") if mode == "local" else result.status == "noop"
@@ -371,3 +437,44 @@ def test_later_pack_supplement_does_not_reuse_completed_pr_identity(tmp_path):
     partial = _sync_identifier("owner/repo", "main", packs, snapshot)
     snapshot.memberships.clear()
     assert partial != _sync_identifier("owner/repo", "main", packs, snapshot)
+
+
+def test_sync_validation_failure_cannot_supply_a_candidate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from mojilex_cli.pipeline import batch
+
+    def fail():
+        raise ValueError("invalid saved dataset")
+
+    monkeypatch.setattr(
+        batch,
+        "load_validated_dataset",
+        lambda *args, **kwargs: (None, SimpleNamespace(raise_for_errors=fail)),
+    )
+    with pytest.raises(ValueError, match="invalid saved dataset"):
+        batch._validated_snapshot(tmp_path)
+
+
+def test_cached_base_does_not_authorize_non_git_saved_directory(tmp_path):
+    from mojilex_cli.pipeline import batch
+
+    with pytest.raises(batch.CommandError):
+        batch._verify_saved_base(tmp_path, "a" * 40)
+
+
+def test_cached_base_still_checks_commit_in_each_saved_repository(tmp_path, monkeypatch):
+    from mojilex_cli.pipeline import batch
+
+    monkeypatch.setattr(batch, "_local_git_directory", lambda root: root / ".git")
+
+    class MissingBase:
+        def __init__(self, root):
+            pass
+
+        def current_sha(self, revision):
+            raise batch.GitError("missing commit")
+
+    monkeypatch.setattr(batch, "GitRunner", MissingBase)
+    with pytest.raises(batch.CommandError, match="saved dataset base"):
+        batch._verify_saved_base(tmp_path, "a" * 40)

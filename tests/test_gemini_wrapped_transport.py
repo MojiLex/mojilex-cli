@@ -11,6 +11,7 @@ import pytest
 from google import genai
 
 from mojilex_cli.ai import (
+    AIError,
     AITransientError,
     BudgetExceededError,
     GeminiVisionProvider,
@@ -37,6 +38,35 @@ def test_flat_provider_error_reports_only_documented_code():
     assert _safe_provider_status(ProviderError()) == " (http=400, provider_code=content_blocked)"
     ProviderError.body = {"code": "PRIVATE REQUEST CONTENT", "message": "PRIVATE REQUEST CONTENT"}
     assert _safe_provider_status(ProviderError()) == " (http=400)"
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_payment_required_is_not_retried_or_leaked(monkeypatch):
+    calls = 0
+
+    def handle(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            402,
+            json={"error": {"code": "payment_required", "message": "PRIVATE BILLING BODY"}},
+        )
+
+    _sdk_client_factory(monkeypatch, httpx.MockTransport(handle))
+    provider = GeminiVisionProvider(model="gemini-test", api_key="synthetic-key-not-real")
+    budget = RequestBudget(max_requests=3, allow_unknown_cost=True)
+    try:
+        with pytest.raises(AIError) as captured:
+            await describe_with_recovery(provider, _request(), budget)
+        assert not isinstance(captured.value, AITransientError)
+        assert "http=402" in str(captured.value)
+        assert "PRIVATE" not in str(captured.value)
+        assert "synthetic-key" not in str(captured.value)
+        assert captured.value.__cause__ is None
+        assert calls == budget.requests_used == 1
+    finally:
+        await provider._client.aio.aclose()
+        provider._client.close()
 
 
 @pytest.mark.asyncio

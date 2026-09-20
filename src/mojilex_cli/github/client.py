@@ -174,7 +174,32 @@ class GitHubCLI:
         return stdout, stderr, completed.returncode
 
     def auth_status(self) -> None:
-        self.run("auth", "status", "--hostname", "github.com")
+        # This read-only probe can time out even while stored credentials are valid.
+        # Retry only transport failures; never repeat publication mutations here.
+        for attempt in range(3):
+            try:
+                self.run("auth", "status", "--hostname", "github.com")
+                return
+            except GitHubError as exc:
+                message = str(exc).casefold()
+                authentication_failed = any(
+                    marker in message
+                    for marker in ("http 401", "http 403", "invalid token", "bad credentials")
+                )
+                transient = any(
+                    marker in message
+                    for marker in (
+                        "timeout trying to log in",
+                        "exceeded its time limit",
+                        "i/o timeout",
+                        "tls handshake timeout",
+                        "connection reset",
+                        "temporary failure in name resolution",
+                    )
+                )
+                if authentication_failed or not transient or attempt == 2:
+                    raise
+                time.sleep(attempt + 1)
 
     def current_user(self) -> tuple[str, int]:
         value = self.api("user")

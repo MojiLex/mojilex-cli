@@ -29,6 +29,7 @@ from .serialization import (
     parse_json,
     parse_jsonl,
     pretty_json,
+    serialization_scope,
     serialize_collection,
     serialize_emojis,
     serialize_memberships,
@@ -62,7 +63,8 @@ def dataset_read_scope() -> Iterator[None]:
         return
     token = _MODEL_MEMO.set(_ModelMemo())
     try:
-        yield
+        with serialization_scope():
+            yield
     finally:
         _MODEL_MEMO.reset(token)
 

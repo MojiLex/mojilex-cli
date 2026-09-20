@@ -114,6 +114,7 @@ class GitRunner:
         *arguments: str,
         check: bool = True,
         timeout_seconds: float | None = None,
+        input_bytes: bytes | None = None,
     ) -> CommandResult:
         self._validate_arguments(arguments)
         command = [
@@ -130,13 +131,16 @@ class GitRunner:
                 completed = subprocess.run(
                     command,
                     shell=False,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL if input_bytes is None else None,
+                    input=input_bytes,
                     capture_output=True,
                     check=False,
                     timeout=timeout_seconds or self.timeout_seconds,
                     env=environment,
                 )
         except FileNotFoundError as exc:
+            if getattr(exc, "winerror", None) == 206:
+                raise GitError("Git command exceeds the Windows command-line length limit") from exc
             raise GitError("system Git executable was not found") from exc
         except subprocess.TimeoutExpired as exc:
             raise GitError("Git command exceeded its time limit") from exc
@@ -332,7 +336,16 @@ class GitRunner:
         safe = self.normalize_paths(paths)
         if not safe:
             raise GitError("refusing to stage an empty path set")
-        self.run("add", "--", *safe)
+        self._validate_arguments(safe)
+        # Thousands of generated paths exceed Windows' process command-line limit.
+        # NUL-delimited literal paths keep staging exact without expanding argv.
+        self.run(
+            "--literal-pathspecs",
+            "add",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+            input_bytes=b"\0".join(path.encode("utf-8") for path in safe) + b"\0",
+        )
         return safe
 
     def has_staged_changes(self) -> bool:

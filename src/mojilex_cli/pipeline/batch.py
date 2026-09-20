@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 
 from mojilex_cli.commands.packs import _runs
 from mojilex_cli.commands.runtime import CommandError, CommandResult
 from mojilex_cli.composition.publication import mark_saved_fragments
-from mojilex_cli.config import load_config
-from mojilex_cli.dataset import DatasetSnapshot, load_dataset, validate_dataset
+from mojilex_cli.config import load_config, load_credentials
+from mojilex_cli.dataset import DatasetSnapshot, load_dataset, load_validated_dataset
+from mojilex_cli.dataset.validation import schema_validation_scope
 from mojilex_cli.domain import MembershipStatus, media_digest, telegram_set_fingerprint
-from mojilex_cli.git import GitRunner
-from mojilex_cli.github import RepositoryRef
+from mojilex_cli.git import GitError, GitRunner
+from mojilex_cli.github import GitHubCLI, RepositoryRef
 from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.output import RunStatus
 from mojilex_cli.runs import RunStore
@@ -25,12 +27,13 @@ from .pack_publication import ready_source_names, scoped_candidate
 from .runner import (
     _apply_with_rollback,
     _changed_paths,
+    _publication_progress,
     _reference_from_remote,
     _run_submit,
     _staging_path_from_checkpoint,
     repository_workspace,
 )
-from .workspaces import snapshot_at_revision
+from .workspaces import _local_git_directory, snapshot_at_revision
 
 
 def _add_missing_packs(
@@ -183,27 +186,64 @@ def sync_packs_command(
             result={"added_packs": [], "skipped_packs": [], "changed_paths": []},
             warnings=warnings,
         )
-    with repository_workspace(
-        config.repository.target, config.repository.base_branch, isolated=True
-    ) as workspace:
-        validate_dataset(workspace.root, strict=True).raise_for_errors()
-        latest = load_dataset(workspace.root)
+    if not local:
+        with _publication_progress("Проверка доступа к GitHub", "Checking GitHub access"):
+            GitHubCLI(token=load_credentials().github_token).auth_status()
+    cache_dir = getattr(config, "cache_dir", None)
+    with (
+        _publication_progress(
+            "Подготовка готовых паков для GitHub", "Preparing completed packs for GitHub"
+        ),
+        schema_validation_scope(
+            persistent_cache=Path(cache_dir) / "schema-validation"
+            if cache_dir is not None
+            else None
+        ),
+        repository_workspace(
+            config.repository.target, config.repository.base_branch, isolated=True
+        ) as workspace,
+        ExitStack() as bases,
+    ):
+        with _publication_progress(
+            "Проверка актуальной базы GitHub", "Validating the current GitHub dataset"
+        ):
+            latest = _validated_snapshot(workspace.root)
+        base_snapshots: dict[str, DatasetSnapshot] = {}
         merged = latest
         added: list[str] = []
         skipped: set[str] = set()
         selected_runs: list[str] = []
         store = RunStore(cast(Path, config.runs_dir))
         # _runs sorts newest first: duplicates in older runs cannot overwrite them.
-        for checkpoint in ready:
+        for index, checkpoint in enumerate(ready, 1):
             try:
                 with store.execution_lock(checkpoint.run_id):
                     checkpoint = store.load(checkpoint.run_id)
                     staging = _staging_path_from_checkpoint(checkpoint)
-                    validate_dataset(staging, strict=True).raise_for_errors()
-                    candidate = load_dataset(staging)
-                    mark_saved_fragments(candidate, checkpoint)
-                    with snapshot_at_revision(staging, checkpoint.base_revision) as base_root:
-                        base_snapshot = load_dataset(base_root)
+                    with _publication_progress(
+                        f"Проверка сохранённых данных: {index}/{len(ready)}",
+                        f"Validating saved datasets: {index}/{len(ready)}",
+                    ):
+                        candidate = _validated_snapshot(staging)
+                        mark_saved_fragments(candidate, checkpoint)
+                    with _publication_progress(
+                        f"Сборка готовых паков: {index}/{len(ready)}",
+                        f"Assembling completed packs: {index}/{len(ready)}",
+                    ):
+                        # Revisions are immutable Git identities for this target.
+                        # Keep the checkout alive and reuse only the base, never
+                        # a mutable staging snapshot from another saved run.
+                        if checkpoint.base_revision not in base_snapshots:
+                            # Bound temporary storage and memory to one base.
+                            bases.close()
+                            base_snapshots.clear()
+                            base_root = bases.enter_context(
+                                snapshot_at_revision(staging, checkpoint.base_revision)
+                            )
+                            base_snapshots[checkpoint.base_revision] = load_dataset(base_root)
+                        else:
+                            _verify_saved_base(staging, checkpoint.base_revision)
+                        base_snapshot = base_snapshots[checkpoint.base_revision]
                         # Completion belongs to a source, not to the entire batch.
                         if (
                             getattr(checkpoint, "safe_parameters", {}).get("source_states")
@@ -233,7 +273,10 @@ def sync_packs_command(
             skipped.update(omissions)
             if additions:
                 selected_runs.append(checkpoint.run_id)
-        paths = _changed_paths(latest, merged)
+        with _publication_progress(
+            "Определение изменений для PR", "Finding changes for the pull request"
+        ):
+            paths = _changed_paths(latest, merged)
         summary = {
             "added_packs": added,
             "skipped_packs": sorted(skipped - set(added)),
@@ -242,7 +285,10 @@ def sync_packs_command(
         }
         if not paths:
             return CommandResult(status=RunStatus.NOOP, result=summary, warnings=warnings)
-        _apply_with_rollback(latest, merged)
+        with _publication_progress(
+            "Финальная проверка и сохранение PR", "Validating and saving the pull request candidate"
+        ):
+            _apply_with_rollback(latest, merged)
         if local:
             return CommandResult(
                 result={**summary, "validated": True},
@@ -281,3 +327,25 @@ def sync_packs_command(
         result.result.update(summary)
         result.warnings.extend(warnings)
         return result
+
+
+def _validated_snapshot(root: Path) -> DatasetSnapshot:
+    """Validate the exact snapshot that will be used, without loading it twice."""
+    snapshot, report = load_validated_dataset(root, strict=True)
+    report.raise_for_errors()
+    assert snapshot is not None
+    return snapshot
+
+
+def _verify_saved_base(staging: Path, revision: str) -> None:
+    """A reused base never legitimizes a broken or unrelated staging repository."""
+    _local_git_directory(staging)
+    try:
+        if GitRunner(staging).current_sha(revision) != revision:
+            raise GitError("Saved base revision is not an immutable commit ID")
+    except GitError as exc:
+        raise CommandError(
+            "GIT_CONFLICT",
+            "Could not verify the saved dataset base revision.",
+            hint="Restore the saved Git workspace before publishing its packs.",
+        ) from exc

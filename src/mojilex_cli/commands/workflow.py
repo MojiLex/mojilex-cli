@@ -274,7 +274,7 @@ def import_command(
         for checkpoint, saved_source in existing.values():
             state = source_state(checkpoint, saved_source)
             if state["phase"] == "describe" and state["status"] in {"succeeded", "noop"}:
-                report_pack_stage(saved_source, "ready")
+                report_pack_stage(saved_source, "ready", restored=True)
         selectors: list[str] = []
         resumed: set[tuple[str, str]] = set()
         result = CommandResult(status="noop")  # type: ignore[arg-type]

@@ -147,3 +147,41 @@ def test_cached_description_preserves_marker_only_for_unchanged_media(tmp_path, 
     if not changed_media:
         assert plan.updated == 0
         assert plan.snapshot.to_files() == snapshot.to_files()
+
+
+@pytest.mark.parametrize("newest_first", [False, True])
+@pytest.mark.parametrize("stale_media", [False, True])
+def test_fragment_lookup_uses_latest_full_identity_without_falling_back_to_old_media(
+    tmp_path, newest_first, stale_media
+):
+    snapshot, source, group = _fixture(tmp_path)
+    original = next(iter(snapshot.emojis.values()))
+    latest = original.model_copy(deep=True)
+    latest.identity_epoch = 2
+    latest.id = emoji_id(
+        latest.platform, latest.native_namespace, latest.scope_id, latest.native_id, 2
+    )
+    if stale_media:
+        latest.media[0].sha256 = "f" * 64
+    records = list(snapshot.emojis.values())
+    records.insert(0 if newest_first else len(records), latest)
+    decoys = []
+    for field in ("platform", "native_namespace", "scope_id", "native_id"):
+        decoy = original.model_copy(deep=True)
+        setattr(decoy, field, "different")
+        decoy.identity_epoch = 9
+        decoy.id = emoji_id(
+            decoy.platform, decoy.native_namespace, decoy.scope_id, decoy.native_id, 9
+        )
+        decoys.append(decoy)
+    snapshot.emojis = {record.id: record for record in [*records, *decoys]}
+
+    changed = mark_verified_fragments(snapshot, {source.native_id: [group]}, [source])
+
+    expected = {
+        latest.id,
+        emoji_id("telegram", "custom_emoji.id", "global", source.items[1].native_id),
+    }
+    assert changed == (set() if stale_media else expected)
+    for record in snapshot.emojis.values():
+        assert ("fragment" in record.semantic_tags) is (record.id in changed)

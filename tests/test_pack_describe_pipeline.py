@@ -489,12 +489,10 @@ async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline
             "composition",
             "merge_wait",
             "finalize",
-            "assembled",
-            "finalize",
             "ready",
         ]
     first_ready = next(i for i, event in enumerate(events) if event[1] == "ready")
-    assert all(event[1] != "ai" for event in events[first_ready:])
+    assert any(event[1] == "ai" for event in events[first_ready:])
 
 
 async def test_fast_puzzle_verification_starts_before_other_pack_media_finishes(

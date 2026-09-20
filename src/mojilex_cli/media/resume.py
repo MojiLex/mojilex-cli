@@ -16,6 +16,7 @@ import tempfile
 import threading
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,17 @@ from .temporary import TemporaryMediaRun
 
 _KEY = re.compile(r"[0-9a-f]{64}\Z")
 _MANIFEST_LIMIT = 32 * 1024
-_MAX_ENTRIES = 100_000
+_MAX_ITEMS = 100_000
+# One cached emoji contains up to 16 light + 16 dark frames, a manifest,
+# an optional composition tile, and its directory. Count these separately
+# from emoji items: 100,000 individual paths is only a few thousand animations.
+_MAX_ENTRIES = _MAX_ITEMS * (2 * HARD_MAX_FRAMES + 3)
+
+
+@dataclass(frozen=True)
+class _RetainedInitializationFailure:
+    max_bytes: int
+    message: str
 
 
 def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) -> RetainedMediaStore:
@@ -74,11 +85,31 @@ def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) ->
         def release(count: int) -> None:
             batch.temp_budget.adjust(-count)
 
-        store = RetainedMediaStore(root, max_bytes, reserve=reserve, release=release)
+        initialized = batch.retained_initializations.get(key)
+        if isinstance(initialized, _RetainedInitializationFailure):
+            if initialized.max_bytes != max_bytes:
+                raise ValueError("shared retained media limit changed during the operation")
+            raise MediaLimitError(initialized.message)
+        if isinstance(initialized, RetainedMediaStore):
+            store = initialized
+            if store.max_bytes != max_bytes:
+                raise ValueError("shared retained media limit changed during the operation")
+        else:
+            try:
+                store = RetainedMediaStore(root, max_bytes, reserve=reserve, release=release)
+            except MediaLimitError as exc:
+                batch.retained_initializations[key] = _RetainedInitializationFailure(
+                    max_bytes, str(exc)
+                )
+                raise
+            # A rejected reservation must not make every waiting pack rescan.
+            # Keep the measurement, but retry admission if temporary space frees.
+            batch.retained_initializations[key] = store
         if store.size_bytes > max_bytes:
             raise MediaLimitError("run temporary disk limit exceeded")
         reserve(store.size_bytes)
         batch.retained_stores[key] = store
+        batch.retained_initializations.pop(key, None)
         return store
 
 
@@ -190,6 +221,7 @@ class RetainedMediaStore:
     def _measure(self) -> int:
         total = 0
         seen = 0
+        directories = 0
         pending = [(self.root, 0)]
         while pending:
             directory, depth = pending.pop()
@@ -200,13 +232,18 @@ class RetainedMediaStore:
                 for child in entries:
                     seen += 1
                     if seen > _MAX_ENTRIES:
-                        return self.max_bytes + 1
+                        raise MediaLimitError("retained media cache entry limit exceeded")
                     info = child.stat(follow_symlinks=False)
                     if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                         raise ValueError("retained media path contains a link or reparse point")
                     if stat.S_ISREG(info.st_mode):
                         total += info.st_size
+                        if total > self.max_bytes:
+                            return total
                     elif stat.S_ISDIR(info.st_mode) and depth < 2:
+                        directories += 1
+                        if directories > _MAX_ITEMS:
+                            raise MediaLimitError("retained media cache item limit exceeded")
                         pending.append((Path(child.path), depth + 1))
                     else:
                         raise ValueError("unexpected retained media entry")

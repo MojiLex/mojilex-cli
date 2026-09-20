@@ -7,7 +7,8 @@ import pytest
 from PIL import Image
 
 from mojilex_cli.concurrency import batch_limits
-from mojilex_cli.media.models import MediaLimitError, MediaMetadata, ProcessedMedia
+from mojilex_cli.media import resume
+from mojilex_cli.media.models import HARD_MAX_FRAMES, MediaLimitError, MediaMetadata, ProcessedMedia
 from mojilex_cli.media.resume import RetainedMediaStore, get_retained_store
 from mojilex_cli.media.temporary import TemporaryMediaRun
 
@@ -88,10 +89,20 @@ def test_shared_retained_new_bytes_respect_aggregate_budget(tmp_path: Path) -> N
             assert not list(root.iterdir())
 
 
-def test_retained_limit_failure_is_not_cached_or_double_charged(tmp_path: Path) -> None:
+def test_retained_byte_limit_failure_scans_once_without_double_charge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "retained"
     root.mkdir()
     (root / "unknown").write_bytes(b"12345")
+    scans = []
+    measure = RetainedMediaStore._measure
+
+    def count_scan(self):
+        scans.append(1)
+        return measure(self)
+
+    monkeypatch.setattr(RetainedMediaStore, "_measure", count_scan)
     with batch_limits(downloads=2, renders=2, ai=2, max_temp_bytes=10) as limits:
         with TemporaryMediaRun(root=tmp_path) as run:
             for _ in range(2):
@@ -99,6 +110,92 @@ def test_retained_limit_failure_is_not_cached_or_double_charged(tmp_path: Path) 
                     get_retained_store(root, max_bytes=4, run=run)
             assert limits.temp_budget.used == 0
             assert not limits.retained_stores
+            assert scans == [1]
+
+
+def test_retained_item_limit_allows_each_items_frames_and_manifest(tmp_path, monkeypatch):
+    monkeypatch.setattr(resume, "_MAX_ITEMS", 3)
+    monkeypatch.setattr(resume, "_MAX_ENTRIES", 3 * (2 * HARD_MAX_FRAMES + 3))
+    total = 0
+    for item in range(3):
+        folder = tmp_path / str(item)
+        folder.mkdir()
+        for frame in range(2 * HARD_MAX_FRAMES + 2):
+            (folder / str(frame)).write_bytes(b"12345")
+            total += 5
+    store = RetainedMediaStore(tmp_path, 1000)
+    assert store.size_bytes == total
+    assert store._available
+
+
+def test_path_count_limit_is_reported_as_count_not_fake_disk_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(resume, "_MAX_ENTRIES", 2)
+    for index in range(3):
+        (tmp_path / str(index)).write_bytes(b"x")
+    with pytest.raises(MediaLimitError, match="cache entry limit"):
+        RetainedMediaStore(tmp_path, 10000)
+
+
+@pytest.mark.asyncio
+async def test_48_waiting_packs_do_not_rescan_failed_cache(tmp_path, monkeypatch):
+    root = tmp_path / "retained"
+    root.mkdir()
+    for index in range(3):
+        (root / str(index)).mkdir()
+    monkeypatch.setattr(resume, "_MAX_ITEMS", 2)
+    scans = []
+    measure = RetainedMediaStore._measure
+
+    def count_scan(self):
+        scans.append(1)
+        return measure(self)
+
+    monkeypatch.setattr(RetainedMediaStore, "_measure", count_scan)
+    with batch_limits(downloads=48, renders=12, ai=4, max_temp_bytes=10000) as limits:
+        with TemporaryMediaRun(root=tmp_path) as run:
+            results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(get_retained_store, root, max_bytes=10000, run=run)
+                    for _ in range(48)
+                ),
+                return_exceptions=True,
+            )
+        assert all(isinstance(result, MediaLimitError) for result in results)
+        assert all("cache item limit" in str(result) for result in results)
+        assert scans == [1]
+        assert limits.temp_budget.used == 0
+        assert not limits.retained_stores
+    # A fresh operation observes the repaired condition rather than a stale error.
+    monkeypatch.setattr(resume, "_MAX_ITEMS", 3)
+    with batch_limits(downloads=1, renders=1, ai=1, max_temp_bytes=10000):
+        with TemporaryMediaRun(root=tmp_path) as run:
+            assert get_retained_store(root, max_bytes=10000, run=run)._available
+    assert scans == [1, 1]
+
+
+def test_retained_admission_retries_without_rescanning_when_space_frees(tmp_path, monkeypatch):
+    root = tmp_path / "retained"
+    root.mkdir()
+    (root / "unknown").write_bytes(b"12345")
+    scans = []
+    measure = RetainedMediaStore._measure
+
+    def count_scan(self):
+        scans.append(1)
+        return measure(self)
+
+    monkeypatch.setattr(RetainedMediaStore, "_measure", count_scan)
+    with batch_limits(downloads=1, renders=1, ai=1, max_temp_bytes=10) as limits:
+        with TemporaryMediaRun(root=tmp_path) as run:
+            limits.temp_budget.adjust(8)
+            with pytest.raises(MediaLimitError, match="temporary disk limit"):
+                get_retained_store(root, max_bytes=10, run=run)
+            assert limits.temp_budget.used == 8
+            assert not limits.retained_stores
+            limits.temp_budget.adjust(-8)
+            store = get_retained_store(root, max_bytes=10, run=run)
+            assert store.size_bytes == limits.temp_budget.used == 5
+            assert scans == [1]
 
 
 def test_non_batch_factory_keeps_individual_run_accounting(tmp_path: Path) -> None:

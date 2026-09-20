@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -36,14 +37,32 @@ class PackQueue:
     # Completed packs are checked alongside useful work in the interactive fast
     # pipeline. Only identities live here; durable progress remains in RunStore.
     completed_checks: dict[str, tuple[str, str]] = field(default_factory=dict)
+    started: float = field(default_factory=time.monotonic)
+    restored_ready: set[str] = field(default_factory=set)
+
+    def report_stage(self, source: str, stage: str, *, restored: bool = False) -> None:
+        if restored:
+            self.restored_ready.add(source)
+        elif stage != "ready":
+            # A changed/legacy pack may need real work after restoring its status.
+            self.restored_ready.discard(source)
+        self.stages[source] = stage
+
+    @property
+    def ready_sources(self) -> set[str]:
+        return {source for source, stage in tuple(self.stages.items()) if stage == "ready"}
+
+    @property
+    def new_ready_count(self) -> int:
+        return len(self.ready_sources - self.restored_ready)
 
     def ai_activity_text(self) -> str:
         """Describe current work, never the last request that happened to log."""
         phases = Counter(
             phase
-            for batch in self.batches
+            for batch in tuple(self.batches)
             if getattr(batch, "batch_total", None) is not None
-            for phase in getattr(batch, "active", {}).values()
+            for phase in tuple(getattr(batch, "active", {}).values())
         )
         ru = current_ui_language() == "ru"
         labels = {
@@ -135,7 +154,7 @@ class PackQueue:
                 self.report_counts(source, phase, completed, total)
 
     def suffix(self, source: str, phase: str, *, ru: bool) -> str:
-        batches = [batch for batch, owner in self.batches.items() if owner == source]
+        batches = [batch for batch, owner in tuple(self.batches.items()) if owner == source]
         for batch in batches:
             self.remember_batch(batch, source)
         values = self.counts.get(source, {})
@@ -159,7 +178,7 @@ class PackQueue:
                 value
                 for batch in batches
                 if getattr(batch, "batch_total", None) is not None
-                for value in getattr(batch, "active", {}).values()
+                for value in tuple(getattr(batch, "active", {}).values())
             )
             for key, label in (
                 ("request", "запросов ожидают ответа" if ru else "requests awaiting response"),
@@ -193,12 +212,12 @@ class PackQueue:
                 "failed",
             )
         }
-        for source, stage in self.stages.items():
+        for source, stage in tuple(self.stages.items()):
             categories = set()
-            for batch, owner in self.batches.items():
+            for batch, owner in tuple(self.batches.items()):
                 if owner != source:
                     continue
-                for phase in getattr(batch, "active", {}).values():
+                for phase in tuple(getattr(batch, "active", {}).values()):
                     categories.add(
                         "download"
                         if phase == "download"
@@ -263,7 +282,19 @@ class PackQueue:
         )
         groups = self.groups()
         yield Text(
-            ("Всего паков: " if ru else "Total packs: ") + str(len(self.stages)), style="bold"
+            f"{labels['ready']}: {len(self.ready_sources)} / {len(self.stages)}",
+            style="bold green",
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+        elapsed = max(0, int(time.monotonic() - self.started))
+        clock = f"{elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}"
+        yield Text(
+            f"{'За запуск' if ru else 'This run'}: +{self.new_ready_count}"
+            f" · {'Время работы' if ru else 'Elapsed'}: {clock}",
+            style="bold",
+            no_wrap=True,
+            overflow="ellipsis",
         )
         # Reserve room for summaries and a prompt; distribute detail rows fairly.
         detail_slots = max(0, console.size.height - len(groups) - 7)
@@ -284,6 +315,8 @@ class PackQueue:
         ]
         per_group = detail_slots // max(1, len(active))
         for key, values in groups.items():
+            if key == "ready":
+                continue
             yield Text(
                 f"{labels[key]}: {len(values)}"
                 + (
