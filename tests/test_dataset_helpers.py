@@ -527,3 +527,27 @@ def write_fixture(root: Path) -> DatasetSnapshot:
     )
     writer.commit()
     return snapshot
+
+
+def make_animated_snapshot(root: Path) -> DatasetSnapshot:
+    import base64
+
+    snapshot = make_snapshot(root)
+    original = next(iter(snapshot.emojis.values()))
+    raw = original.as_dict()
+    raw["media"][0].update(
+        kind="animation",
+        format="tgs",
+        mime_type="application/x-tgsticker",
+        animated=True,
+        duration_ms=1000,
+    )
+    raw["fingerprints"]["input_media_digest"] = media_digest(
+        [Media.model_validate(raw["media"][0])]
+    )
+    perceptual = raw["fingerprints"]["items"][0]["perceptual"]
+    perceptual["sample_count"] = 16
+    for field in ("layout_phash64", "content_phash64", "alpha_phash64", "edge_phash64"):
+        perceptual[field] = base64.urlsafe_b64encode(bytes(128)).decode().rstrip("=")
+    snapshot.emojis[original.id] = Emoji.model_validate(raw)
+    return snapshot

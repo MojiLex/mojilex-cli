@@ -22,7 +22,6 @@ from mojilex_cli.domain import (
     Availability,
     Collection,
     Content,
-    ContentType,
     DeterministicEmojiAnalysis,
     Emoji,
     Facets,
@@ -31,8 +30,6 @@ from mojilex_cli.domain import (
     Membership,
     Provenance,
     Review,
-    Style,
-    SuggestedUse,
     ToolProvenance,
     Uncertainty,
     collection_id,
@@ -41,6 +38,7 @@ from mojilex_cli.domain import (
     membership_id,
     utc_now,
 )
+from mojilex_cli.domain.models import CONTROLLED_SEMANTIC_TAGS, MotionStatus
 from mojilex_cli.media import PIPELINE_VERSION, ProcessedMedia
 from mojilex_cli.sources import SourceCollection, SourceEmoji
 
@@ -418,19 +416,21 @@ def _emoji(
             **description.facets.model_dump(mode="json"),
         }
     )
+    # A missing motion assessment is uncertainty, never evidence of static media.
+    # Preserve the original text and cached response; do not invent movement.
+    if media.animated:
+        for value in localized.values():
+            if value.motion_status is MotionStatus.NOT_APPLICABLE:
+                value.motion_status = MotionStatus.UNDETERMINED
+                value.motion = None
+                facets.uncertainties = sorted({*facets.uncertainties, Uncertainty.MOTION})
     # Older cached AI responses rejected only tags matching selected facets.
     # The dataset reserves the entire controlled vocabulary, even values absent
     # from this emoji's facets. Remove redundant vocabulary deterministically;
     # retain exact concrete tags and avoid another paid description request.
-    controlled_tags = {
-        *(item.value for item in ContentType),
-        *(item.value for item in Style),
-        *(item.value for item in SuggestedUse),
-        *(item.value for item in Uncertainty),
-    }
     # The reserved structural marker requires whole-composition verification;
     # a single-image AI response (including an old cached response) is not evidence.
-    semantic_tags = sorted(set(description.semantic_tags) - controlled_tags - {"fragment"})
+    semantic_tags = sorted(set(description.semantic_tags) - CONTROLLED_SEMANTIC_TAGS - {"fragment"})
     if not semantic_tags:
         raise ValueError("AI semantic tags contain no concrete tags outside controlled facets")
     return Emoji(

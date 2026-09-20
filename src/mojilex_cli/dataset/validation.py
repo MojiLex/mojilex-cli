@@ -41,6 +41,7 @@ from mojilex_cli.domain.ids import (
     visual_relation_id,
 )
 from mojilex_cli.domain.models import (
+    CONTROLLED_SEMANTIC_TAGS,
     AvailabilityStatus,
     ColorFamily,
     ContentType,
@@ -810,12 +811,6 @@ def _validate_emoji_policy(
     *,
     canonical: bool,
 ) -> None:
-    controlled_tags = {
-        *(item.value for item in ContentType),
-        *(item.value for item in Style),
-        *(item.value for item in SuggestedUse),
-        *(item.value for item in Uncertainty),
-    }
     for emoji in snapshot.emojis.values():
         path = str(emoji_bucket_path(emoji.platform, emoji.id))
         media_hashes = sorted({item.sha256 for item in emoji.media})
@@ -836,7 +831,7 @@ def _validate_emoji_policy(
             _issue(issues, "SORT", path, "semantic_tags must be sorted")
         if emoji.concept_ids != sorted(emoji.concept_ids):
             _issue(issues, "SORT", path, "concept_ids must be sorted")
-        duplicates = sorted(set(emoji.semantic_tags) & controlled_tags)
+        duplicates = sorted(set(emoji.semantic_tags) & CONTROLLED_SEMANTIC_TAGS)
         if duplicates:
             _issue(
                 issues,
@@ -966,6 +961,15 @@ def _validate_emoji_policy(
             and Uncertainty.TEXT not in emoji.facets.uncertainties
         ):
             _issue(issues, "TEXT_UNCERTAINTY", path, "text uncertainty is required")
+        if any(item.animated for item in emoji.media):
+            for language, description in emoji.descriptions.items():
+                if description.motion_status.value == "not_applicable":
+                    _issue(
+                        issues,
+                        "MOTION_STATUS",
+                        path,
+                        f"descriptions.{language}: animated media cannot use not_applicable",
+                    )
         if (
             any(
                 description.motion_status.value == "undetermined"
