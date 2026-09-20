@@ -20,6 +20,11 @@ mojilex publish NewsEmoji
 `publish --local` validates the completed draft without uploading it; `publish`
 creates or updates a GitHub pull request without repeating AI analysis.
 
+`add --publish local` retains its destination for `resume`, even when the current
+directory changes. With `--repo OWNER/REPO`, local results are kept in a persistent
+workspace under the configured runs directory. The returned path remains available
+after the command exits. Resume retains the consumed request budget and cached answers.
+
 Previously saved descriptions remain compatible. Dataset writes use filenames
 with an 8-character hash prefix; this needs no new AI analysis. When `main` changes
 after publication, the repository's enabled **Refresh open data PRs** workflow

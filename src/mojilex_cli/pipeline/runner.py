@@ -766,6 +766,10 @@ async def _run_add(
         and not stage_only
         and (config.repository.publish == "pr" or options.direct_push)
     )
+    run_identifier = resume_id or new_run_id()
+    durable_local = (
+        not options.dry_run and config.repository.publish == "local" and not options.direct_push
+    )
     with (
         prompt_contract_scope(),
         schema_validation_scope(
@@ -780,6 +784,30 @@ async def _run_add(
             isolated=isolated_publication,
         ) as workspace,
     ):
+        if durable_local:
+            workspace = await run_blocking(
+                _persistent_local_workspace,
+                workspace,
+                runs_dir=cast(Path, config.runs_dir),
+                run_id=run_identifier,
+                base_branch=config.repository.base_branch,
+            )
+            config = config.model_copy(
+                update={
+                    "repository": config.repository.model_copy(
+                        update={"target": str(workspace.root)}
+                    )
+                }
+            )
+            if (
+                resume_checkpoint is not None
+                and str(workspace.target) != resume_checkpoint.target_repository
+            ):
+                raise CommandError(
+                    "SOURCE_CHANGED_DURING_RUN",
+                    "The saved local checkout now points to a different repository.",
+                    hint="Restore the original checkout before resuming this run.",
+                )
         if stage_only and resume_checkpoint is not None:
             with preparation_progress(
                 "Проверка формата сохранённой базы"
@@ -809,7 +837,6 @@ async def _run_add(
         assert initial is not None  # A load failure was rejected by the report above.
         git = GitRunner(workspace.root, github_token=credentials.github_token)
         base_sha = git.current_sha()
-        run_identifier = resume_id or new_run_id()
         report_run_id(run_identifier)
         run_store = RunStore(
             cast(Path, config.runs_dir),
@@ -897,6 +924,15 @@ async def _run_add(
                     target_repository=str(workspace.target),
                     base_revision=base_sha,
                     run_id=run_identifier,
+                )
+            if durable_local:
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "safe_parameters": {
+                            **checkpoint.safe_parameters,
+                            "staging_repository": str(workspace.root),
+                        }
+                    }
                 )
             run_store.save(checkpoint)
             if not source_entries:
@@ -2781,11 +2817,22 @@ async def run_resume(
         source_state(checkpoint, source)["phase"] == "import" for source in selected_sources
     )
     staging_value = _optional_string(parameters.get("staging_repository"))
-    use_staging = checkpoint.command in {"import", "describe"} and staging_value is not None
+    local_add = (
+        checkpoint.command == "add" and options.publish == "local" and not options.direct_push
+    )
+    use_staging = (
+        checkpoint.command in {"import", "describe"} or local_add
+    ) and staging_value is not None
     options = replace(
         options,
         selected_sources=selected_sources,
-        repository=staging_value if use_staging else checkpoint.target_repository,
+        repository=(
+            staging_value
+            if use_staging
+            else (options.repository or checkpoint.target_repository)
+            if local_add
+            else checkpoint.target_repository
+        ),
         ai_concurrency=ai_concurrency if ai_concurrency is not None else options.ai_concurrency,
         max_ai_requests=(
             max_ai_requests if max_ai_requests is not None else options.max_ai_requests
@@ -3462,9 +3509,8 @@ async def _prepare_collection_media(
                 )
             if expected_media is None:
                 continue
-            # Exact semantic results already bind the decoded bytes and current
-            # source metadata. Only static puzzle verification still needs pixels;
-            # reopening every retained animation frame does no useful work here.
+            # Old cached animations need one exact sample comparison. Once that
+            # observation is cached, only static puzzle checks still need pixels.
             semantics_ready = item.native_id in cached_outcomes or (
                 not import_only
                 and item.native_id in cached
@@ -3478,6 +3524,22 @@ async def _prepare_collection_media(
                 )
             )
             if semantics_ready:
+                if (
+                    expected_media.metadata.animated
+                    and expected_media.observed_frame_variation is None
+                ):
+                    from mojilex_cli.media.motion import observed_frame_variation
+
+                    saved = await run_blocking(
+                        retained.get, _source_descriptor_sha256(item), expected_media
+                    )
+                    if saved is not None:
+                        observation = await run_blocking(observed_frame_variation, saved)
+                        expected_media = expected_media.model_copy(
+                            update={"observed_frame_variation": observation}
+                        )
+                        if observation is not None:
+                            _cache_deterministic_analysis(cache, item, expected_media)
                 if (
                     expected_media.metadata.kind != "static"
                     or item.animated
@@ -4059,7 +4121,13 @@ def _validated_deterministic_cache_entry(
         render_context = payload["render_context"]
         if not isinstance(render_context, Mapping):
             return None
-        if set(render_context) != {"background_variants", "frame_count"}:
+        if set(render_context) not in (
+            {"background_variants", "frame_count"},
+            {"background_variants", "frame_count", "observed_frame_variation"},
+        ):
+            return None
+        observation = render_context.get("observed_frame_variation")
+        if observation is not None and type(observation) is not bool:
             return None
         frame_count = render_context["frame_count"]
         backgrounds = render_context["background_variants"]
@@ -4107,6 +4175,7 @@ def _validated_deterministic_cache_entry(
             dark_frame_paths=(),
             rendered_frame_count=frame_count,
             has_dark_render=backgrounds == ["light", "dark"],
+            observed_frame_variation=observation,
         )
         if _deterministic_key(restored) != key:
             return None
@@ -6427,6 +6496,9 @@ def _cache_deterministic_analysis(
         raise ValueError("processed media has no rendered frames")
     if item.needs_repainting and not value.semantic_has_dark_render:
         raise ValueError("processed media render context does not match the source")
+    from mojilex_cli.media.motion import observed_frame_variation
+
+    observation = observed_frame_variation(value)
     cache.put_metadata(
         _deterministic_cache_storage_key(key, render_context_sha256),
         {
@@ -6438,6 +6510,7 @@ def _cache_deterministic_analysis(
             "analysis": analysis.model_dump(mode="json"),
             "render_context": {
                 "frame_count": frame_count,
+                **({"observed_frame_variation": observation} if observation is not None else {}),
                 "background_variants": (
                     ["light", "dark"] if value.semantic_has_dark_render else ["light"]
                 ),
@@ -7424,6 +7497,27 @@ Collections:
 Validation passed. The change contains metadata only: no source media, download URLs, or secrets.
 New AI descriptions are intentionally `unreviewed` unless policy requires approval before publish.
 """
+
+
+def _persistent_local_workspace(
+    workspace: RepositoryWorkspace,
+    *,
+    runs_dir: Path,
+    run_id: str,
+    base_branch: str,
+) -> RepositoryWorkspace:
+    """Retain local-only results beyond a temporary remote checkout's lifetime."""
+    if not workspace.temporary:
+        return workspace
+    root = prepare_staging_workspace(
+        workspace.root,
+        target=workspace.target,
+        runs_dir=runs_dir,
+        run_id=run_id,
+        base_branch=base_branch,
+        base_revision=GitRunner(workspace.root).current_sha(),
+    )
+    return RepositoryWorkspace(root=root, target=workspace.target, temporary=False)
 
 
 @contextmanager

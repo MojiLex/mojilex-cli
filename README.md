@@ -212,8 +212,9 @@ Changed source media never silently replaces the saved input.
 
 Cached descriptions alone do not mean the whole pack is ready. An interrupted
 puzzle check or final save still has to finish. Exact saved descriptions reuse
-only the static image tiles needed for puzzle checks; animations do not reopen
-every retained frame. Missing puzzle tiles are rebuilt without repeating valid
+only the static image tiles needed for puzzle checks. Older animation caches may
+read retained frames once to verify motion evidence, then reuse that observation.
+Missing puzzle tiles are rebuilt without repeating valid
 AI descriptions. The dashboard distinguishes puzzle checks and waiting to save,
 and description counters include already completed emoji.
 
@@ -247,6 +248,8 @@ are preserved verbatim. HTML tags and control characters remain forbidden;
 ordinary descriptions remain markup-free.
 When an animated image has no usable motion assessment, its motion is marked
 undetermined with an uncertainty flag; the program does not invent movement.
+Identical sampled frames also suppress an unsupported movement description;
+the animation container alone is not evidence of visible motion.
 Reserved facet labels such as `ui-icon` are removed from concrete semantic tags
 when assembling descriptions. These corrections reuse the existing AI response.
 
