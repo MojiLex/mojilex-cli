@@ -194,9 +194,10 @@ You can also use `mojilex import "C:\path\packs.txt"` or
 
 ### Pause and continue a large batch
 
-Import and AI analysis are saved separately. Each completed media item durably
-records its checksum, verification results, and prepared frames; completed AI
-results are also saved as they arrive. Stopping does not delete this work. An
+Import and AI analysis are saved separately. Verified media and prepared frames
+are cached as they finish; checkpoint writes are grouped to avoid slowing down
+the queue. Completed AI batches are saved as they arrive. A sudden process exit
+may require rechecking the latest media, but does not delete saved results. An
 ordinary media failure no longer prevents processing other files in the pack.
 
 Choose **My packs → Continue**, or run `mojilex resume RUN_ID`. Submitting the TXT
@@ -226,9 +227,9 @@ a slow earlier pack does not block it. All packs share the AI concurrency and
 request/cost budgets, including packs resumed from different saved runs. Media
 preparation releases its slot before AI starts; a second bounded window lets
 following packs prepare while earlier packs await AI or final checks. Preparation
-may pause when both windows are full. Dataset merges remain ordered within each
-saved run. This hides most local
-preparation time behind provider requests without multiplying the shared limits.
+may pause when both windows are full. Independent packs also finish and save as
+soon as they are ready. Packs sharing emoji identities retain dependency order;
+dataset writes use one writer so completed results cannot overwrite each other.
 
 Each active pack retains completed/total counters for downloads and local processing,
 including cache checks and frame restoration. Downloads show cached files separately;
@@ -241,13 +242,17 @@ An explicit API retry interval pauses new AI requests across the operation and
 shows the reason in the dashboard. Downloads and local processing remain unblocked.
 An unlimited application budget does not remove the AI provider's quotas.
 AI text is checked against dataset constraints before caching; an incompatible
-old result is requested again. Recognized code and mathematical symbols such as `</>`, `<3`, and `x>y`
+old text result may need a new request. Recognized code and mathematical symbols such as `</>`, `<3`, and `x>y`
 are preserved verbatim. HTML tags and control characters remain forbidden;
 ordinary descriptions remain markup-free.
+When an animated image has no usable motion assessment, its motion is marked
+undetermined with an uncertainty flag; the program does not invent movement.
+Reserved facet labels such as `ui-icon` are removed from concrete semantic tags
+when assembling descriptions. These corrections reuse the existing AI response.
 
 | Mode | Order |
 |---|---|
-| `fast` — default | Send verified media batches to AI while the rest of the same pack is still being prepared; prepare following packs concurrently and merge results in input order. |
+| `fast` — default | Send full verified media batches to AI while the rest of the pack is being prepared; prepare and save independent packs as they become ready. |
 | `sequential` | Download, decode and analyze one complete pack before starting the next. |
 | `download_all` | Persist and hash every original file first, decode all packs second, then start AI. |
 | `prepare_all` | Download and decode packs concurrently, wait for all local preparation, then start AI. |
@@ -273,15 +278,18 @@ those results; cache damage falls back to validation. Global integrity, canonica
 format and filesystem checks still run. Partial readiness views never replace the
 full integrity checks used before publication.
 
-In an interactive terminal, one compact dashboard shows pack counts and active names
-for downloads, local processing, AI, and final validation. A pack can download and
-decode simultaneously. Completed local drafts are counted as ready only after saving;
-GitHub synchronization then compares them with the latest base branch and skips
-existing content. Prompts pause dashboard redraws. JSON output keeps the full
+In an interactive terminal, one compact dashboard shows ready/total packs, newly
+completed packs for this launch, elapsed time, and active stages. Previously ready
+packs are not counted as new work. A pack can download and decode simultaneously.
+A local draft becomes ready only after validation, disk save and checkpoint save;
+it survives a sibling pack's failure or interruption. GitHub synchronization
+compares drafts with the latest base branch and preserves existing content.
+Prompts pause dashboard redraws. JSON output keeps the full
 analysis selectors; the human interface shows only their count.
 
 Transient media failures are retried automatically (six attempts by default).
-Every completed file and AI batch is checkpointed. In `download_all`, retained
+Completed media checkpoints are saved periodically and at stage boundaries;
+completed AI batches are saved immediately. In `download_all`, retained
 originals are private local cache files and are hash-checked again before decoding.
 An interruption resumes completed stages instead of restarting the whole list.
 
@@ -291,15 +299,18 @@ request and cost budgets and the temporary media storage limit cover the entire
 operation across all queued packs. Shared repository updates and
 Git writes remain ordered.
 
-Automatic performance mode sizes decoders from CPU count and available RAM, with
-four times that capacity for pack preparation and AI requests. Manual mode keeps
-explicit settings. Downloads can continue while waiting for a decoder without
+Automatic performance mode chooses decoder targets from CPU count and available
+RAM, with four times that target for pack preparation and AI requests; explicitly
+higher values remain in effect. It also sizes temporary storage from available
+memory and disk space. Manual mode keeps exact configured limits.
+Downloads can continue while waiting for a decoder without
 consuming its timeout. Increasing every number can make processing slower;
 throughput still depends on CPU capacity, network speed and provider quotas.
-In `fast`, ready media are grouped by animation and render context. A partial batch
-can start after one second rather than wait for a slow sibling. This can use more
-small requests; all requests still share the configured budget. Puzzle checks wait
-for the complete pack, and completed AI batches are saved for resume.
+In `fast`, ready media are grouped by animation and render context. Full batches
+start immediately; partial batches wait for the pack's media preparation to finish.
+This avoids spending extra requests on small batches. Puzzle checks wait for that
+pack's descriptions, and all requests share the configured budget. Saving ready
+packs has a separate worker so busy media decoders do not occupy its worker slot.
 
 The **AI request limit for the whole operation** is shared by every pack in the
 input file, including retries, model escalation and puzzle checks. It defaults
@@ -330,7 +341,7 @@ preserves every old tile and its relative position; a veto preserves the old gro
 At most three proposals per tile mean at most nine AI calls within one pack, with a batch-wide cap of ten
 calls per `native_id` when packs share an emoji. Accepted groups within each pack
 never overlap. Checks use the
-remaining shared budget after all packs' descriptions, without another approval.
+remaining shared budget after that pack's descriptions, without another approval.
 Uncertainty, errors or insufficient budget leave the group unmarked.
 
 Verified groups appear separately in the gallery and as `compositions` in
@@ -353,8 +364,8 @@ remain local. Absence of the marker does not prove an emoji is standalone.
 Records retain 1–12 concrete tags plus the optional `fragment` marker (up to 13
 total); consumers enforcing the old 12-tag ceiling must update their schemas.
 Previously verified saved packs gain the marker on submission/synchronization
-without new AI calls. Synchronization still skips packs already in the repository
-and preserves existing shared emoji records. An existing marker is retained when
+without new AI calls. Synchronization adds missing content and preserves existing
+shared emoji records, including their markers. An existing marker is retained when
 the original media is unchanged; changed media requires fresh evidence. Adding
 a marker invalidates earlier manual approval of that exact payload; records with
 a negative manual review are not automatically changed.
@@ -395,6 +406,9 @@ mojilex publish NewsEmoji
 MojiLex validates descriptions, prepares a commit, uploads a branch and creates
 or reuses a **pull request (PR)**: a proposal to include your data. The current
 stage and elapsed time stay visible. Publishing does not repeat analysis.
+The complete candidate is checked locally before upload, including schema,
+integrity and policy rules. Invalid older saved data stops publication and needs
+correction; updating the program does not rewrite every existing draft.
 
 Open the returned PR link and check **Checks**. Green checks mean validation passed;
 the pack enters the main dataset only when the PR is **merged**. A successful
@@ -407,7 +421,7 @@ block submission; invalid data still fails validation.
 
 | Question | What to do or expect |
 |---|---|
-| Does analysis cost money? | It may, depending on your Gemini account and model. The default limit is **100 requests per run**, including retries. Resume retains the consumed count. Review the plan before approving unknown pricing. |
+| Does analysis cost money? | It may, depending on your Gemini account and model. Analysis starts without confirmation by default, with **100 requests per run**, including retries. Check settings and provider pricing before adding packs, or enable **Confirm before AI analysis**. Resume retains the consumed count. |
 | Can it run faster? | The default `fast` mode prepares following packs while AI handles the current one. `prepare_all` maximizes local preparation before AI. Increase each concurrency limit only after measuring the computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
 | The connection dropped or I stopped it | Use `mojilex resume NewsEmoji`. Completed work is reused; missing/corrupt media may need downloading again. Budget or access errors need resolving first. |
 | Why is the count not moving? | A batch may be waiting for a response or validation. Watch the stage, retries and elapsed time. Time spent is not completed work. |
