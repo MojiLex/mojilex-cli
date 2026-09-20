@@ -49,7 +49,11 @@ class AtomicDatasetWriter:
             normalized: dict[PurePosixPath, bytes] = {}
             for relative, data in expected_files.items():
                 path = PurePosixPath(relative)
-                safe_destination(self.root, path)
+                # These are preconditions, not write targets. Do not traverse
+                # every expected file twice: prepare() validates their current
+                # filesystem paths, aliases and contents under the transaction
+                # lock immediately before it reads them.
+                _validate_expected_path(self.root, path)
                 if path in normalized:
                     raise ValueError(f"duplicate expected dataset path: {path}")
                 normalized[path] = bytes(data)
@@ -137,6 +141,21 @@ class AtomicDatasetWriter:
         self._changes.clear()
         self._change_identities.clear()
         return changed
+
+
+def _validate_expected_path(root: Path, path: PurePosixPath) -> None:
+    """Reject lexical escapes without trusting or inspecting filesystem state."""
+
+    if (
+        path.is_absolute()
+        or "\\" in path.as_posix()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"unsafe dataset path: {path}")
+    try:
+        root.joinpath(*path.parts).relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"path escapes dataset root: {path}") from exc
 
 
 def apply_snapshot(

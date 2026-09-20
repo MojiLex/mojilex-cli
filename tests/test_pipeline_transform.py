@@ -15,6 +15,7 @@ from mojilex_cli.domain import (
     RenderingFacets,
     RenderingItem,
     Review,
+    emoji_id,
     reviewed_content_sha256,
 )
 from mojilex_cli.media import MediaMetadata, ProcessedMedia
@@ -267,3 +268,56 @@ def test_deterministic_rendering_change_resets_review_but_protects_semantic_face
     assert merged.facets.styles == existing.facets.styles
     assert merged.facets.rendering.items[0].visible_area_bp == 6000
     assert merged.review.status.value == "unreviewed"
+
+
+@pytest.mark.parametrize("newest_first", [False, True])
+def test_merge_matches_full_identity_and_latest_epoch_without_mutating_previous_records(
+    tmp_path, newest_first
+) -> None:
+    snapshot = make_snapshot(tmp_path.resolve())
+    original = next(iter(snapshot.emojis.values()))
+    source = _source(snapshot)
+    latest = original.model_copy(deep=True)
+    latest.identity_epoch = 2
+    latest.id = emoji_id(
+        latest.platform, latest.native_namespace, latest.scope_id, latest.native_id, 2
+    )
+    records = [original, latest]
+    if newest_first:
+        records.reverse()
+    for field in ("platform", "native_namespace", "scope_id", "native_id"):
+        decoy = original.model_copy(deep=True)
+        setattr(decoy, field, "different")
+        decoy.identity_epoch = 9
+        decoy.id = emoji_id(
+            decoy.platform, decoy.native_namespace, decoy.scope_id, decoy.native_id, 9
+        )
+        records.append(decoy)
+    snapshot.emojis = {record.id: record for record in records}
+    before = {identifier: record.as_dict() for identifier, record in snapshot.emojis.items()}
+    native_id = source.items[0].native_id
+    plan = plan_collection_merge(
+        snapshot,
+        source,
+        {native_id: _processed(snapshot, tmp_path)},
+        {native_id: _description(snapshot)},
+        {native_id: _analysis(snapshot)},
+        {native_id: _generation()},
+        timestamp="2026-09-11T18:00:00Z",
+    )
+
+    assert plan.created == 0
+    assert latest.id in plan.changed_entity_ids
+    assert original.id not in plan.changed_entity_ids
+    assert plan.snapshot.emojis[latest.id].identity_epoch == 2
+    active_members = {
+        member.emoji_id
+        for member in plan.snapshot.memberships.values()
+        if member.collection_id == plan.collection_id and member.status.value == "active"
+    }
+    assert active_members == {latest.id}
+    after = {identifier: record.as_dict() for identifier, record in snapshot.emojis.items()}
+    assert after == before
+    for record in records:
+        if record.id != latest.id:
+            assert plan.snapshot.emojis[record.id].as_dict() == before[record.id]

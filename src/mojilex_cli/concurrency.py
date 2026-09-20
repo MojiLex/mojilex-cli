@@ -6,9 +6,11 @@ import asyncio
 import math
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, ParamSpec, TypeVar
 
 T = TypeVar("T")
@@ -69,6 +71,7 @@ class BatchLimits:
     retained_stores: dict[str, object] = field(default_factory=dict)
     retained_lock: threading.RLock = field(default_factory=threading.RLock)
     retained_build_locks: dict[str, Any] = field(default_factory=dict)
+    retained_initializations: dict[str, Any] = field(default_factory=dict)
 
 
 _batch: ContextVar[BatchLimits | None] = ContextVar("mojilex_batch_limits", default=None)
@@ -289,7 +292,21 @@ P = ParamSpec("P")
 
 async def run_blocking(function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
     """Keep the event loop responsive and drain disk workers before releasing owners."""
-    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    return await run_blocking_on(None, function, *args, **kwargs)
+
+
+async def run_blocking_on(
+    executor: ThreadPoolExecutor | None,
+    function: Callable[P, R],
+    /,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    """Use a selected thread pool without losing context or cancellation cleanup."""
+    context = copy_context()
+    task = asyncio.get_running_loop().run_in_executor(
+        executor, context.run, partial(function, *args, **kwargs)
+    )
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

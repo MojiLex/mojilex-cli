@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -177,6 +178,8 @@ def _issue(issues: list[ValidationIssue], code: str, path: str, message: str) ->
 
 
 _SCHEMA_MEMO_LIMIT = 65_536
+_PERSISTED_MEMO_BYTES = 32 * 1024 * 1024
+_PERSISTED_MEMO_ENTRIES = 65_536
 
 
 class _SchemaMemo:
@@ -188,6 +191,8 @@ class _SchemaMemo:
             dict.fromkeys(self.persistent.loaded) if self.persistent is not None else {}
         )
         self.graphs: dict[bytes, tuple[Any, dict[str, dict[str, Any]]]] = {}
+        self.persisted: OrderedDict[tuple[tuple[object, ...], bytes], None] = OrderedDict()
+        self.persisted_bytes = 0
         self.lock = Lock()
 
 
@@ -207,6 +212,9 @@ def schema_validation_scope(*, persistent_cache: Path | None = None) -> Iterator
             yield
     finally:
         _SCHEMA_MEMO.reset(token)
+        with memo.lock:
+            memo.persisted.clear()
+            memo.persisted_bytes = 0
         if memo.persistent is not None:
             memo.persistent.close(memo.successes)
 
@@ -1793,47 +1801,94 @@ def _validate_repository_files(root: Path, issues: list[ValidationIssue]) -> Non
         _scan_repository_file(path, relative, issues)
 
 
-def _validate_persisted_values(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
-    def walk(value: Any, path: str) -> None:
-        if isinstance(value, dict):
-            normalized_keys: dict[str, str] = {}
-            for key, item in value.items():
-                if not isinstance(key, str):
-                    _issue(issues, "JSON_KEY", path, "JSON object keys must be strings")
-                    display_key = str(key)
-                else:
-                    display_key = key
-                    nfc_key = unicodedata.normalize("NFC", key)
-                    if nfc_key != key:
-                        _issue(issues, "NFC", f"{path}/{key}", "object key is not Unicode NFC")
-                    previous = normalized_keys.get(nfc_key)
-                    if previous is not None:
-                        _issue(
-                            issues,
-                            "NFC_COLLISION",
-                            path,
-                            f"keys {previous!r} and {key!r} collide after NFC normalization",
-                        )
-                    normalized_keys[nfc_key] = key
-                policy_key = display_key.lower().replace("-", "_")
-                if policy_key in _FORBIDDEN_PERSISTED_KEYS:
+def _walk_persisted_value(value: Any, path: str, issues: list[ValidationIssue]) -> None:
+    if isinstance(value, dict):
+        normalized_keys: dict[str, str] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                _issue(issues, "JSON_KEY", path, "JSON object keys must be strings")
+                display_key = str(key)
+            else:
+                display_key = key
+                nfc_key = unicodedata.normalize("NFC", key)
+                if nfc_key != key:
+                    _issue(issues, "NFC", f"{path}/{key}", "object key is not Unicode NFC")
+                previous = normalized_keys.get(nfc_key)
+                if previous is not None:
                     _issue(
                         issues,
-                        "FORBIDDEN_FIELD",
-                        f"{path}/{display_key}",
-                        "credential/path field is forbidden",
+                        "NFC_COLLISION",
+                        path,
+                        f"keys {previous!r} and {key!r} collide after NFC normalization",
                     )
-                walk(item, f"{path}/{display_key}")
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                walk(item, f"{path}/{index}")
-        elif isinstance(value, str):
-            if unicodedata.normalize("NFC", value) != value:
-                _issue(issues, "NFC", path, "string is not Unicode NFC")
-            raw = value.encode("utf-8")
-            for label, pattern in _SECRET_PATTERNS.items():
-                if pattern.search(raw):
-                    _issue(issues, "SECRET", path, f"detected {label}")
+                normalized_keys[nfc_key] = key
+            policy_key = display_key.lower().replace("-", "_")
+            if policy_key in _FORBIDDEN_PERSISTED_KEYS:
+                _issue(
+                    issues,
+                    "FORBIDDEN_FIELD",
+                    f"{path}/{display_key}",
+                    "credential/path field is forbidden",
+                )
+            _walk_persisted_value(item, f"{path}/{display_key}", issues)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _walk_persisted_value(item, f"{path}/{index}", issues)
+    elif isinstance(value, str):
+        if unicodedata.normalize("NFC", value) != value:
+            _issue(issues, "NFC", path, "string is not Unicode NFC")
+        raw = value.encode("utf-8")
+        for label, pattern in _SECRET_PATTERNS.items():
+            if pattern.search(raw):
+                _issue(issues, "SECRET", path, f"detected {label}")
+
+
+def _validate_persisted_values(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:
+    memo = _SCHEMA_MEMO.get()
+    rules = (
+        _walk_persisted_value,
+        unicodedata.normalize,
+        frozenset(_FORBIDDEN_PERSISTED_KEYS),
+        tuple(_SECRET_PATTERNS.items()),
+    )
+
+    def walk(value: Any, path: str) -> None:
+        # Exact native JSON distinguishes unsafe keys and nested mutations. Only
+        # successful value checks are reused; paths and failures are never cached.
+        payload = None
+        if memo is not None:
+            try:
+                if _json_native(value):
+                    payload = json.dumps(
+                        value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                    ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError, RecursionError):
+                pass
+        key = (rules, payload) if payload is not None else None
+        if memo is not None and key is not None:
+            with memo.lock:
+                if key in memo.persisted:
+                    memo.persisted.move_to_end(key)
+                    return
+        count = len(issues)
+        _walk_persisted_value(value, path, issues)
+        if (
+            memo is not None
+            and key is not None
+            and payload is not None
+            and len(issues) == count
+            and len(payload) <= _PERSISTED_MEMO_BYTES
+        ):
+            with memo.lock:
+                if key not in memo.persisted:
+                    while memo.persisted and (
+                        memo.persisted_bytes + len(payload) > _PERSISTED_MEMO_BYTES
+                        or len(memo.persisted) >= _PERSISTED_MEMO_ENTRIES
+                    ):
+                        old_key, _ = memo.persisted.popitem(last=False)
+                        memo.persisted_bytes -= len(old_key[1])
+                    memo.persisted[key] = None
+                    memo.persisted_bytes += len(payload)
 
     walk(snapshot.manifest, "dataset.json")
     for collection_record in snapshot.collections.values():

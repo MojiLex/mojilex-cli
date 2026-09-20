@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections import OrderedDict
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from threading import Lock
 from typing import Any, Never, cast
 
 from mojilex_cli.domain.models import (
@@ -150,6 +154,88 @@ _KEY_ORDER = (
     "reviewed_relation_sha256",
 )
 _KEY_RANK = {key: index for index, key in enumerate(_KEY_ORDER)}
+
+_DOMAIN_ENTITIES = (Collection, Emoji, Membership, Tombstone, VisualRelation)
+_SERIALIZATION_MEMO_LIMIT = 64 * 1024 * 1024
+_EncodedEntity = tuple[bytes, tuple[Any, ...]]
+
+
+class _SerializationMemo:
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self.size = 0
+        self.closed = False
+        self.entries: OrderedDict[tuple[bool, bool, bytes], tuple[_EncodedEntity, int]] = (
+            OrderedDict()
+        )
+        self.lock = Lock()
+
+    def get(self, key: tuple[bool, bool, bytes]) -> _EncodedEntity | None:
+        with self.lock:
+            cached = self.entries.get(key)
+            if cached is None:
+                return None
+            self.entries.move_to_end(key)
+            return cached[0]
+
+    def put(self, key: tuple[bool, bool, bytes], value: _EncodedEntity) -> None:
+        # Account for the raw key, encoded result, sort strings and container overhead.
+        size = (
+            len(key[2])
+            + len(value[0])
+            + sum(len(item.encode("utf-8")) * 4 for item in value[1] if isinstance(item, str))
+            + 1024
+        )
+        with self.lock:
+            if self.closed or size > self.max_bytes or key in self.entries:
+                return
+            while self.entries and self.size + size > self.max_bytes:
+                _, (_, evicted_size) = self.entries.popitem(last=False)
+                self.size -= evicted_size
+            self.entries[key] = (value, size)
+            self.size += size
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+            self.entries.clear()
+            self.size = 0
+
+
+_serialization_memo: ContextVar[_SerializationMemo | None] = ContextVar(
+    "dataset_serialization_memo", default=None
+)
+
+
+@contextmanager
+def serialization_scope(*, max_bytes: int = _SERIALIZATION_MEMO_LIMIT) -> Iterator[None]:
+    """Reuse exact-content encodings only within one operation (including to_thread).
+
+    Nested scopes share the outer budget. No mutable canonical objects are cached;
+    every lookup examines current model content, so in-place changes cannot go stale.
+    """
+    if _serialization_memo.get() is not None:
+        yield
+        return
+    memo = _SerializationMemo(max(0, max_bytes))
+    token = _serialization_memo.set(memo)
+    try:
+        yield
+    finally:
+        memo.close()
+        _serialization_memo.reset(token)
+
+
+def _is_json_native(value: Any) -> bool:
+    """Exclude coercions (especially integer object keys) from exact-content keys."""
+    kind = type(value)
+    if kind in (str, int, float, bool, type(None)):
+        return True
+    if kind is list:
+        return all(_is_json_native(item) for item in value)
+    if kind is dict:
+        return all(type(key) is str and _is_json_native(item) for key, item in value.items())
+    return False
 
 
 def _context_order(value: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -570,11 +656,7 @@ def _ordered(value: Any) -> Any:
 
 
 def canonical_entity(entity: Entity | Mapping[str, Any]) -> dict[str, Any]:
-    raw = (
-        entity.as_dict()
-        if isinstance(entity, (Collection, Emoji, Membership, Tombstone, VisualRelation))
-        else dict(entity)
-    )
+    raw = entity.as_dict() if isinstance(entity, _DOMAIN_ENTITIES) else dict(entity)
     raw = _nfc(raw)
     if raw.get("entity_type") == "emoji":
         raw["concept_ids"] = sorted(set(raw["concept_ids"]))
@@ -638,19 +720,58 @@ def pretty_json(value: Mapping[str, Any]) -> str:
     return json.dumps(ordered, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
 
 
+def _encode_canonical(value: Mapping[str, Any], *, pretty: bool = False) -> bytes:
+    # canonical_entity already normalized and recursively ordered every JSON object.
+    options = {"indent": 2} if pretty else {"separators": (",", ":")}
+    return (json.dumps(value, ensure_ascii=False, allow_nan=False, **options) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _encoded_entity(
+    entity: Entity | Mapping[str, Any], *, pretty: bool = False, membership: bool = False
+) -> _EncodedEntity:
+    memo = _serialization_memo.get()
+    key = None
+    raw: Entity | Mapping[str, Any] = entity
+    if memo is not None and isinstance(entity, _DOMAIN_ENTITIES):
+        raw = entity.as_dict()
+        if _is_json_native(raw):
+            # Retain exact bytes rather than a digest: collisions cannot bypass validation.
+            key = (
+                pretty,
+                membership,
+                json.dumps(raw, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+                    "utf-8"
+                ),
+            )
+            cached = memo.get(key)
+            if cached is not None:
+                return cached
+    canonical = canonical_entity(raw)
+    if pretty:
+        sort_key: tuple[Any, ...] = ()
+    elif membership:
+        sort_key = _membership_sort_key(canonical)
+    else:
+        sort_key = (canonical["id"],)
+    value = (_encode_canonical(canonical, pretty=pretty), sort_key)
+    if memo is not None and key is not None:
+        memo.put(key, value)
+    return value
+
+
 def serialize_collection(collection: Collection | Mapping[str, Any]) -> bytes:
-    return pretty_json(canonical_entity(collection)).encode("utf-8")
+    return _encoded_entity(collection, pretty=True)[0]
 
 
 def serialize_tombstone(tombstone: Tombstone | Mapping[str, Any]) -> bytes:
-    return pretty_json(canonical_entity(tombstone)).encode("utf-8")
+    return _encoded_entity(tombstone, pretty=True)[0]
 
 
 def serialize_emojis(emojis: Iterable[Emoji | Mapping[str, Any]]) -> bytes:
-    values = sorted((canonical_entity(item) for item in emojis), key=lambda item: item["id"])
-    if not values:
-        return b""
-    return ("\n".join(compact_json(item) for item in values) + "\n").encode("utf-8")
+    values = sorted((_encoded_entity(item) for item in emojis), key=lambda item: item[1])
+    return b"".join(item[0] for item in values)
 
 
 def _membership_sort_key(value: Mapping[str, Any]) -> tuple[str, int, str]:
@@ -658,19 +779,17 @@ def _membership_sort_key(value: Mapping[str, Any]) -> tuple[str, int, str]:
 
 
 def serialize_memberships(memberships: Iterable[Membership | Mapping[str, Any]]) -> bytes:
-    values = sorted((canonical_entity(item) for item in memberships), key=_membership_sort_key)
-    if not values:
-        return b""
-    return ("\n".join(compact_json(item) for item in values) + "\n").encode("utf-8")
+    values = sorted(
+        (_encoded_entity(item, membership=True) for item in memberships), key=lambda item: item[1]
+    )
+    return b"".join(item[0] for item in values)
 
 
 def serialize_visual_relations(
     relations: Iterable[VisualRelation | Mapping[str, Any]],
 ) -> bytes:
-    values = sorted((canonical_entity(item) for item in relations), key=lambda item: item["id"])
-    if not values:
-        return b""
-    return ("\n".join(compact_json(item) for item in values) + "\n").encode("utf-8")
+    values = sorted((_encoded_entity(item) for item in relations), key=lambda item: item[1])
+    return b"".join(item[0] for item in values)
 
 
 def serialize_jsonl(values: Iterable[Mapping[str, Any]], *, sort_key: str = "id") -> bytes:
@@ -679,4 +798,4 @@ def serialize_jsonl(values: Iterable[Mapping[str, Any]], *, sort_key: str = "id"
     )
     if not ordered:
         return b""
-    return ("\n".join(compact_json(item) for item in ordered) + "\n").encode("utf-8")
+    return b"".join(_encode_canonical(item) for item in ordered)

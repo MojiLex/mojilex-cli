@@ -82,6 +82,7 @@ class DurableDatasetTransaction:
         self.root = root.resolve()
         self.directory = self.root / TRANSACTION_DIRECTORY_NAME
         self.entries = tuple(entries)
+        self._entry_membership = frozenset(self.entries)
         self._lock: BaseFileLock | None = lock
 
     @classmethod
@@ -201,7 +202,7 @@ class DurableDatasetTransaction:
 
     def staged_path(self, entry: TransactionEntry) -> Path:
         self._assert_locked()
-        if entry not in self.entries or entry.new_sha256 is None:
+        if entry not in self._entry_membership or entry.new_sha256 is None:
             raise AtomicWriteError("invalid staged transaction entry")
         path = _staged_path(self.directory, entry.index)
         _validate_payload_file(path, entry.new_sha256, entry.new_size)
@@ -213,7 +214,7 @@ class DurableDatasetTransaction:
 
     def sync_target_parent(self, entry: TransactionEntry) -> None:
         self._assert_locked()
-        if entry not in self.entries:
+        if entry not in self._entry_membership:
             raise AtomicWriteError("invalid dataset transaction entry")
         _fsync_directory(safe_destination(self.root, entry.relative).parent)
 
@@ -412,16 +413,9 @@ def _verify_dataset_precondition(
     expected_files: Mapping[PurePosixPath, bytes],
 ) -> None:
     expected: dict[PurePosixPath, bytes] = {}
-    expected_identities: set[str] = set()
     for relative, data in expected_files.items():
-        identity = transaction_path_identity(root, relative)
         if relative in expected:
             raise AtomicWriteError("dataset snapshot precondition contains a duplicate path")
-        if identity in expected_identities:
-            raise AtomicWriteError(
-                "dataset snapshot precondition contains paths that alias the same target"
-            )
-        expected_identities.add(identity)
         expected[relative] = bytes(data)
     if PurePosixPath("dataset.json") not in expected:
         raise AtomicWriteError("dataset snapshot precondition is missing dataset.json")
@@ -434,8 +428,17 @@ def _verify_dataset_precondition(
             "dataset changed since the snapshot was loaded: "
             f"canonical path set differs at {changed}"
         )
+    expected_identities: set[str] = set()
     for relative, data in expected.items():
-        destination = safe_destination(root, relative)
+        # Validate once, immediately before reading. Retaining destinations from
+        # an earlier pass would miss links introduced while the tree is scanned.
+        destination = _validate_relative_path(root, relative)
+        identity = _validated_destination_identity(destination)
+        if identity in expected_identities:
+            raise AtomicWriteError(
+                "dataset snapshot precondition contains paths that alias the same target"
+            )
+        expected_identities.add(identity)
         if (
             not destination.is_file()
             or destination.stat().st_size != len(data)
@@ -459,8 +462,8 @@ def _verify_root_file_precondition(
         path = PurePosixPath(relative)
         if len(path.parts) != 1:
             raise AtomicWriteError("root file precondition accepts top-level files only")
-        destination = safe_destination(root, path)
-        identity = transaction_path_identity(root, path)
+        destination = _validate_relative_path(root, path)
+        identity = _validated_destination_identity(destination)
         if path in expected or identity in identities:
             raise AtomicWriteError("root file precondition contains aliased paths")
         size, digest = metadata
@@ -512,8 +515,8 @@ def _verify_tree_file_precondition(
     total_bytes = 0
     for relative, metadata in expected_files.items():
         path = PurePosixPath(relative)
-        destination = safe_destination(root, path)
-        identity = transaction_path_identity(root, path)
+        destination = _validate_relative_path(root, path)
+        identity = _validated_destination_identity(destination)
         if path in expected or identity in identities:
             raise AtomicWriteError("tree precondition contains aliased paths")
         size, digest = metadata
@@ -735,11 +738,11 @@ def _load_manifest(root: Path, directory: Path) -> tuple[TransactionEntry, ...]:
         if not isinstance(raw_path, str):
             raise AtomicWriteError("dataset transaction path must be text")
         relative = PurePosixPath(raw_path)
-        _validate_relative_path(root, relative, original=raw_path)
+        destination = _validate_relative_path(root, relative, original=raw_path)
         if relative in seen:
             raise AtomicWriteError("dataset transaction contains a duplicate path")
         seen.add(relative)
-        identity = transaction_path_identity(root, relative)
+        identity = _validated_destination_identity(destination)
         if identity in seen_identities:
             raise AtomicWriteError("dataset transaction contains paths that alias the same target")
         seen_identities.add(identity)
@@ -1093,7 +1096,7 @@ def _validate_relative_path(
     relative: PurePosixPath,
     *,
     original: str | None = None,
-) -> None:
+) -> Path:
     raw = relative.as_posix() if original is None else original
     if (
         raw != relative.as_posix()
@@ -1113,7 +1116,7 @@ def _validate_relative_path(
         for component in relative.parts:
             _validate_windows_path_component(component)
     try:
-        safe_destination(root, relative)
+        return safe_destination(root, relative, canonical=True)
     except (OSError, ValueError) as exc:
         raise AtomicWriteError("dataset transaction contains an unsafe path") from exc
 
@@ -1133,9 +1136,14 @@ def _validate_windows_path_component(component: str) -> None:
 def transaction_path_identity(root: Path, relative: PurePosixPath) -> str:
     """Return the platform-normalized identity of one safe transaction target."""
 
-    _validate_relative_path(root, relative)
-    destination = safe_destination(root, relative)
-    return os.path.normcase(str(destination.resolve(strict=False)))
+    destination = _validate_relative_path(root, relative)
+    return _validated_destination_identity(destination)
+
+
+def _validated_destination_identity(destination: Path) -> str:
+    # Reuse the canonical target returned by safe_destination's containment
+    # check, including the filesystem's own Windows name/case normalization.
+    return os.path.normcase(str(destination))
 
 
 def _assert_safe_internal_path(directory: Path, path: Path) -> None:

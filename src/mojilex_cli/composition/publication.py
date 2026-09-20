@@ -60,6 +60,7 @@ def mark_verified_fragments(
     leak a stale or partial group's marker into publication.
     """
     changed: set[str] = set()
+    latest: dict[tuple[str, str, str, str], Emoji] | None = None
     for source in sources:
         source_items = {item.native_id: item for item in source.items}
         for group in groups_by_pack.get(source.native_id, ()):
@@ -70,20 +71,26 @@ def mark_verified_fragments(
                 or not group.verifier_model
             ):
                 continue
+            if latest is None:
+                latest = {}
+                for record in snapshot.emojis.values():
+                    identity = (
+                        record.platform,
+                        record.native_namespace,
+                        record.scope_id,
+                        record.native_id,
+                    )
+                    previous = latest.get(identity)
+                    if previous is None or record.identity_epoch > previous.identity_epoch:
+                        latest[identity] = record
             members: list[Emoji] = []
             for member in group.members:
                 item = source_items.get(member.native_id)
                 if item is None:
                     break
-                matches = [
-                    emoji
-                    for emoji in snapshot.emojis.values()
-                    if emoji.platform == source.platform
-                    and emoji.native_namespace == item.native_namespace
-                    and emoji.scope_id == item.scope_id
-                    and emoji.native_id == item.native_id
-                ]
-                emoji = max(matches, key=lambda value: value.identity_epoch) if matches else None
+                emoji = latest.get(
+                    (source.platform, item.native_namespace, item.scope_id, item.native_id)
+                )
                 if emoji is None or not any(
                     media.role.value == "primary" and media.sha256 == member.media_sha256
                     for media in emoji.media

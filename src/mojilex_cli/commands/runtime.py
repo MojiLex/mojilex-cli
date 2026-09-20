@@ -30,7 +30,7 @@ from rich.text import Text
 from mojilex_cli.config import ConfigError, redact_text
 from mojilex_cli.dataset import DatasetLoadError, DatasetValidationError
 from mojilex_cli.i18n import confirm as ui_confirm
-from mojilex_cli.i18n import current_ui_language
+from mojilex_cli.i18n import current_ui_language, use_ui_language
 from mojilex_cli.i18n import text as ui_text
 from mojilex_cli.output.models import (
     ERROR_EXIT_CODES,
@@ -84,8 +84,14 @@ class _ProgressDisplay:
 
     def __init__(self, context: _CommandContext) -> None:
         self.context = context
+        self.language = current_ui_language()
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # Rich's refresh thread does not inherit the command's ContextVars.
+        with use_ui_language(self.language):
+            yield from self._render(console, options)
+
+    def _render(self, console: Console, options: ConsoleOptions) -> RenderResult:
         views = self.context.progress_views
         height = max(1, console.size.height - 5)
         if len(views) > 1:
@@ -106,9 +112,13 @@ class _ProgressDisplay:
                 else "concurrent operations"
             )
             suffix = f" · {concurrent_label}: {concurrent + 1}" if concurrent else ""
-            view = Group(
-                Text(f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}{suffix}", style="cyan"),
-                view,
+            activity = Text(
+                f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}{suffix}", style="cyan"
+            )
+            view = (
+                Group(view, activity)
+                if self.context.pack_queue is not None
+                else Group(activity, view)
             )
         lines = console.render_lines(view, options.update(height=None), pad=False)
         if len(lines) > height:
@@ -309,14 +319,14 @@ def begin_pack_queue(sources: list[str]) -> None:
     update_live_progress(context.pack_queue, key="packs")
 
 
-def report_pack_stage(source: str, stage: str) -> None:
+def report_pack_stage(source: str, stage: str, *, restored: bool = False) -> None:
     context = _COMMAND_CONTEXT.get()
     if (
         context is not None
         and context.pack_queue is not None
         and source in context.pack_queue.stages
     ):
-        context.pack_queue.stages[source] = stage
+        context.pack_queue.report_stage(source, stage, restored=restored)
         update_live_progress(context.pack_queue, key="packs")
 
 
@@ -454,7 +464,10 @@ def update_live_progress(view: RenderableType, *, key: object = None) -> bool:
         context.live = Live(
             context.progress_view,
             console=console,
-            auto_refresh=False,
+            # Keep the queue clock moving while awaiting providers or saving.
+            # pause_live_progress stops Live before any interactive prompt.
+            auto_refresh=context.pack_queue is not None,
+            refresh_per_second=1,
             transient=True,
             redirect_stdout=False,
             redirect_stderr=False,

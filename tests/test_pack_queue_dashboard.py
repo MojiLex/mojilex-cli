@@ -52,7 +52,7 @@ def test_dashboard_keeps_summary_visible_when_many_packs_active(height, width):
     text = output.getvalue()
     assert "Ready to send to GitHub: 30" in text
     assert len(text.splitlines()) <= height - 5
-    assert "Total packs: 270" in text
+    assert text.splitlines()[0] == "Ready to send to GitHub: 30 / 270"
 
 
 def test_confirmation_stays_still_while_background_packs_change(monkeypatch):
@@ -93,9 +93,101 @@ def test_scoped_queue_preserves_counts_across_command_contexts(monkeypatch):
                 runtime.begin_pack_queue([source])
                 runtime.report_pack_stage(source, "ready")
                 assert len(context.pack_queue.groups()["ready"]) == (1 if source == "A" else 2)
+                assert context.pack_queue.new_ready_count == (1 if source == "A" else 2)
             finally:
                 runtime.finish_live_progress()
                 runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_ready_header_tracks_only_new_durable_packs_and_elapsed_time(monkeypatch):
+    from mojilex_cli.commands import queue_progress
+
+    queue = PackQueue(started=100.0)
+    queue.register(["Saved", "New", "Waiting"])
+    queue.report_stage("Saved", "ready", restored=True)
+    queue.report_stage("New", "finalize")
+    assert queue.new_ready_count == 0
+    queue.report_stage("New", "ready")
+    queue.report_stage("New", "ready")
+    assert queue.new_ready_count == 1
+    # Rediscovering a saved pack later must not create a fresh completion.
+    queue.register(["LateSaved"])
+    queue.report_stage("LateSaved", "ready", restored=True)
+    monkeypatch.setattr(queue_progress.time, "monotonic", lambda: 3761.9)
+    output = StringIO()
+    with use_ui_language("ru"):
+        Console(file=output, width=100, height=24).print(queue)
+    lines = output.getvalue().splitlines()
+    assert lines[0] == "Готовы к GitHub: 3 / 4"
+    assert lines[1] == "За запуск: +1 · Время работы: 01:01:01"  # noqa: RUF001
+    assert sum("Готовы к GitHub:" in line for line in lines) == 1
+    queue.report_stage("New", "failed")
+    assert queue.new_ready_count == 0
+    queue.report_stage("Saved", "waiting")
+    queue.report_stage("Saved", "finalize")
+    assert queue.new_ready_count == 0
+    queue.report_stage("Saved", "ready")
+    assert queue.new_ready_count == 1
+
+
+def test_queue_clock_resets_for_new_scope_but_not_nested_commands():
+    from mojilex_cli.commands import queue_progress
+
+    with pack_queue_scope():
+        queue = queue_progress.SHARED.get()
+        started = queue.started
+        with pack_queue_scope():
+            assert queue_progress.SHARED.get() is queue
+            assert queue_progress.SHARED.get().started == started
+    with pack_queue_scope():
+        assert queue_progress.SHARED.get() is not queue
+        assert queue_progress.SHARED.get().new_ready_count == 0
+
+
+def test_runtime_restores_baseline_and_refreshes_clock_above_preparation(monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")
+    output = StringIO()
+    terminal = Console(file=output, force_terminal=True, width=100, height=30)
+    monkeypatch.setattr(runtime, "Console", lambda **kw: terminal)
+    context = runtime._CommandContext("test")
+    token = runtime._COMMAND_CONTEXT.set(context)
+    try:
+        runtime.begin_pack_queue(["Saved", "New"])
+        runtime.report_pack_stage("Saved", "ready", restored=True)
+        runtime.report_pack_stage("New", "ready")
+        assert context.pack_queue.new_ready_count == 1
+        assert context.live.auto_refresh is True
+        assert context.live.refresh_per_second == 1
+        context.preparations.append(("Checking files", context.pack_queue.started))
+        rendered = StringIO()
+        with use_ui_language("en"):
+            Console(file=rendered, width=100, height=30).print(runtime._ProgressDisplay(context))
+        lines = rendered.getvalue().splitlines()
+        assert lines[0] == "Ready to send to GitHub: 2 / 2"
+        assert lines[1].startswith("This run: +1 · Elapsed:")
+        assert "Checking files" in rendered.getvalue()
+    finally:
+        runtime.finish_live_progress()
+        runtime._COMMAND_CONTEXT.reset(token)
+
+
+def test_refresh_thread_keeps_command_language():
+    from concurrent.futures import ThreadPoolExecutor
+
+    queue = PackQueue(stages={"Saved": "ready"})
+    context = runtime._CommandContext("test", pack_queue=queue, progress_views={"packs": queue})
+    with use_ui_language("ru"):
+        view = runtime._ProgressDisplay(context)
+
+    def render():
+        output = StringIO()
+        Console(file=output, width=100, height=24).print(view)
+        return output.getvalue()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        rendered = executor.submit(render).result()
+    assert rendered.splitlines()[0] == "Готовы к GitHub: 1 / 1"
+    assert "Время работы:" in rendered.splitlines()[1]
 
 
 def test_batch_captures_own_pack_identity():

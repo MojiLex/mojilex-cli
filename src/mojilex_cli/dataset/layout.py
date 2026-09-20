@@ -102,7 +102,7 @@ def assert_no_link_or_reparse(
             raise ValueError(f"link or reparse-point traversal is forbidden: {candidate}")
 
 
-def safe_destination(root: Path, relative: str | PurePosixPath) -> Path:
+def safe_destination(root: Path, relative: str | PurePosixPath, *, canonical: bool = False) -> Path:
     """Resolve a controlled relative path and reject traversal/symlink ancestors."""
 
     rel = PurePosixPath(relative)
@@ -111,17 +111,14 @@ def safe_destination(root: Path, relative: str | PurePosixPath) -> Path:
     unresolved_root = Path(os.path.abspath(root))
     assert_no_link_or_reparse(unresolved_root)
     root = unresolved_root.resolve()
-    current = root
-    for part in rel.parts[:-1]:
-        current = current / part
-        if is_link_or_reparse_point(current):
-            raise ValueError(f"link or reparse-point traversal is forbidden: {current}")
     destination = root.joinpath(*rel.parts)
-    if is_link_or_reparse_point(destination):
-        raise ValueError(f"refusing to replace a link or reparse point: {destination}")
+    # This checks the destination as well as every ancestor below the root.
+    # Repeating the same per-component lstats here doubles filesystem work for
+    # every file in the full snapshot precondition without adding coverage.
     assert_no_link_or_reparse(destination, boundary=root)
     try:
-        destination.resolve(strict=False).relative_to(root)
+        resolved_destination = destination.resolve(strict=False)
+        resolved_destination.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"path escapes dataset root: {relative}") from exc
-    return destination
+    return resolved_destination if canonical else destination

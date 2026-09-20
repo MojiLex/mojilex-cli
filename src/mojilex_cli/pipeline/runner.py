@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -93,10 +94,12 @@ from mojilex_cli.concurrency import (
     current_batch_limits,
     pack_pipeline_limits,
     run_blocking,
+    run_blocking_on,
 )
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
 from mojilex_cli.dataset import (
     DatasetSnapshot,
+    ValidationReport,
     apply_snapshot,
     load_dataset,
     load_validated_dataset,
@@ -770,6 +773,7 @@ async def _run_add(
             if config.cache_dir is not None
             else None
         ),
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="mojilex-save") as save_worker,
         repository_workspace(
             config.repository.target,
             config.repository.base_branch,
@@ -864,12 +868,16 @@ async def _run_add(
                         "The staging checkout no longer matches the imported base revision.",
                         hint="Keep the staging checkout unchanged or start a new import.",
                     )
+                legacy_parameters: dict[str, object] = {}
+                if "public_fragment_marker_version" not in resume_checkpoint.safe_parameters:
+                    legacy_parameters["legacy_fragment_sources"] = list(all_sources)
                 checkpoint = resume_checkpoint.model_copy(
                     update={
                         "command": "describe" if stage_only else resume_checkpoint.command,
                         "status": "running",
                         "safe_parameters": {
                             **resume_checkpoint.safe_parameters,
+                            **legacy_parameters,
                             **_safe_parameters(
                                 all_sources,
                                 _materialized_options(options, config),
@@ -978,6 +986,7 @@ async def _run_add(
         composition_queue = CompositionQueue(model=config.ai.model)
         ai_state = _AIState()
         current = initial
+        persisted = initial
         warnings: list[dict[str, Any] | str] = []
         errors: list[StructuredError] = []
         totals = {
@@ -998,14 +1007,18 @@ async def _run_add(
             "ai_requests_estimated_upper_bound": 0,
         }
         successful_source_indexes: set[int] = set()
+        durable_source_indexes: set[int] = set()
+        guarded_staging_paths: set[str] = set()
+        marked_fragment_ids: set[str] = set()
+        removed_fragment_ids: set[str] = set()
+        deferred_fragment_ids: set[str] = set()
         dedupe_emoji_ids: set[str] = set()
         dedupe_report: dict[str, Any] | None = None
         progress_lock = asyncio.Lock()
         media_checkpoint_at = time.monotonic()
-        media_checkpoint_items = 0
 
         async def record_media_completion(item: SourceEmoji, value: ProcessedMedia) -> None:
-            nonlocal checkpoint, media_checkpoint_at, media_checkpoint_items
+            nonlocal checkpoint, media_checkpoint_at
             if checkpoint is None or cache is None:
                 return
             async with progress_lock:
@@ -1014,12 +1027,13 @@ async def _run_add(
                 # also flush the current checkpoint, without repeating paid AI work.
                 _cache_deterministic_analysis(cache, item, value)
                 checkpoint = _checkpoint_media_item(checkpoint, item, value)
-                media_checkpoint_items += 1
                 now = time.monotonic()
-                if media_checkpoint_items >= 32 or now - media_checkpoint_at >= 1:
+                if now - media_checkpoint_at >= 1:
                     run_store.save(checkpoint)
-                    media_checkpoint_items = 0
-                    media_checkpoint_at = now
+                    # Count the quiet interval after the write finishes. Slow
+                    # writes and bursts of cached media must not continuously
+                    # rewrite the whole run and starve pack finalization.
+                    media_checkpoint_at = time.monotonic()
                 report_progress(f"Media verified: {item.native_id}", verbose=True)
 
         async def record_ai_chunk_completion(
@@ -1097,7 +1111,7 @@ async def _run_add(
                         await process_source_active(entry)
 
                 async def process_source_active(entry: tuple[int, tuple[int, str]]) -> None:
-                    nonlocal current, checkpoint
+                    nonlocal current, checkpoint, persisted
                     position, (source_index, source_text) = entry
                     await pack_slots.preparation.acquire()
                     preparing = True
@@ -1494,7 +1508,8 @@ async def _run_add(
                             # Building the candidate deep-clones the growing dataset.
                             # Keep downloads and AI responsive while preserving the
                             # exclusive writer until validation and assignment finish.
-                            plan = await run_blocking(
+                            plan = await run_blocking_on(
+                                save_worker,
                                 plan_collection_merge,
                                 current,
                                 source,
@@ -1523,17 +1538,6 @@ async def _run_add(
                                     snapshot=planned_snapshot,
                                     updated=plan.updated + availability_updates,
                                 )
-                            report = await run_blocking(
-                                validate_snapshot,
-                                plan.snapshot,
-                                schemas=True,
-                                repository_files=True,
-                            )
-                            if not report.valid:
-                                if stage_only and _only_staging_review_issues(report):
-                                    warnings.extend(_validation_warnings(report))
-                                else:
-                                    report.raise_for_errors()
                             sensitive_flags = tuple(
                                 flag
                                 for enabled, flag in (
@@ -1543,6 +1547,22 @@ async def _run_add(
                                 )
                                 if enabled
                             )
+                            # Drafts validate the final candidate after fragment
+                            # updates in _apply_with_rollback, then validate disk.
+                            # Do not scan the entire dataset a third time here.
+                            if not stage_only or sensitive_flags:
+                                report = await run_blocking_on(
+                                    save_worker,
+                                    validate_snapshot,
+                                    plan.snapshot,
+                                    schemas=True,
+                                    repository_files=True,
+                                )
+                                if not report.valid:
+                                    if stage_only and _only_staging_review_issues(report):
+                                        warnings.extend(_validation_warnings(report))
+                                    else:
+                                        report.raise_for_errors()
                             if sensitive_flags:
                                 affected_ids = _changed_entity_ids(current, plan.snapshot)
                                 changed_plan_paths = _changed_paths(current, plan.snapshot)
@@ -1562,6 +1582,87 @@ async def _run_add(
                                         "or rerun with --yes."
                                     ),
                                 )
+                            if stage_only and checkpoint is not None:
+                                # A completed pack must survive interruption of its
+                                # peers. Finish its public records and persist them
+                                # under the same single-writer lock as the merge.
+                                candidate = plan.snapshot
+                                marker_checkpoint = _legacy_fragment_checkpoint(
+                                    checkpoint, (source_text,)
+                                )
+                                before_reviews = {
+                                    identifier: emoji.review.model_copy(deep=True)
+                                    for identifier, emoji in candidate.emojis.items()
+                                    if len(emoji.semantic_tags) == 12
+                                    and "fragment" not in emoji.semantic_tags
+                                }
+                                removed = strip_legacy_fragment_tags(candidate, marker_checkpoint)
+                                marked = mark_verified_fragments(
+                                    candidate, verified, [*source_collections, source]
+                                )
+                                deferred = defer_fragment_overflow_for_legacy_schema(candidate)
+                                for identifier in deferred & before_reviews.keys():
+                                    candidate.emojis[identifier].review = before_reviews[identifier]
+                                selected = dedupe_emoji_ids | {
+                                    identifier
+                                    for identifier in _changed_entity_ids(current, candidate)
+                                    if identifier.startswith("mxe_")
+                                }
+                                pack_dedupe_report = None
+                                if config.dedupe.mode != "off":
+                                    scan = await run_blocking_on(
+                                        save_worker,
+                                        scan_snapshot,
+                                        candidate,
+                                        selected_emoji_ids=selected,
+                                        max_candidates=config.dedupe.max_candidates,
+                                        mode=config.dedupe.mode,
+                                    )
+                                    pack_dedupe_report = scan.as_dict()
+                                pack_paths = {
+                                    str(path)
+                                    for path in await run_blocking_on(
+                                        save_worker, _changed_paths, persisted, candidate
+                                    )
+                                }
+                                await run_blocking_on(
+                                    save_worker,
+                                    GitPublisher(git).guard_targets,
+                                    tuple(sorted(pack_paths - guarded_staging_paths)),
+                                )
+                                saved_report = await run_blocking_on(
+                                    save_worker,
+                                    _apply_with_rollback,
+                                    persisted,
+                                    candidate,
+                                    allow_policy_review=True,
+                                )
+                                if saved_report is not None and not saved_report.valid:
+                                    warnings.extend(_validation_warnings(saved_report))
+                                persisted = candidate
+                                guarded_staging_paths.update(pack_paths)
+                                marked_fragment_ids.update(marked - deferred)
+                                removed_fragment_ids.update(removed - marked)
+                                deferred_fragment_ids.update(deferred)
+                                # Use the latest checkpoint: peers may have saved
+                                # AI results and budget reservations during awaits.
+                                if pack_dedupe_report is not None:
+                                    identity = await run_blocking_on(
+                                        save_worker,
+                                        _dedupe_scan_identity,
+                                        candidate,
+                                        selected,
+                                        config,
+                                    )
+                                    checkpoint = _checkpoint_dedupe_report(
+                                        checkpoint,
+                                        candidate,
+                                        selected,
+                                        config,
+                                        pack_dedupe_report,
+                                        identity=identity,
+                                    )
+                                dedupe_emoji_ids.update(selected)
                             totals["collections_created"] += int(
                                 plan.collection_id not in current.collections
                             )
@@ -1594,9 +1695,32 @@ async def _run_add(
                                     tuple(item.native_id for item in source.items),
                                     "validated",
                                 )
+                                if stage_only:
+                                    checkpoint = record_source_state(
+                                        checkpoint, source_text, "describe", "succeeded"
+                                    )
+                                    checkpoint = checkpoint.model_copy(
+                                        update={
+                                            "safe_parameters": {
+                                                **checkpoint.safe_parameters,
+                                                "public_fragment_marker_version": 1,
+                                                "legacy_fragment_sources": [
+                                                    value
+                                                    for value in _string_sequence(
+                                                        checkpoint.safe_parameters.get(
+                                                            "legacy_fragment_sources", []
+                                                        )
+                                                    )
+                                                    if value != source_text
+                                                ],
+                                            }
+                                        }
+                                    )
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
-                            report_pack_stage(source_text, "assembled")
+                            if stage_only:
+                                durable_source_indexes.add(source_index)
+                            report_pack_stage(source_text, "ready" if stage_only else "assembled")
                     except asyncio.CancelledError:
                         report_pack_stage(source_text, "failed")
                         if file_mode == "fast":
@@ -1704,7 +1828,7 @@ async def _run_add(
                 )
 
             if checkpoint is not None:
-                for source_index in successful_source_indexes:
+                for source_index in successful_source_indexes - durable_source_indexes:
                     report_pack_stage(all_sources[source_index], "finalize")
                 verified_groups = await composition_queue.verify(
                     api_key=credentials.gemini_api_key, budget=budget
@@ -1743,23 +1867,34 @@ async def _run_add(
                     for identifier, emoji in current.emojis.items()
                     if len(emoji.semantic_tags) == 12 and "fragment" not in emoji.semantic_tags
                 }
-                strip_legacy_fragment_tags(current, checkpoint)
+                # Per-pack writes own this snapshot; final postprocessing must
+                # not mutate the rollback baseline shared with persisted files.
+                if durable_source_indexes:
+                    current = await run_blocking(current.clone)
+                marker_checkpoint = _legacy_fragment_checkpoint(
+                    checkpoint, tuple(all_sources[index] for index in successful_source_indexes)
+                )
+                strip_legacy_fragment_tags(current, marker_checkpoint)
                 mark_verified_fragments(current, verified_groups, source_collections)
                 deferred_fragments = defer_fragment_overflow_for_legacy_schema(current)
                 for identifier in deferred_fragments & before_reviews.keys():
                     current.emojis[identifier].review = before_reviews[identifier]
-                totals["fragments_deferred_to_publication"] = len(deferred_fragments)
+                totals["fragments_deferred_to_publication"] = len(
+                    deferred_fragment_ids | deferred_fragments
+                )
                 marker_changes = {
                     identifier
                     for identifier, emoji in current.emojis.items()
                     if tuple(emoji.semantic_tags) != before_tags[identifier]
                 }
-                totals["fragments_marked"] = sum(
-                    "fragment" in current.emojis[identifier].semantic_tags
+                newly_marked = {
+                    identifier
                     for identifier in marker_changes
-                )
-                totals["legacy_fragment_tags_removed"] = (
-                    len(marker_changes) - totals["fragments_marked"]
+                    if "fragment" in current.emojis[identifier].semantic_tags
+                }
+                totals["fragments_marked"] = len(marked_fragment_ids | newly_marked)
+                totals["legacy_fragment_tags_removed"] = len(
+                    removed_fragment_ids | (marker_changes - newly_marked)
                 )
                 dedupe_emoji_ids.update(marker_changes)
                 newly_updated = len(marker_changes & unchanged_ids)
@@ -1801,6 +1936,7 @@ async def _run_add(
                     )
                     rebased_report.raise_for_errors()
                     initial = latest
+                    persisted = latest
                     base_sha = publication_base
                     dedupe_emoji_ids = {
                         entity_id
@@ -1873,10 +2009,15 @@ async def _run_add(
 
             if changed_paths:
                 publisher = GitPublisher(git)
-                guard = publisher.guard_targets(tuple(str(path) for path in changed_paths))
+                guard_paths = tuple(
+                    str(path)
+                    for path in changed_paths
+                    if not stage_only or str(path) not in guarded_staging_paths
+                )
+                guard = publisher.guard_targets(guard_paths)
                 await run_blocking(
                     _apply_with_rollback,
-                    initial,
+                    persisted,
                     current,
                     allow_policy_review=stage_only or local_only,
                 )
@@ -1912,6 +2053,24 @@ async def _run_add(
                     checkpoint = record_source_state(
                         checkpoint, all_sources[source_index], "describe", "succeeded"
                     )
+                finished_sources = {
+                    all_sources[index]
+                    for index in completed_source_indexes | successful_source_indexes
+                }
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "safe_parameters": {
+                            **checkpoint.safe_parameters,
+                            "legacy_fragment_sources": [
+                                source
+                                for source in _string_sequence(
+                                    checkpoint.safe_parameters.get("legacy_fragment_sources", [])
+                                )
+                                if source not in finished_sources
+                            ],
+                        }
+                    }
+                )
                 parent_status = overall_status(checkpoint, "describe", status.value)
                 checkpoint = _finish_checkpoint(
                     checkpoint,
@@ -1929,7 +2088,9 @@ async def _run_add(
                         }
                     )
                 run_store.save(checkpoint)
-                for source_index in completed_source_indexes | successful_source_indexes:
+                for source_index in (
+                    completed_source_indexes | successful_source_indexes
+                ) - durable_source_indexes:
                     report_pack_stage(all_sources[source_index], "ready")
             return CommandResult(
                 run_id=run_identifier,
@@ -6814,12 +6975,30 @@ def _confirm_direct_push(
     )
 
 
+def _legacy_fragment_checkpoint(checkpoint: RunCheckpoint, sources: Sequence[str]) -> RunCheckpoint:
+    """Scope legacy cleanup to unfinished packs, including after an interrupted save."""
+    pending = checkpoint.safe_parameters.get("legacy_fragment_sources", [])
+    selected = set(sources).intersection(pending if isinstance(pending, list) else [])
+    if not selected:
+        return checkpoint
+    names = {source.rstrip("/").rsplit("/", 1)[-1] for source in selected}
+    parameters = dict(checkpoint.safe_parameters)
+    parameters.pop("public_fragment_marker_version", None)
+    memberships = parameters.get("source_memberships", {})
+    parameters["source_memberships"] = {
+        name: members
+        for name, members in (memberships.items() if isinstance(memberships, dict) else ())
+        if name in names
+    }
+    return checkpoint.model_copy(update={"safe_parameters": parameters})
+
+
 def _apply_with_rollback(
     before: DatasetSnapshot,
     after: DatasetSnapshot,
     *,
     allow_policy_review: bool = False,
-) -> None:
+) -> ValidationReport:
     staged_report = validate_snapshot(after, schemas=True, repository_files=True)
     if not staged_report.valid and not (
         allow_policy_review and _only_staging_review_issues(staged_report)
@@ -6828,9 +7007,10 @@ def _apply_with_rollback(
     apply_snapshot(before, after)
     report = validate_dataset(before.root, strict=True)
     if report.valid or (allow_policy_review and _only_staging_review_issues(report)):
-        return
+        return report
     apply_snapshot(after, before, validator=validate_snapshot)
     report.raise_for_errors()
+    return report
 
 
 def _only_staging_review_issues(report: Any) -> bool:
@@ -7615,9 +7795,13 @@ def _checkpoint_dedupe_report(
     selected_emoji_ids: set[str],
     config: MojiLexConfig,
     report: dict[str, Any],
+    *,
+    identity: tuple[str, str, str, tuple[str, ...]] | None = None,
 ) -> RunCheckpoint:
-    input_sha256, snapshot_sha256, profile_sha256, selected = _dedupe_scan_identity(
-        snapshot, selected_emoji_ids, config
+    input_sha256, snapshot_sha256, profile_sha256, selected = (
+        identity
+        if identity is not None
+        else _dedupe_scan_identity(snapshot, selected_emoji_ids, config)
     )
     persisted = DedupeScanCheckpoint(
         input_sha256=input_sha256,
