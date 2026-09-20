@@ -32,6 +32,7 @@ class PackQueue:
     batches: dict[object, str] = field(default_factory=dict)
     counts: dict[str, dict[str, PackCounts]] = field(default_factory=dict)
     disclosures: set[str] = field(default_factory=set)
+    described_ids: dict[str, set[str]] = field(default_factory=dict)
     # Completed packs are checked alongside useful work in the interactive fast
     # pipeline. Only identities live here; durable progress remains in RunStore.
     completed_checks: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -111,10 +112,26 @@ class PackQueue:
             )
             if not total and not saved:
                 detail = "нет новых заданий на описание" if ru else "no new description work"
-            self.report_counts(source, "ai", saved + completed, full_total, detail=detail)
+            identities = getattr(batch, "completed_item_ids", None)
+            if identities is not None:
+                known_ids = self.described_ids.setdefault(source, set())
+                known_ids.update(identities)
+                completed_count = len(known_ids)
+                detail = ""
+            else:
+                completed_count = saved + completed
+            self.report_counts(source, "ai", completed_count, full_total, detail=detail)
         else:
             phase = self.stages.get(source)
-            if phase in {"download", "render", "ai", "composition", "merge_wait", "finalize"}:
+            if phase in {
+                "download",
+                "render",
+                "ai",
+                "composition",
+                "merge_wait",
+                "assembled",
+                "finalize",
+            }:
                 self.report_counts(source, phase, completed, total)
 
     def suffix(self, source: str, phase: str, *, ru: bool) -> str:
@@ -126,7 +143,7 @@ class PackQueue:
         if counts is None and phase == "ai_wait":
             counts = values.get("render")
         count_label = ""
-        if counts is None and phase in {"composition", "merge_wait", "finalize"}:
+        if counts is None and phase in {"composition", "merge_wait", "assembled", "finalize"}:
             counts = values.get("ai")
             count_label = "описания " if ru else "descriptions "
             if counts is None:
@@ -137,6 +154,20 @@ class PackQueue:
             suffix += f" · {counts.detail}"
         if not suffix and phase == "download":
             suffix = " · получение списка файлов" if ru else " · fetching file list"
+        if phase == "ai":
+            phases = Counter(
+                value
+                for batch in batches
+                if getattr(batch, "batch_total", None) is not None
+                for value in getattr(batch, "active", {}).values()
+            )
+            for key, label in (
+                ("request", "запросов ожидают ответа" if ru else "requests awaiting response"),
+                ("ai", "запросов готовится" if ru else "requests preparing"),
+                ("retry", "повторных запросов" if ru else "requests retrying"),
+            ):
+                if phases[key]:
+                    suffix += f" · {label}: {phases[key]}"
         if any("approval" in getattr(batch, "active", {}).values() for batch in batches):
             suffix += " · требуется ответ" if ru else " · awaiting confirmation"
         return suffix
@@ -156,6 +187,7 @@ class PackQueue:
                 "ai_wait",
                 "composition",
                 "merge_wait",
+                "assembled",
                 "finalize",
                 "ready",
                 "failed",
@@ -194,6 +226,7 @@ class PackQueue:
                     "ai_wait",
                     "composition",
                     "merge_wait",
+                    "assembled",
                     "finalize",
                     "ready",
                     "failed",
@@ -206,6 +239,7 @@ class PackQueue:
                     "Готовы к ИИ, ждут очереди",
                     "Проверка пазлов",
                     "Ожидает сохранения",
+                    "Результаты сохранены, ждут сборки набора",
                     "Финальная проверка и сохранение",
                     "Готовы к GitHub",
                     "Остановлены / ошибки",
@@ -219,6 +253,7 @@ class PackQueue:
                     "Prepared, waiting for AI",
                     "Checking puzzles",
                     "Waiting to save",
+                    "Results saved, awaiting dataset assembly",
                     "Final validation and saving",
                     "Ready to send to GitHub",
                     "Stopped / errors",
@@ -241,6 +276,7 @@ class PackQueue:
                 "ai_wait",
                 "composition",
                 "merge_wait",
+                "assembled",
                 "finalize",
                 "failed",
             )
@@ -249,7 +285,12 @@ class PackQueue:
         per_group = detail_slots // max(1, len(active))
         for key, values in groups.items():
             yield Text(
-                f"{labels[key]}: {len(values)}",
+                f"{labels[key]}: {len(values)}"
+                + (
+                    f" · {'показано' if ru else 'shown'} {min(len(values), per_group)}"
+                    if key in active and len(values) > per_group
+                    else ""
+                ),
                 style="green" if key == "ready" else "cyan",
                 no_wrap=True,
                 overflow="ellipsis",
@@ -260,8 +301,6 @@ class PackQueue:
             for source in shown:
                 name = source.rstrip("/").rsplit("/", 1)[-1]
                 suffix = self.suffix(source, key, ru=ru)
-                if source == shown[-1] and len(values) > len(shown):
-                    suffix += f" (+{len(values) - len(shown)})"
                 yield Text(
                     f"  {name} — {labels[key].lower()}{suffix}", no_wrap=True, overflow="ellipsis"
                 )

@@ -221,7 +221,7 @@ def test_concurrent_preparations_survive_out_of_order_exit(terminal):
     first.__enter__()
     second.__enter__()
     heartbeat = context.preparation_thread
-    assert "(+1)" in output.getvalue()
+    assert "concurrent operations: 2" in output.getvalue()
     first.__exit__(None, None, None)
     assert [label for label, _ in context.preparations] == ["Loading Beta"]
     assert [label for label, _ in context.operations] == ["Loading Beta"]

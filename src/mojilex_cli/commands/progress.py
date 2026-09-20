@@ -48,6 +48,7 @@ class BatchProgress:
         self.pack_total = pack_total
         self.unit = unit
         self.downloaded: set[str] = set()
+        self.completed_item_ids: set[str] | None = None
         self.cached = 0
         self.interval = interval
         self.completed = 0
@@ -118,8 +119,9 @@ class BatchProgress:
             self.completed += count
             self.completed_batches += 1
         self.last_completion = time.monotonic()
-        if failed or self.completed == count or self.last_completion - self.last_report >= 1:
-            self._report()
+        if not self._report_live():
+            if failed or self.completed == count or self.last_completion - self.last_report >= 1:
+                self._report()
 
     async def _tick(self) -> None:
         while True:

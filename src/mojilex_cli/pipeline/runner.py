@@ -1087,6 +1087,7 @@ async def _run_add(
             ) as adapter:
                 await adapter.validate_credentials()
                 merge_turns = OrderedTurns()
+                merge_lock = asyncio.Lock()
                 dependencies = PackDependencies()
                 cancelled_queue = asyncio.Event()
                 file_mode = config.processing.file_analysis_mode
@@ -1104,6 +1105,7 @@ async def _run_add(
                     report_pack_stage(source_text, "download")
                     collection_lock: Any | None = None
                     lock_entered = False
+                    merge_acquired = False
                     try:
                         if file_mode == "fast" and cancelled_queue.is_set():
                             return
@@ -1122,9 +1124,12 @@ async def _run_add(
                         except SourceNotFoundError:
                             if not options.explicit_verification:
                                 raise
-                            # Missing-pack availability updates mutate the same
-                            # candidate as normal merges and must observe their order.
-                            await merge_turns.wait(position)
+                            # Missing-pack updates share the exclusive candidate writer.
+                            # Fast mode admits whichever independent pack is ready first.
+                            if file_mode != "fast":
+                                await merge_turns.wait(position)
+                            await merge_lock.acquire()
+                            merge_acquired = True
                             if not options.dry_run:
                                 collection_lock = run_store.collection_lock(
                                     reference.platform, reference.native_id
@@ -1477,14 +1482,18 @@ async def _run_add(
                                 )
                                 checkpoint = _checkpoint_budget(checkpoint, budget)
                                 run_store.save(checkpoint)
-                            # Only canonical assembly waits for input order. Network,
-                            # decoding and AI for other non-overlapping packs keep running.
+                            # Independent fast-mode packs finalize as soon as ready.
+                            # Overlapping identities are still ordered by dependencies;
+                            # one writer prevents stale candidate snapshots/lost updates.
                             report_pack_stage(source_text, "merge_wait")
-                            await merge_turns.wait(position)
+                            if file_mode != "fast":
+                                await merge_turns.wait(position)
+                            await merge_lock.acquire()
+                            merge_acquired = True
                             report_pack_stage(source_text, "finalize")
                             # Building the candidate deep-clones the growing dataset.
                             # Keep downloads and AI responsive while preserving the
-                            # ordered merge turn until validation and assignment finish.
+                            # exclusive writer until validation and assignment finish.
                             plan = await run_blocking(
                                 plan_collection_merge,
                                 current,
@@ -1587,7 +1596,7 @@ async def _run_add(
                                 )
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
-                            report_pack_stage(source_text, "merge_wait")
+                            report_pack_stage(source_text, "assembled")
                     except asyncio.CancelledError:
                         report_pack_stage(source_text, "failed")
                         if file_mode == "fast":
@@ -1617,6 +1626,8 @@ async def _run_add(
                             pack_slots.preparation.release()
                         PACK.reset(pack_token)
                         dependencies.finish(position)
+                        if merge_acquired:
+                            merge_lock.release()
                         merge_turns.finish(position)
                         if collection_lock is not None and lock_entered:
                             collection_lock.__exit__(None, None, None)
@@ -4436,6 +4447,8 @@ async def _descriptions_for_collection(
         request_budget=lambda: (budget.requests_used, budget.max_requests),
     )
     progress.cached = len(outcomes_by_native)
+    completed_item_ids = set(outcomes_by_native)
+    progress.completed_item_ids = completed_item_ids
     first_failure: BaseException | None = None
     last_deferred: Exception | None = None
 
@@ -4521,6 +4534,7 @@ async def _descriptions_for_collection(
                         raise
                 saved_items.update(expected)
                 saved_outcomes.update(generated)
+                completed_item_ids.update(expected)
                 progress.advance(key, count=len(items))
 
             try:
@@ -4608,6 +4622,7 @@ async def _descriptions_for_collection(
                 raise
             finally:
                 _AI_PROGRESS_CALLBACK.reset(callback_token)
+            completed_item_ids.update(generated)
             progress.finish(key, count=len(chunk) - len(saved_items))
             return generated
 

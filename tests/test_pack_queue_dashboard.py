@@ -331,3 +331,54 @@ def test_puzzle_and_save_wait_stages_are_visible_and_not_ready():
     assert "B — waiting to save · descriptions 200/200" in text
     assert "Ready to send to GitHub: 0" in text
     assert queue.groups()["ai"] == []
+
+
+def test_streaming_ai_counts_accumulate_without_reset_or_double_count():
+    queue = PackQueue()
+    queue.register(["A"])
+    first = BatchProgress("AI", 2, batch_total=1, pack_total=10)
+    first.completed_item_ids = {"1", "2"}
+    queue.remember_batch(first, "A")
+    second = BatchProgress("AI", 2, batch_total=1, pack_total=10)
+    second.completed_item_ids = set()
+    second.active = {"request": "request"}
+    queue.batches = {second: "A"}
+    assert "2/10" in queue.suffix("A", "ai", ru=False)
+    assert "requests awaiting response: 1" in queue.suffix("A", "ai", ru=False)
+    second.completed_item_ids.update({"2", "3"})
+    assert "3/10" in queue.suffix("A", "ai", ru=False)
+    final = BatchProgress("AI", 7, batch_total=1, pack_total=10)
+    final.completed_item_ids = {"1", "2", "3"}
+    queue.remember_batch(final, "A")
+    assert queue.counts["A"]["ai"].completed == 3
+
+
+def test_overflow_uses_explicit_header_not_plus_suffix():
+    queue = PackQueue()
+    for index in range(60):
+        queue.stages[f"Pack{index}"] = "render"
+    output = StringIO()
+    with use_ui_language("en"):
+        Console(file=output, width=100, height=24).print(queue)
+    text = output.getvalue()
+    assert "Processing on PC: 60 · shown" in text
+    assert "(+" not in text
+
+
+@pytest.mark.asyncio
+async def test_throttled_counter_update_is_not_lost(monkeypatch):
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    updates = []
+    context = runtime._CommandContext("test")
+    context.pack_queue = PackQueue()
+    context.progress_view = Text("progress")
+    context.live = SimpleNamespace(update=lambda *args, **kwargs: updates.append(1))
+    context.last_pack_refresh = time.monotonic()
+    runtime._refresh_live(context)
+    assert updates == []
+    await asyncio.sleep(0.25)
+    assert updates == [1]
+    assert context.pack_refresh_handle is None

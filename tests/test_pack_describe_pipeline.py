@@ -489,7 +489,7 @@ async def test_dashboard_ready_is_reported_only_after_pack_finalization(pipeline
             "composition",
             "merge_wait",
             "finalize",
-            "merge_wait",
+            "assembled",
             "finalize",
             "ready",
         ]
@@ -572,7 +572,7 @@ async def test_fast_ai_overlaps_previous_packs_local_postprocessing(pipeline, mo
         release_local.set()
         result = await asyncio.wait_for(task, 5)
         assert not result.errors
-        assert state.merges == ["PackAlpha", "PackBeta"]
+        assert sorted(state.merges) == ["PackAlpha", "PackBeta"]
     finally:
         if not task.done():
             task.cancel()
@@ -621,6 +621,7 @@ async def test_fast_ready_pack_starts_ai_before_earlier_pack_finishes_media(pipe
     )
     alpha_media = asyncio.Event()
     beta_ai = asyncio.Event()
+    beta_merged = asyncio.Event()
     release_alpha = asyncio.Event()
     order = []
 
@@ -636,6 +637,16 @@ async def test_fast_ready_pack_starts_ai_before_earlier_pack_finishes_media(pipe
             beta_ai.set()
         return await state.describe(snapshot, source, processed, **kwargs)
 
+    original_merge = runner.plan_collection_merge
+    loop = asyncio.get_running_loop()
+
+    def merge(snapshot, source, *args, **kwargs):
+        plan = original_merge(snapshot, source, *args, **kwargs)
+        if source.native_id == "PackBeta":
+            loop.call_soon_threadsafe(beta_merged.set)
+        return plan
+
+    monkeypatch.setattr(runner, "plan_collection_merge", merge)
     monkeypatch.setattr(runner, "_prepare_collection_media", media)
     monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
     task = asyncio.create_task(state.run())
@@ -643,11 +654,12 @@ async def test_fast_ready_pack_starts_ai_before_earlier_pack_finishes_media(pipe
         await asyncio.wait_for(alpha_media.wait(), 5)
         await asyncio.wait_for(beta_ai.wait(), 5)
         assert order == ["PackBeta"]
-        assert state.merges == []
+        await asyncio.wait_for(beta_merged.wait(), 5)
+        assert state.merges == ["PackBeta"]
         release_alpha.set()
         result = await asyncio.wait_for(task, 5)
         assert not result.errors
-        assert state.merges == ["PackAlpha", "PackBeta"]
+        assert state.merges == ["PackBeta", "PackAlpha"]
     finally:
         if not task.done():
             task.cancel()
@@ -681,7 +693,7 @@ async def test_fast_independent_packs_can_have_ai_in_flight_together(pipeline, m
         release.set()
         result = await asyncio.wait_for(task, 5)
         assert not result.errors
-        assert state.merges == ["PackAlpha", "PackBeta"]
+        assert sorted(state.merges) == ["PackAlpha", "PackBeta"]
     finally:
         if not task.done():
             task.cancel()
@@ -723,4 +735,4 @@ async def test_fast_prefetch_continues_while_only_pack_slot_is_in_ai(pipeline, m
         release_ai.set()
         result = await asyncio.wait_for(task, 15)
     assert result.status in {"succeeded", "noop"}
-    assert state.merges == ["PackAlpha", "PackBeta"]
+    assert sorted(state.merges) == ["PackAlpha", "PackBeta"]

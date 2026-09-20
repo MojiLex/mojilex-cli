@@ -74,6 +74,7 @@ class _CommandContext:
     pending_progress: list[RenderableType] = field(default_factory=list)
     pack_queue: PackQueue | None = None
     last_pack_refresh: float = 0.0
+    pack_refresh_handle: asyncio.TimerHandle | None = None
     command: str = ""
     disclosures: set[str] = field(default_factory=set)
 
@@ -99,7 +100,12 @@ class _ProgressDisplay:
             label, started = self.context.preparations[-1]
             elapsed = int(time.monotonic() - started)
             concurrent = len(self.context.preparations) - 1
-            suffix = f" (+{concurrent})" if concurrent else ""
+            concurrent_label = (
+                "параллельных операций"
+                if current_ui_language() == "ru"
+                else "concurrent operations"
+            )
+            suffix = f" · {concurrent_label}: {concurrent + 1}" if concurrent else ""
             view = Group(
                 Text(f"{label} · {elapsed // 60:02d}:{elapsed % 60:02d}{suffix}", style="cyan"),
                 view,
@@ -378,12 +384,23 @@ def report_progress(message: str, *, verbose: bool = False) -> None:
 
 
 def _refresh_live(context: _CommandContext) -> None:
+    if context.pack_refresh_handle is not None:
+        context.pack_refresh_handle.cancel()
+        context.pack_refresh_handle = None
+    if context.progress_paused or context.live is None:
+        return
     note = context.progress_note
     if context.pack_queue is not None and note.startswith(("AI batch ", "AI-пачка ")):
         note = context.pack_queue.ai_activity_text()
     if context.pack_queue is not None:
         now = time.monotonic()
-        if now - context.last_pack_refresh < 0.15:
+        remaining = 0.15 - (now - context.last_pack_refresh)
+        if remaining > 0:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            context.pack_refresh_handle = loop.call_later(remaining, _refresh_live, context)
             return
         context.last_pack_refresh = now
     if context.live is not None and context.progress_view is not None:
