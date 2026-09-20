@@ -141,7 +141,7 @@ def test_unchanged_collection_plan_is_byte_identical_and_requires_no_update(tmp_
 
 
 @pytest.mark.parametrize(
-    "reserved", ["nature", "neon", "counter", "cultural-reference", "fragment"]
+    "reserved", ["nature", "neon", "counter", "cultural-reference", "fragment", "ui-icon"]
 )
 def test_cached_ai_global_facet_tags_are_removed_without_changing_descriptions(
     tmp_path,
@@ -267,3 +267,49 @@ def test_deterministic_rendering_change_resets_review_but_protects_semantic_face
     assert merged.facets.styles == existing.facets.styles
     assert merged.facets.rendering.items[0].visible_area_bp == 6000
     assert merged.review.status.value == "unreviewed"
+
+
+@pytest.mark.parametrize("status", ["not_applicable", "described", "undetermined"])
+def test_animated_cached_motion_preserves_evidence_and_marks_missing_assessment(
+    tmp_path,
+    status: str,
+) -> None:
+    from mojilex_cli.domain.models import LocalizedDescription, Uncertainty
+    from test_dataset_helpers import make_animated_snapshot
+
+    snapshot = make_animated_snapshot(tmp_path.resolve())
+    emoji = next(iter(snapshot.emojis.values()))
+    for language, value in list(emoji.descriptions.items()):
+        raw = value.as_dict()
+        raw.update(motion_status=status, motion="Moves left." if status == "described" else None)
+        emoji.descriptions[language] = LocalizedDescription.model_validate(raw)
+    if status == "undetermined":
+        emoji.facets.uncertainties = [Uncertainty.MOTION]
+    source = _source(snapshot)
+    native_id = source.items[0].native_id
+    cached = _description(snapshot)
+    original = cached.model_dump(mode="json")
+    plan = plan_collection_merge(
+        snapshot,
+        source,
+        {native_id: _processed(snapshot, tmp_path)},
+        {native_id: cached},
+        {native_id: _analysis(snapshot)},
+        {native_id: _generation()},
+        timestamp="2026-09-11T18:00:00Z",
+    )
+    result = next(iter(plan.snapshot.emojis.values()))
+    expected = "undetermined" if status == "not_applicable" else status
+    assert all(value.motion_status.value == expected for value in result.descriptions.values())
+    assert all(
+        value.text == emoji.descriptions[lang].text for lang, value in result.descriptions.items()
+    )
+    assert all(
+        value.motion == ("Moves left." if status == "described" else None)
+        for value in result.descriptions.values()
+    )
+    assert (Uncertainty.MOTION in result.facets.uncertainties) == (expected == "undetermined")
+    assert cached.model_dump(mode="json") == original
+    assert not {"MOTION_STATUS", "MOTION_UNCERTAINTY"} & {
+        issue.code for issue in validate_snapshot(plan.snapshot).issues
+    }

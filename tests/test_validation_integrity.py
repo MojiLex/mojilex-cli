@@ -81,3 +81,29 @@ def test_local_candidate_preview_and_lsh_artifacts_are_forbidden_but_docs_are_no
         "dedupe-index/buckets.json",
         "preview-metadata.json",
     }
+
+
+def test_animated_not_applicable_is_rejected_for_each_language(tmp_path) -> None:
+    from mojilex_cli.domain.models import MotionStatus, Uncertainty
+    from test_dataset_helpers import make_animated_snapshot
+
+    snapshot = make_animated_snapshot(tmp_path)
+    emoji = next(iter(snapshot.emojis.values()))
+    report = validate_snapshot(snapshot)
+    motion = [issue for issue in report.issues if issue.code == "MOTION_STATUS"]
+    assert len(motion) == 2
+    assert any("descriptions.en" in issue.message for issue in motion)
+    assert any("descriptions.ru" in issue.message for issue in motion)
+    for description in emoji.descriptions.values():
+        description.motion_status = MotionStatus.UNDETERMINED
+    assert "MOTION_STATUS" not in _codes(validate_snapshot(snapshot))
+    assert "MOTION_UNCERTAINTY" in _codes(validate_snapshot(snapshot))
+    emoji.facets.uncertainties = [Uncertainty.MOTION]
+    assert "MOTION_UNCERTAINTY" not in _codes(validate_snapshot(snapshot))
+
+
+def test_legacy_ui_icon_tag_is_rejected_before_publication(tmp_path) -> None:
+    snapshot = write_fixture(tmp_path)
+    emoji = next(iter(snapshot.emojis.values()))
+    emoji.semantic_tags = sorted([*emoji.semantic_tags, "ui-icon"])
+    assert "FACET_TAG_DUPLICATE" in _codes(validate_snapshot(snapshot))
