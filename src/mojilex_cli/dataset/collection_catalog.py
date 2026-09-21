@@ -25,7 +25,7 @@ def render_catalog(collections: Iterable[Collection]) -> bytes:
         "Названия берутся из карточек паков. Каталог не является источником данных.",
         "Titles come from `collection.json`; the records remain the source of truth.",
         "",
-        f"Паков / Packs: {len(rows)}",
+        f"Паков / Packs: {len(rows)}<br>",
         f"Эмодзи в паках / Emojis across packs: {sum(row.item_count for row in rows)}",
         "",
         "| Название / Title | Имя Telegram / Telegram name | Эмодзи / Emojis |",
