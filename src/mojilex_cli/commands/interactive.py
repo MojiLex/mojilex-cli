@@ -144,10 +144,16 @@ def browse_descriptions(selector: str) -> CommandResult:
             f"Matches: {len(filtered)}. Search: {query or '—'}",
         )
         if saved.warnings:
-            detail += label(
-                "\nНекоторые описания недоступны. Прогресс сохранён.",
-                "\nSome descriptions are unavailable. Progress is preserved.",
-            )
+            for warning in saved.warnings:
+                message = warning if isinstance(warning, str) else warning.get("message")
+                detail += "\n" + (
+                    message
+                    if isinstance(message, str)
+                    else label(
+                        "Некоторые описания недоступны. Прогресс сохранён.",
+                        "Some descriptions are unavailable. Progress is preserved.",
+                    )
+                )
         selected = select(title, options, detail=detail)
         if selected is None:
             return saved
