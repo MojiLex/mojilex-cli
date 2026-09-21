@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from urllib.parse import urlsplit
 
-from mojilex_cli.config.secrets import redact_text, url_has_credentials
+from mojilex_cli.config.secrets import redact_text
 
 _OBJECT_ID = re.compile(r"[0-9a-f]{40,64}\Z")
 _SAFE_REMOTE = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
@@ -393,6 +393,22 @@ class GitRunner:
         refspec = f"{commit_sha}:refs/heads/{destination_branch}"
         self.run("push", remote, refspec)
 
+    def validate_remote_repository(self, remote: str, expected_repository: str) -> None:
+        """Bind both ref inspection and every effective push URL to one repository."""
+        self._validate_remote(remote)
+        components = expected_repository.split("/")
+        if len(components) != 2:
+            raise GitError("expected publication repository must be OWNER/REPO")
+        _validate_github_path(*components)
+        expected = expected_repository.casefold()
+        for push in (False, True):
+            for value in self._validated_remote_urls(remote, push=push):
+                if _github_remote_repository(value) != expected:
+                    raise GitError(
+                        "Git remote does not match the authorized publication repository; "
+                        "check its fetch and push URLs before retrying"
+                    )
+
     def _validated_remote_urls(self, remote: str, *, push: bool) -> tuple[str, ...]:
         arguments = ["remote", "get-url"]
         if push:
@@ -497,7 +513,7 @@ def _validate_identity(identity: GitIdentity) -> GitIdentity:
 
 
 def _validate_github_remote_url(value: str) -> str:
-    if not value or _CONTROL.search(value) or url_has_credentials(value):
+    if not value or _CONTROL.search(value):
         raise GitError("repository remote URL contains forbidden credentials or controls")
     match = _GITHUB_SCP_REMOTE.fullmatch(value)
     if match is not None:
@@ -525,6 +541,16 @@ def _validate_github_remote_url(value: str) -> str:
     owner, repository = components
     _validate_github_path(owner, repository.removesuffix(".git"))
     return value
+
+
+def _github_remote_repository(value: str) -> str:
+    _validate_github_remote_url(value)
+    match = _GITHUB_SCP_REMOTE.fullmatch(value)
+    if match is not None:
+        owner, repository = match.group("owner"), match.group("repository")
+    else:
+        owner, repository = urlsplit(value).path.strip("/").split("/")
+    return f"{owner}/{repository.removesuffix('.git')}".casefold()
 
 
 def _validate_github_path(owner: str, repository: str) -> None:

@@ -374,6 +374,17 @@ _TEXT: dict[str, tuple[str, str]] = {
 }
 
 _RUSSIAN_MESSAGES = {
+    "The saved results are unavailable.": "Сохранённые результаты недоступны.",
+    "The saved results could not be read.": "Не удалось прочитать сохранённые результаты.",
+    (
+        "Some saved results are unavailable; showing AI answers from the cache. "
+        "Any motion claims are unverified and shown as undetermined. "
+        "The original cache and saved progress are unchanged."
+    ): (
+        "Часть сохранённых результатов недоступна; показаны ответы AI из кеша. "
+        "Описанное движение не подтверждено и помечено как неопределённое. "
+        "Исходный кеш и сохранённый прогресс не изменены."
+    ),
     "Whole-run request limit or unlimited.": "Лимит запросов на всю операцию или unlimited.",
     "Use a non-negative integer or unlimited.": "Введите целое число от 0 или unlimited.",
     "ask, skip, or allow official packs.": (

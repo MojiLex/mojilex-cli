@@ -15,6 +15,7 @@ from mojilex_cli.dataset import DatasetLoadError
 from mojilex_cli.dataset.layout import assert_no_link_or_reparse
 from mojilex_cli.dataset.repository import _load_dataset_unlocked
 from mojilex_cli.dataset.transaction import TRANSACTION_DIRECTORY_NAME
+from mojilex_cli.i18n import text
 from mojilex_cli.runs import RunCheckpoint, RunStore, RunStoreError
 
 from .runtime import CommandError, CommandResult, operation_progress
@@ -361,6 +362,8 @@ def _staging_items(
 ) -> dict[str, dict[str, Any]]:
     staging = checkpoint.safe_parameters.get("staging_repository")
     if not isinstance(staging, str) or not Path(staging).is_dir():
+        if isinstance(staging, str):
+            warnings.append(text("The saved results are unavailable."))
         return {}
     try:
         # Public load_dataset recovers transactions and creates a writer lock.
@@ -381,7 +384,7 @@ def _staging_items(
             if path.read_bytes() != original:
                 raise DatasetLoadError("staging changed while being read")
     except (OSError, DatasetLoadError, ValueError):
-        warnings.append("The saved staging dataset could not be read; using exact cached results.")
+        warnings.append(text("The saved results could not be read."))
         return {}
     wanted = {name.casefold() for name in names}
     collections = {
@@ -403,6 +406,25 @@ def _staging_items(
             "source": "staging",
         }
     return result
+
+
+def _cached_semantic_fields(value: Any) -> dict[str, Any]:
+    """Raw AI answers do not include the canonical motion evidence guard.
+
+    Without the saved dataset, browsing cannot tell whether a motion claim was
+    rejected when the record was built. Keep its other fields, but do not assert
+    that claim. This changes only the display, never the cached answer.
+    """
+    fields = _semantic_fields(value)
+    uncertain = False
+    for description in fields["descriptions"].values():
+        if description["motion_status"] == "described":
+            description["motion_status"] = "undetermined"
+            description.pop("motion", None)
+            uncertain = True
+    if uncertain and "motion" not in fields["facets"]["uncertainties"]:
+        fields["facets"]["uncertainties"].append("motion")
+    return fields
 
 
 def _saved_compositions(checkpoint: RunCheckpoint, names: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -509,7 +531,7 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
                 items.append(
                     {
                         "native_id": native_id,
-                        **_semantic_fields(result.batch.items[0]),
+                        **_cached_semantic_fields(result.batch.items[0]),
                         "review_status": "unreviewed",
                         "source": "ai_cache",
                         "generated_at": hit[1].generated_at,
@@ -521,6 +543,14 @@ def show_pack_command(selector: str, *, review: bool = False) -> CommandResult:
     finally:
         if cache is not None:
             cache.close()
+    if any(item["source"] == "ai_cache" for item in items):
+        warnings.append(
+            text(
+                "Some saved results are unavailable; showing AI answers from the cache. "
+                "Any motion claims are unverified and shown as undetermined. "
+                "The original cache and saved progress are unchanged."
+            )
+        )
     if counts["missing"]:
         warnings.append(
             "Some exact cached descriptions are unavailable; saved progress was not changed."

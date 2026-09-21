@@ -132,6 +132,9 @@ mojilex
 
 The menu saves locally and does not submit automatically. Viewing descriptions
 or the gallery makes no AI requests. Missing local previews appear as placeholders.
+If the saved dataset cannot be read, cached descriptions remain available with a
+warning. Cached motion is shown as undetermined when the normalized saved result
+cannot be verified; browsing never changes the cache or spends AI requests.
 
 Example details, rendered by the program using sample data:
 

@@ -109,6 +109,9 @@ def test_merged_run_pr_does_not_push_branch_again() -> None:
         def __init__(self) -> None:
             self.pushes: list[tuple[str, str, str]] = []
 
+        def validate_remote_repository(self, remote: str, expected_repository: str) -> None:
+            assert (remote, expected_repository) == ("origin", "MojiLex/mojilex")
+
         def push_commit(self, remote: str, sha: str, branch: str) -> None:
             self.pushes.append((remote, sha, branch))
 
@@ -344,6 +347,9 @@ class _FakeGit:
         self.base = "a" * 40
         self.branches: dict[str, str] = {}
         self.pushes: list[tuple[str, str, str]] = []
+
+    def validate_remote_repository(self, remote: str, expected_repository: str) -> None:
+        assert (remote, expected_repository) == ("origin", "MojiLex/mojilex")
 
     def remote_sha(self, remote: str, branch: str) -> str:
         if branch != "main":

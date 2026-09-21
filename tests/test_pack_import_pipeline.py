@@ -158,7 +158,28 @@ async def _harness(
 async def _cancel(task: asyncio.Task) -> None:
     if not task.done():
         task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    results = await asyncio.gather(task, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            raise result
+
+
+async def _wait_for_gate(event: asyncio.Event, task: asyncio.Task) -> None:
+    """Report early import failure rather than waiting for an event it cannot emit."""
+    waiter = asyncio.create_task(event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {waiter, task}, timeout=15, return_when=asyncio.FIRST_COMPLETED
+        )
+        if task in done:
+            result = task.result()
+            assert not result.errors, result.errors
+            assert event.is_set(), "Import finished before the expected media event"
+        if waiter not in done and not event.is_set():
+            raise TimeoutError("Import did not reach the expected media event within 15 seconds")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 @pytest.mark.parametrize("pack_concurrency", [1, 3])
@@ -191,7 +212,7 @@ async def test_import_finishes_current_pack_before_starting_next(
     )
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
-        await asyncio.wait_for(active_ready.wait(), timeout=15)
+        await _wait_for_gate(active_ready, task)
         assert len(state.fetched) == 1
         assert len(state.prepare_entered) == 1
         assert not state.prepare_finished
@@ -226,7 +247,7 @@ async def test_prepare_all_starts_independent_packs_together(tmp_path_factory, m
     )
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
-        await asyncio.wait_for(state.metadata_ready.wait(), timeout=15)
+        await _wait_for_gate(state.metadata_ready, task)
         assert set(state.prepare_entered) == {source.native_id for source in sources}
         release.set()
         result = await asyncio.wait_for(task, timeout=15)
@@ -308,7 +329,7 @@ async def test_download_all_resume_reuses_each_persisted_original(tmp_path_facto
         )
     )
     try:
-        await asyncio.wait_for(blocked.wait(), timeout=15)
+        await _wait_for_gate(blocked, task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -387,7 +408,7 @@ async def test_cancelled_import_keeps_current_pack_progress_and_resumes_missing_
     )
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
-        await asyncio.wait_for(blocked_ready.wait(), timeout=15)
+        await _wait_for_gate(blocked_ready, task)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -438,11 +459,11 @@ async def test_shared_emoji_or_duplicate_pack_reuses_completed_owner_before_next
     )
     task = asyncio.create_task(runner._run_import(state.sources, runner.PipelineOptions()))
     try:
-        await asyncio.wait_for(shared_blocked.wait(), timeout=15)
+        await _wait_for_gate(shared_blocked, task)
         assert state.prepare_entered == ["OwnerPack"]
         assert state.downloads.count("shared") == 1
         release_shared.set()
-        await asyncio.wait_for(independent_blocked.wait(), timeout=15)
+        await _wait_for_gate(independent_blocked, task)
         assert state.prepare_entered == ["OwnerPack", second.native_id, "IndependentPack"]
         release_independent.set()
         result = await asyncio.wait_for(task, timeout=15)

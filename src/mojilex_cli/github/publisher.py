@@ -49,6 +49,7 @@ class GitHubPublisher:
         body: str,
         progress: PublicationProgress | None = None,
     ) -> PullRequestResult:
+        self.git.validate_remote_repository(fork_remote, str(fork))
         with _publication_progress(
             "Проверка существующего запроса на GitHub", "Checking for an existing pull request"
         ):
@@ -62,6 +63,7 @@ class GitHubPublisher:
             _report_progress(progress, "completed")
             return existing
         with _publication_progress("Отправка данных на GitHub", "Uploading data to GitHub"):
+            self.git.validate_remote_repository(fork_remote, str(fork))
             self.git.push_commit(fork_remote, prepared.commit_sha, prepared.branch)
         _report_progress(progress, "candidate_pushed")
         if existing is not None:
@@ -112,6 +114,7 @@ class GitHubPublisher:
             raise GitHubError("permission metadata belongs to a different repository")
         if not required_checks:
             raise GitHubError("direct push requires an explicit non-empty required-check set")
+        self.git.validate_remote_repository(remote, str(target))
         with _publication_progress(
             "Проверка и отправка ветки на GitHub", "Verifying and uploading the GitHub branch"
         ):
@@ -127,6 +130,7 @@ class GitHubPublisher:
                 )
             candidate = self.git.optional_remote_sha(remote, candidate_branch)
             if candidate is None:
+                self.git.validate_remote_repository(remote, str(target))
                 self.git.push_commit(remote, prepared.commit_sha, candidate_branch)
                 candidate = self.git.optional_remote_sha(remote, candidate_branch)
             if candidate != prepared.commit_sha:
@@ -154,6 +158,7 @@ class GitHubPublisher:
             if after_checks != prepared.base_sha:
                 raise GitHubError("remote base changed while candidate checks were running")
             # This is a non-force refspec; GitHub rules still make the final decision.
+            self.git.validate_remote_repository(remote, str(target))
             self.git.push_commit(remote, prepared.commit_sha, base_branch)
             published = self.git.remote_sha(remote, base_branch)
             if published != prepared.commit_sha:

@@ -3143,6 +3143,7 @@ async def _run_submit(
                     if remote not in remotes:
                         git.run("remote", "add", remote, f"https://github.com/{fork}.git")
         with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+            git.validate_remote_repository(remote, str(fork))
             prepared = git_publisher.reconcile_remote_branch(
                 prepared,
                 remote=remote,
@@ -7354,6 +7355,7 @@ async def _publish(
 
     if options.direct_push:
         with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+            git.validate_remote_repository("origin", str(target))
             _validate_previous_candidate_ref(
                 previous_publication,
                 prepared,
@@ -7423,6 +7425,7 @@ async def _publish(
             if fork_remote not in existing:
                 git.run("remote", "add", fork_remote, f"https://github.com/{fork}.git")
     with _publication_progress("Проверка ветки на GitHub", "Checking the GitHub branch"):
+        git.validate_remote_repository(fork_remote, str(fork))
         _validate_previous_candidate_ref(
             previous_publication,
             prepared,

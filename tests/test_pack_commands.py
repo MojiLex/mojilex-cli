@@ -180,7 +180,10 @@ def test_review_reads_exact_keys_and_preserves_warning_and_full_bilingual_text(
     assert item["content"] == {"rating": "general", "warnings": ["flashing"]}
     assert item["review_status"] == "unreviewed"
     assert item["descriptions"]["ru"]["text"] == "Saved complete Russian description."
-    assert item["descriptions"]["ru"]["motion"] == "The light flashes."
+    assert item["descriptions"]["ru"]["motion_status"] == "undetermined"
+    assert "motion" not in item["descriptions"]["ru"]
+    assert "motion" in item["facets"]["uncertainties"]
+    assert any("showing AI answers from the cache" in warning for warning in result.warnings)
     assert item["descriptions"]["ru"]["usage"] == ["attention", "warning"]
     assert item["descriptions"]["en"]["text"] == "A synthetic smiling face."
     assert item["semantic_tags"] == ["face", "smile"]
