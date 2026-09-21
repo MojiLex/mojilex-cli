@@ -589,8 +589,12 @@ def _current_canonical_dataset_paths(root: Path) -> set[PurePosixPath]:
                 raise AtomicWriteError(
                     f"dataset changed since the snapshot was loaded: unsafe path {path}"
                 )
-            if path.is_file() and path.suffix in {".json", ".jsonl"}:
-                result.add(PurePosixPath(path.relative_to(root).as_posix()))
+            if path.is_file():
+                relative = PurePosixPath(path.relative_to(root).as_posix())
+                if path.suffix in {".json", ".jsonl"} or relative == PurePosixPath(
+                    "data", "telegram", "collections", "README.md"
+                ):
+                    result.add(relative)
     return result
 
 

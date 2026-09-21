@@ -5,7 +5,17 @@ from test_dataset_helpers import make_snapshot
 
 
 @pytest.mark.parametrize(
-    "mode", ["publish", "local", "existing", "decline", "unavailable", "new_base", "auth_failed"]
+    "mode",
+    [
+        "publish",
+        "local",
+        "existing",
+        "already_there",
+        "decline",
+        "unavailable",
+        "new_base",
+        "auth_failed",
+    ],
 )
 def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
     from contextlib import contextmanager, nullcontext
@@ -111,10 +121,20 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
             active_bases.remove(revision)
 
     monkeypatch.setattr(batch, "snapshot_at_revision", base_checkout)
-    additions = iter((["first"], ["second"]))
-    monkeypatch.setattr(batch, "_add_missing_packs", lambda *a: (snapshot, next(additions), []))
+    additions = iter(
+        [([], ["first"]), ([], ["second"])]
+        if mode == "already_there"
+        else [(["first"], []), (["second"], [])]
+    )
     monkeypatch.setattr(
-        batch, "_changed_paths", lambda *a: () if mode == "existing" else ("data/file.json",)
+        batch,
+        "_add_missing_packs",
+        lambda *a: (snapshot, *next(additions)),
+    )
+    monkeypatch.setattr(
+        batch,
+        "_changed_paths",
+        lambda *a: () if mode == "existing" else ("data/file.json",),
     )
     monkeypatch.setattr(batch, "_apply_with_rollback", lambda *a: None)
     calls = []
@@ -151,11 +171,14 @@ def test_sync_publishes_many_saved_runs_once(tmp_path, monkeypatch, mode):
     assert _SCHEMA_MEMO.get() is None
     assert "Validating the current GitHub dataset" in progress
     assert "Finding changes for the pull request" in progress
-    if mode != "existing":
+    if mode not in {"existing", "already_there"}:
         assert "Validating and saving the pull request candidate" in progress
-    if mode in {"local", "existing"}:
+    if mode in {"local", "existing", "already_there"}:
         assert not calls and not confirmations
         assert result.publication.get("preview") if mode == "local" else result.status == "noop"
+        if mode == "already_there":
+            assert result.result["already_on_github"] == 2
+            assert result.result["changed_paths"] == []
         return
     assert len(calls) == 1
     assert len(confirmations) == 1 and "owner/repo" in confirmations[0]
@@ -177,6 +200,14 @@ def test_sync_skips_existing_pack_without_changing_descriptions(tmp_path):
     merged, added, skipped = _add_missing_packs(current, base, candidate)
     assert merged.to_files() == current.to_files()
     assert added == [] and skipped == [collection_id]
+
+
+def test_sync_counts_unchanged_pack_already_in_repository(tmp_path):
+    current = make_snapshot(tmp_path.resolve())
+    merged, added, skipped = _add_missing_packs(current, current.clone(), current.clone())
+    assert merged.to_files() == current.to_files()
+    assert added == []
+    assert skipped == list(current.collections)
 
 
 def test_sync_adds_missing_pack_preserving_shared_emoji(tmp_path):

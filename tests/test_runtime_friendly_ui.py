@@ -82,6 +82,64 @@ def test_settings_are_readable_with_explanations(capsys):
     assert "'description':" not in output
 
 
+def test_sync_noop_explains_existing_packs_without_internal_lists(capsys):
+    with use_ui_language("ru"):
+        runtime.execute(
+            "sync",
+            lambda: runtime.CommandResult(
+                status=runtime.RunStatus.NOOP,
+                result={
+                    "added_packs": [],
+                    "skipped_packs": ["internal-id"],
+                    "selected_runs": [],
+                    "changed_paths": [],
+                    "ready_runs_checked": 1,
+                    "already_on_github": 1,
+                },
+            ),
+            json_output=False,
+        )
+    output = capsys.readouterr().out
+    assert "уже есть на GitHub" in output
+    assert "Ничего не отправлено" in output
+    assert "internal-id" not in output and "[]" not in output
+
+
+def test_sync_no_ready_runs_explains_nothing_was_sent(capsys):
+    with use_ui_language("ru"):
+        runtime.execute(
+            "sync",
+            lambda: runtime.CommandResult(
+                status=runtime.RunStatus.NOOP,
+                result={"ready_runs_checked": 0, "changed_paths": [], "added_packs": []},
+            ),
+            json_output=False,
+        )
+    output = capsys.readouterr().out
+    assert "Нет готовых сохранённых паков" in output
+    assert "ничего не отправлено" in output
+
+
+def test_sync_preview_shows_counts_without_exposing_paths_or_run_ids(capsys):
+    with use_ui_language("ru"):
+        runtime.execute(
+            "sync",
+            lambda: runtime.CommandResult(
+                result={
+                    "added_packs": ["internal-pack-id"],
+                    "selected_runs": ["internal-run-id"],
+                    "changed_paths": ["data/internal/path.json"],
+                },
+                publication={"mode": "local", "preview": True},
+            ),
+            json_output=False,
+        )
+    output = capsys.readouterr().out
+    assert "Подготовлено паков: 1; изменено файлов: 1" in output
+    assert "Эта команда не отправляла" in output
+    assert "internal-" not in output
+
+
 def test_completion_distinguishes_local_save_from_github_and_hides_paths(capsys):
     with use_ui_language("en"):
         runtime.execute(

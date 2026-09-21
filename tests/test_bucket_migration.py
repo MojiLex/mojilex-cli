@@ -3,7 +3,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from mojilex_cli.dataset import load_dataset, validate_snapshot
-from mojilex_cli.dataset.layout import emoji_bucket_path, legacy_bucket_path
+from mojilex_cli.dataset.layout import collection_shard, emoji_bucket_path, legacy_bucket_path
 from mojilex_cli.dataset.repository import DatasetLoadError
 from mojilex_cli.dataset.staging import apply_snapshot
 from mojilex_cli.pipeline.reapply import reapply_candidate
@@ -36,6 +36,39 @@ def test_saved_legacy_analysis_validates_and_migrates_without_content_changes(tm
     assert validate_snapshot(loaded, canonical=True).valid
     assert all(len(path.stem) == 6 for path in tmp_path.glob("data/*/emojis/*/*.jsonl"))
     assert apply_snapshot(loaded, loaded.clone()) == ()
+
+
+def test_saved_hash_prefixed_collection_validates_and_moves_to_flat_directory(tmp_path):
+    original = write_fixture(tmp_path)
+    collection = next(iter(original.collections.values()))
+    flat = tmp_path / "data" / collection.platform / "collections" / collection.id
+    legacy = flat.parent / collection_shard(collection.id) / collection.id
+    legacy.parent.mkdir()
+    flat.rename(legacy)
+    before = load_dataset(tmp_path)
+    assert validate_snapshot(before, canonical=True).valid
+    assert before.to_files(preserve_legacy_paths=True) == before.source_bytes
+    changed = apply_snapshot(before, before.clone(), validator=validate_snapshot)
+    assert changed
+    assert not (legacy / "collection.json").exists()
+    assert not (legacy / "memberships.jsonl").exists()
+    assert flat.is_dir()
+    after = load_dataset(tmp_path)
+    assert after.collections == before.collections
+    assert after.memberships == before.memberships
+    assert validate_snapshot(after, canonical=True).valid
+
+
+def test_duplicate_collection_in_both_layouts_is_rejected(tmp_path):
+    snapshot = write_fixture(tmp_path)
+    collection = next(iter(snapshot.collections.values()))
+    flat = tmp_path / "data" / collection.platform / "collections" / collection.id
+    legacy = flat.parent / collection_shard(collection.id) / collection.id
+    legacy.mkdir(parents=True)
+    for name in ("collection.json", "memberships.jsonl"):
+        (legacy / name).write_bytes((flat / name).read_bytes())
+    with pytest.raises(DatasetLoadError, match="duplicate entity"):
+        load_dataset(tmp_path)
 
 
 @pytest.mark.parametrize("width", [2, 4, 6])

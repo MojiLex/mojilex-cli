@@ -6,6 +6,8 @@ from mojilex_cli.dataset import (
     load_dataset,
     merge_emoji,
 )
+from mojilex_cli.dataset.staging import apply_snapshot
+from mojilex_cli.dataset.validation import validate_snapshot
 from mojilex_cli.domain import Emoji, Review, reviewed_content_sha256
 from test_dataset_helpers import write_fixture
 
@@ -18,6 +20,26 @@ def test_loader_roundtrip_and_canonical_paths(tmp_path) -> None:
     assert loaded.to_files() == original.to_files()
     assert (tmp_path / collection_path(collection.platform, collection.id)).is_file()
     assert (tmp_path / emoji_bucket_path(emoji.platform, emoji.id)).is_file()
+
+
+def test_collection_catalog_follows_title_changes_and_preserves_legacy_absence(tmp_path) -> None:
+    write_fixture(tmp_path)
+    catalog = tmp_path / "data" / "telegram" / "collections" / "README.md"
+    assert catalog.is_file()
+    old_bytes = catalog.read_bytes()
+    before = load_dataset(tmp_path)
+    changed = before.clone()
+    next(iter(changed.collections.values())).title = "A renamed pack"
+    apply_snapshot(before, changed, validator=validate_snapshot)
+    assert catalog.read_bytes() != old_bytes
+    assert b"A renamed pack" in catalog.read_bytes()
+
+    catalog.unlink()
+    legacy = load_dataset(tmp_path)
+    assert validate_snapshot(legacy, canonical=True).valid
+    assert catalog not in [tmp_path / path for path in legacy.to_files(preserve_legacy_paths=True)]
+    apply_snapshot(legacy, legacy.clone(), validator=validate_snapshot)
+    assert catalog.is_file()
 
 
 def test_merge_preserves_approved_manual_content_when_media_is_unchanged(tmp_path) -> None:

@@ -1014,6 +1014,47 @@ def _render_human(
 
 def _render_pack_result(console: Console, command: str, result: Mapping[str, Any]) -> bool:
     """Render pack data as readable text, never Python dicts or Rich markup."""
+    if command == "sync":
+        added = result.get("added_packs", [])
+        changed = result.get("changed_paths", [])
+        if not changed:
+            if result.get("ready_runs_checked", 0) == 0:
+                message = (
+                    "Нет готовых сохранённых паков для отправки. На GitHub ничего не отправлено."
+                    if current_ui_language() == "ru"
+                    else "No completed saved packs to send. Nothing was sent to GitHub."
+                )
+            elif result.get("already_on_github", 0):
+                count = result["already_on_github"]
+                pack_word = (
+                    "пак"
+                    if count % 10 == 1 and count % 100 != 11
+                    else "пака"
+                    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14)
+                    else "паков"
+                )
+                message = (
+                    f"Новых изменений нет: {count} {pack_word} уже есть на GitHub. "
+                    "Ничего не отправлено."
+                    if current_ui_language() == "ru"
+                    else f"No new changes: {count} pack(s) are already on GitHub. Nothing was sent."
+                )
+            else:
+                message = (
+                    "Новых изменений для GitHub нет. Ничего не отправлено."
+                    if current_ui_language() == "ru"
+                    else "No new changes for GitHub. Nothing was sent."
+                )
+            console.print(Text(message))
+        else:
+            console.print(
+                Text(
+                    f"Подготовлено паков: {len(added)}; изменено файлов: {len(changed)}."
+                    if current_ui_language() == "ru"
+                    else f"Prepared packs: {len(added)}; changed files: {len(changed)}."
+                )
+            )
+        return True
     ru = current_ui_language() == "ru"
     if result.get("view") == "settings":
         table = Table()
