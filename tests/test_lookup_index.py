@@ -5,6 +5,7 @@ import json
 import sqlite3
 import subprocess
 from contextlib import closing
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -177,7 +178,10 @@ def test_changed_head_read_only_misses_and_writable_rebuilds(indexed_repo):
     collection = next(iter(snapshot.collections.values()))
     collection.title = "Changed fixture title"
     path = collection_path(collection.platform, collection.id)
-    (snapshot.root / path).write_bytes(snapshot.to_files()[path])
+    generated = snapshot.to_files()
+    (snapshot.root / path).write_bytes(generated[path])
+    catalog = snapshot.root / "data" / "telegram" / "collections" / "README.md"
+    catalog.write_bytes(generated[PurePosixPath("data/telegram/collections/README.md")])
     _commit(snapshot.root)
     assert _lookup(snapshot, index, read_only=True) is None
     assert index.read_bytes() == before

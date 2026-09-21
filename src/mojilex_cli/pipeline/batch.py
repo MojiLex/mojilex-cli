@@ -52,6 +52,8 @@ def _add_missing_packs(
             and base.emojis.get(item.emoji_id) == candidate.emojis.get(item.emoji_id)
             for item in memberships
         ):
+            if identifier in result.collections:
+                skipped.append(identifier)
             continue
         if identifier in result.tombstones:
             skipped.append(identifier)
@@ -183,7 +185,13 @@ def sync_packs_command(
     if not ready:
         return CommandResult(
             status=RunStatus.NOOP,
-            result={"added_packs": [], "skipped_packs": [], "changed_paths": []},
+            result={
+                "added_packs": [],
+                "skipped_packs": [],
+                "changed_paths": [],
+                "ready_runs_checked": 0,
+                "already_on_github": 0,
+            },
             warnings=warnings,
         )
     if not local:
@@ -276,12 +284,16 @@ def sync_packs_command(
         with _publication_progress(
             "Определение изменений для PR", "Finding changes for the pull request"
         ):
-            paths = _changed_paths(latest, merged)
+            # No pack contribution must not turn a legacy-layout base into a
+            # migration-only pull request.
+            paths = _changed_paths(latest, merged) if added else ()
         summary = {
             "added_packs": added,
             "skipped_packs": sorted(skipped - set(added)),
             "selected_runs": selected_runs,
             "changed_paths": [str(path) for path in paths],
+            "ready_runs_checked": len(ready),
+            "already_on_github": len((skipped - set(added)) & latest.collections.keys()),
         }
         if not paths:
             return CommandResult(status=RunStatus.NOOP, result=summary, warnings=warnings)

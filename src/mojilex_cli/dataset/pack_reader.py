@@ -33,7 +33,12 @@ def load_pack_snapshot(root: str | Path, names: Names[str]) -> DatasetSnapshot:
             snapshot = DatasetSnapshot(root_path, manifest, source_bytes=source)
             data_root = root_path / "data"
             assert_no_link_or_reparse(data_root, boundary=root_path)
-            for path in sorted(data_root.glob("*/collections/*/*/collection.json")):
+            catalog_file = data_root / "telegram" / "collections" / "README.md"
+            if catalog_file.is_file():
+                _read(catalog_file, root_path, source)
+            collection_files = set(data_root.glob("*/collections/*/collection.json"))
+            collection_files.update(data_root.glob("*/collections/*/*/collection.json"))
+            for path in sorted(collection_files):
                 collection = Collection.model_validate(
                     parse_json(_read(path, root_path, source), source=str(path))
                 )

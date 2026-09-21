@@ -9,9 +9,14 @@ for the run. A repeated `submit RUN_ID` fetches and reuses that run branch by cr
 fast-forward descendant with the exact validated tree; it never rewrites the branch. Contributors
 publish from their fork when they lack upstream write access.
 
-Emoji and visual-relation writes use eight hex characters of SHA-256: a two-character
-directory and a six-character filename. Readers still accept the previous two-plus-two
+Each collection has its own `data/<platform>/collections/<collection_id>/` directory.
+Readers accept the previous hash-prefixed collection directories for saved runs;
+new writes use the flat collection layout. Emoji and visual-relation writes use eight
+hex characters of SHA-256: a two-character directory and a six-character filename.
+Readers still accept the previous two-plus-two
 layout. Validated writes remove the old buckets atomically and preserve record contents.
+The Telegram collection catalog at `data/telegram/collections/README.md` is regenerated
+from collection records in the same validated write, so titles and links remain current.
 
 The data repository can enable **Refresh open data PRs** on changes to `main`. It uses
 trusted base code to merge data-only same-repository PRs by entity ID, validates the

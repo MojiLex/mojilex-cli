@@ -16,9 +16,11 @@ from pydantic import BaseModel, ValidationError
 
 from mojilex_cli.domain.models import Collection, Emoji, Membership, Tombstone, VisualRelation
 
+from .collection_catalog import render_catalog
 from .layout import (
     assert_no_link_or_reparse,
     collection_path,
+    collection_shard,
     emoji_bucket_path,
     legacy_bucket_path,
     memberships_path,
@@ -169,12 +171,33 @@ class DatasetSnapshot:
         for membership in self.memberships.values():
             memberships_by_collection.setdefault(membership.collection_id, []).append(membership)
         for collection in self.collections.values():
-            files[collection_path(collection.platform, collection.id)] = serialize_collection(
-                collection
-            )
-            files[memberships_path(collection.platform, collection.id)] = serialize_memberships(
+            collection_file = collection_path(collection.platform, collection.id)
+            membership_file = memberships_path(collection.platform, collection.id)
+            if preserve_legacy_paths:
+                legacy_dir = PurePosixPath(
+                    "data",
+                    collection.platform,
+                    "collections",
+                    collection_shard(collection.id),
+                    collection.id,
+                )
+                legacy_file = legacy_dir / "collection.json"
+                if legacy_file in self.source_bytes:
+                    collection_file = legacy_file
+                    membership_file = legacy_dir / "memberships.jsonl"
+            files[collection_file] = serialize_collection(collection)
+            files[membership_file] = serialize_memberships(
                 memberships_by_collection.get(collection.id, [])
             )
+        catalog_path = PurePosixPath("data", "telegram", "collections", "README.md")
+        if not preserve_legacy_paths or catalog_path in self.source_bytes:
+            telegram_collections = [
+                collection
+                for collection in self.collections.values()
+                if collection.platform == "telegram"
+            ]
+            if telegram_collections or catalog_path in self.source_bytes:
+                files[catalog_path] = render_catalog(telegram_collections)
         buckets: dict[PurePosixPath, list[Emoji]] = {}
         for emoji in self.emojis.values():
             path = source_paths.get(emoji.id, emoji_bucket_path(emoji.platform, emoji.id))
@@ -245,7 +268,12 @@ def _load_dataset_unlocked(
         data_root = root_path / "data"
         if data_root.exists():
             assert_no_link_or_reparse(data_root, boundary=root_path)
-            for collection_file in sorted(data_root.glob("*/collections/*/*/collection.json")):
+            catalog_file = data_root / "telegram" / "collections" / "README.md"
+            if catalog_file.is_file():
+                _read(catalog_file, root_path, source)
+            collection_files = set(data_root.glob("*/collections/*/collection.json"))
+            collection_files.update(data_root.glob("*/collections/*/*/collection.json"))
+            for collection_file in sorted(collection_files):
                 collection = _read_models(
                     _read(collection_file, root_path, source),
                     Collection,

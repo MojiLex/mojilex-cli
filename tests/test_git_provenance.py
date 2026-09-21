@@ -62,8 +62,8 @@ class GitProvenanceTests(unittest.TestCase):
             "rights/profiles.json": b"{}\n",
             "taxonomy/v1/taxonomy.json": b"{}\n",
             "data/telegram/emojis/00/00.jsonl": b"{}\n",
-            "data/telegram/collections/00/example/collection.json": b"{}\n",
-            "data/telegram/collections/00/example/memberships.jsonl": b"{}\n",
+            "data/telegram/collections/example/collection.json": b"{}\n",
+            "data/telegram/collections/example/memberships.jsonl": b"{}\n",
             "data/relations/visual/00/00.jsonl": b"{}\n",
             "tombstones/00/example.json": b"{}\n",
         }

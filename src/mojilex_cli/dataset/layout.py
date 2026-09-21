@@ -31,9 +31,7 @@ def visual_relation_shards(relation_id: str) -> tuple[str, str]:
 
 
 def collection_directory(platform: str, collection_id: str) -> PurePosixPath:
-    return PurePosixPath(
-        "data", platform, "collections", collection_shard(collection_id), collection_id
-    )
+    return PurePosixPath("data", platform, "collections", collection_id)
 
 
 def collection_path(platform: str, collection_id: str) -> PurePosixPath:
