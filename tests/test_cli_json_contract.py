@@ -6,6 +6,7 @@ import typer
 
 from mojilex_cli import cli
 from mojilex_cli.commands.runtime import CommandResult, execute
+from mojilex_cli.output.models import OutputEnvelope, RunStatus
 
 
 @pytest.mark.parametrize(
@@ -93,3 +94,32 @@ def test_debug_traceback_and_human_error_are_sanitized(
     assert captured_exit.value.exit_code == 1
     assert secret not in rendered
     assert "[REDACTED]" in rendered
+
+
+def test_credential_presence_flags_remain_visible_but_values_are_redacted() -> None:
+    envelope = OutputEnvelope(
+        ok=True,
+        command="doctor",
+        status=RunStatus.SUCCEEDED,
+        run_id="synthetic",
+        result={
+            "checks": {"credentials": {"telegram": True, "gemini": False}},
+            "credential_presence": {"github": True},
+            "raw_credentials": {"telegram": "must-stay-hidden"},
+            "malformed_credentials": {"telegram": "must-stay-hidden"},
+        },
+    )
+    result = json.loads(envelope.to_json())["result"]
+    assert result["checks"]["credentials"] == {"telegram": True, "gemini": False}
+    assert result["credential_presence"] == {"github": True}
+    assert result["raw_credentials"] == "[REDACTED]"
+    assert result["malformed_credentials"] == "[REDACTED]"
+    assert "must-stay-hidden" not in envelope.to_json()
+    unsafe = OutputEnvelope(
+        ok=True,
+        command="config show",
+        status=RunStatus.SUCCEEDED,
+        run_id="synthetic",
+        result={"credentials": {"telegram": "must-stay-hidden"}},
+    )
+    assert json.loads(unsafe.to_json())["result"]["credentials"] == "[REDACTED]"

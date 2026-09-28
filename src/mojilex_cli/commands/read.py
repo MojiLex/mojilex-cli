@@ -595,10 +595,13 @@ def _render_read_result(command: str, result: ReadCommandResult) -> None:
     ):
         typer.echo(
             local_text(
-                "The safe agent view can hide unverified records. For explicit diagnostics use "
-                "--view canonical --allow-unverified; this does not establish release trust.",
+                "The strict agent view excludes this unsigned corpus. For exploratory "
+                "search of mapped, unreviewed records use --view search "
+                "--include-unreviewed --allow-unverified; this does not establish release trust.",
                 "Безопасное представление может скрывать неподтверждённые записи. "
-                "Для явной диагностики используйте --view canonical --allow-unverified; "
+                "Для ознакомительного поиска записей после привязки понятий "
+                "используйте "
+                "--view search --include-unreviewed --allow-unverified; "
                 "это не подтверждает доверие к релизу.",
             )
         )

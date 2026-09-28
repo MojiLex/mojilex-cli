@@ -221,11 +221,10 @@ def init_command(
     ready = bool(
         checks["python"]["available"]
         and checks["git"]["available"]
-        and checks["git_identity"]["available"]
         and all(item["available"] and item["fixture_decoded"] for item in checks["media"])
         and credentials.telegram_bot_token
         and selected_credential
-        and (publish == "local" or github_ready)
+        and (publish == "local" or (checks["git_identity"]["available"] and github_ready))
     )
     return CommandResult(
         result={
@@ -245,7 +244,12 @@ def init_command(
 
 def doctor_command() -> CommandResult:
     config = load_config()
-    checks = _system_checks(repository=config.repository.target, include_github=False)
+    credentials = load_credentials()
+    checks = _system_checks(
+        repository=config.repository.target,
+        github_token=credentials.github_token,
+        include_github=True,
+    )
     if config.git_identity.name and config.git_identity.email:
         checks["git_identity"] = {
             "available": True,
@@ -253,25 +257,58 @@ def doctor_command() -> CommandResult:
             "email_configured": True,
             "source": "non-secret MojiLex configuration",
         }
-    credentials = load_credentials()
     checks["credentials"] = {
         "telegram": bool(credentials.telegram_bot_token),
         "gemini": bool(credentials.gemini_api_key),
         "openai": bool(credentials.openai_api_key),
         "github": bool(credentials.github_token),
     }
-    warnings = _check_warnings(checks)
+    warnings = _check_warnings(checks, required_publication=config.repository.publish)
+    if not config.ai.model.strip():
+        warnings.append("No AI model is configured; run `mojilex settings` to select one.")
+    if config.ai.provider != "gemini":
+        warnings.append(
+            f"AI provider {config.ai.provider!r} is unsupported; this release supports gemini."
+        )
+    if not credentials.telegram_bot_token:
+        warnings.append(
+            "Telegram credential is unavailable; save it in the system keyring or enter it "
+            "when an interactive authoring command asks."
+        )
+    if config.ai.provider == "gemini" and not credentials.gemini_api_key:
+        warnings.append(
+            "Gemini credential is unavailable; save it in the system keyring or enter it "
+            "when an interactive authoring command asks."
+        )
     install_commands = _media_install_commands(checks)
     if install_commands:
         warnings.append("Install missing media backends with: " + install_commands[0])
-    ready = bool(
+    media_ready = bool(
         checks["python"]["available"]
-        and checks["git"]["available"]
         and all(item["available"] and item["fixture_decoded"] for item in checks["media"])
     )
+    authoring_ready = bool(
+        media_ready
+        and checks["git"]["available"]
+        and config.ai.provider == "gemini"
+        and config.ai.model.strip()
+        and credentials.telegram_bot_token
+        and credentials.gemini_api_key
+    )
+    publication_ready = bool(
+        authoring_ready
+        and checks["github_cli"]["available"]
+        and checks["git_identity"]["available"]
+        and checks["github_access"]["can_publish_pr"]
+    )
+    ready = authoring_ready if config.repository.publish == "local" else publication_ready
     return CommandResult(
         result={
             "checks": checks,
+            "media_ready": media_ready,
+            "authoring_ready": authoring_ready,
+            "publication_ready": publication_ready,
+            "configured_publication": config.repository.publish,
             "ready": ready,
             "install_commands": install_commands,
         },
@@ -442,8 +479,6 @@ def _schedule_windows_uninstall(*, uv: str, keep_data: bool) -> None:
     ]
     if keep_data:
         invocation.append("-KeepData")
-    if not keep_data:
-        delete_stored_credentials()
     try:
         subprocess.Popen(
             invocation,
@@ -538,7 +573,7 @@ def _check_warnings(
         warnings.append("The active Python interpreter could not execute --version.")
     if not checks["git"]["available"]:
         warnings.append("Git is not available on PATH.")
-    if not checks["git_identity"]["available"]:
+    if required_publication == "pr" and not checks["git_identity"]["available"]:
         warnings.append(
             "Git user.name and user.email are not both configured; set them in the dataset "
             "repository or add both values to the non-secret MojiLex configuration."

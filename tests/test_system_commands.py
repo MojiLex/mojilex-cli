@@ -200,19 +200,145 @@ def test_init_accepts_read_only_target_for_supported_fork_pr_flow(
     assert not any("GitHub" in str(item) for item in result.warnings)
 
 
+@pytest.mark.parametrize(("publish", "expected_ready"), [("local", True), ("pr", False)])
+def test_init_requires_git_identity_only_for_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish: str, expected_ready: bool
+) -> None:
+    checks = _checks()
+    checks["git_identity"] = {
+        "available": False,
+        "name_configured": False,
+        "email_configured": False,
+    }
+    monkeypatch.setattr(system, "_effective_git_identity", lambda _repository: None)
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(
+        system,
+        "load_credentials",
+        lambda: Credentials(telegram_bot_token="synthetic", gemini_api_key="synthetic"),
+    )
+
+    result = system.init_command(
+        repo="MojiLex/mojilex",
+        provider="gemini",
+        model="synthetic-model",
+        publish=publish,
+        config_path=tmp_path / "config.toml",
+        force=False,
+    )
+
+    assert result.result["ready"] is expected_ready
+    assert any("Git user.name" in str(item) for item in result.warnings) is (publish == "pr")
+
+
 def test_doctor_includes_active_python_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     checks = _checks()
-    checks.pop("github_access")
+    kwargs: dict[str, object] = {}
+
+    def system_checks(**options: object) -> dict[str, object]:
+        kwargs.update(options)
+        return checks
+
+    monkeypatch.setattr(system, "_system_checks", system_checks)
+    monkeypatch.setattr(
+        system,
+        "load_credentials",
+        lambda: Credentials(telegram_bot_token="synthetic", gemini_api_key="synthetic"),
+    )
+    monkeypatch.setattr(
+        system,
+        "load_config",
+        lambda: MojiLexConfig.model_validate({"ai": {"model": "synthetic-model"}}),
+    )
+
+    result = system.doctor_command()
+
+    assert kwargs["include_github"] is True
+    assert result.result["checks"]["python"]["available"] is True
+    assert result.result["media_ready"] is True
+    assert result.result["authoring_ready"] is True
+    assert result.result["publication_ready"] is True
+    assert result.result["ready"] is True
+    assert result.result["install_commands"] == []
+    assert result.status is RunStatus.SUCCEEDED
+
+
+def test_doctor_separates_local_authoring_from_pr_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = _checks(can_publish_pr=False)
     monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(
+        system,
+        "load_credentials",
+        lambda: Credentials(telegram_bot_token="synthetic", gemini_api_key="synthetic"),
+    )
+    monkeypatch.setattr(
+        system,
+        "load_config",
+        lambda: MojiLexConfig.model_validate(
+            {"repository": {"publish": "local"}, "ai": {"model": "synthetic-model"}}
+        ),
+    )
+
+    local = system.doctor_command()
+    assert local.result["media_ready"] is True
+    assert local.result["authoring_ready"] is True
+    assert local.result["publication_ready"] is False
+    assert local.result["ready"] is True
+
+    monkeypatch.setattr(
+        system,
+        "load_config",
+        lambda: MojiLexConfig.model_validate({"ai": {"model": "synthetic-model"}}),
+    )
+    publication = system.doctor_command()
+    assert publication.result["configured_publication"] == "pr"
+    assert publication.result["ready"] is False
+    assert publication.status is RunStatus.PARTIAL
+
+
+def test_doctor_reports_missing_credentials_without_revealing_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: _checks())
     monkeypatch.setattr(system, "load_credentials", Credentials)
     monkeypatch.setattr(system, "load_config", MojiLexConfig)
 
     result = system.doctor_command()
+    assert result.result["media_ready"] is True
+    assert result.result["authoring_ready"] is False
+    assert result.result["ready"] is False
+    assert result.result["checks"]["credentials"] == {
+        "telegram": False,
+        "gemini": False,
+        "openai": False,
+        "github": False,
+    }
+    assert any("interactive authoring command" in str(warning) for warning in result.warnings)
 
-    assert result.result["checks"]["python"]["available"] is True
-    assert result.result["ready"] is True
-    assert result.result["install_commands"] == []
-    assert result.status is RunStatus.SUCCEEDED
+
+def test_doctor_media_readiness_is_independent_of_git_and_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = _checks()
+    checks["git"] = {"available": False}
+    monkeypatch.setattr(system, "_system_checks", lambda **_kwargs: checks)
+    monkeypatch.setattr(system, "load_credentials", Credentials)
+    monkeypatch.setattr(
+        system,
+        "load_config",
+        lambda: MojiLexConfig.model_validate(
+            {"ai": {"provider": "openai", "model": "synthetic-model"}}
+        ),
+    )
+
+    result = system.doctor_command()
+    assert result.result["media_ready"] is True
+    assert result.result["authoring_ready"] is False
+    assert result.result["ready"] is False
+    assert any("provider 'openai' is unsupported" in str(item) for item in result.warnings)
+    assert not any("Gemini credential" in str(item) for item in result.warnings)
 
 
 def test_doctor_prints_windows_media_install_command_when_tgs_is_missing(

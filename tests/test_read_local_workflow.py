@@ -196,5 +196,5 @@ def test_empty_unsigned_agent_view_explains_diagnostic_option(capsys):
     with use_ui_language("ru"):
         read.execute_read("search", lambda: result, json_output=False)
     text = capsys.readouterr().out
-    assert "--view canonical --allow-unverified" in text
+    assert "--view search --include-unreviewed --allow-unverified" in text
     assert "не подтверждает доверие" in text

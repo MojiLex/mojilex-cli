@@ -20,6 +20,34 @@ try {
         throw "uv tool uninstall failed with exit code $LASTEXITCODE."
     }
 
+    if (-not $KeepData) {
+        # python-keyring's Windows backend stores these generic credentials under
+        # the service name and, after collisions, username@service. Remove them
+        # only once uv has confirmed that the package was uninstalled.
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class MojiLexCredentialApi {
+    [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool Delete(string target, int type, int flags);
+}
+'@
+        $targets = @('mojilex-cli')
+        foreach ($name in @('TELEGRAM_BOT_TOKEN', 'GEMINI_API_KEY', 'OPENAI_API_KEY')) {
+            $targets += "${name}@mojilex-cli"
+        }
+        foreach ($target in $targets) {
+            if (-not [MojiLexCredentialApi]::Delete($target, 1, 0)) {
+                $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                if ($errorCode -ne 1168) {
+                    throw "Windows Credential Manager could not remove MojiLex credentials (error $errorCode)."
+                }
+            }
+        }
+    }
+
     if (Test-Path -LiteralPath $AdapterPath -PathType Leaf) {
         Remove-Item -LiteralPath $AdapterPath -Force
     }
