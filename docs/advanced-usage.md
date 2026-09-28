@@ -230,7 +230,7 @@ to that path.
 ```console
 mojilex snapshots
 mojilex snapshot verify PATH
-mojilex search "celebration" --snapshot PATH --view search --allow-unverified
+mojilex search "celebration" --snapshot PATH --view search --include-unreviewed --allow-unverified
 mojilex get TELEGRAM_CUSTOM_EMOJI_ID --snapshot PATH --allow-unverified
 ```
 
@@ -240,10 +240,14 @@ native IDs. Reads are offline and never call Telegram, AI, decoders, or a catalo
 
 The MVP `distribution-v1` snapshot is integrity-checked but unsigned. Reading it
 requires explicit diagnostic opt-in with `--allow-unverified`; this does not
-establish trust and `runtime_trust.safe_eligible` remains false. The default
-`agent` view can therefore be empty even with that flag. Use an explicit `search`
-or `canonical` view for diagnostic searches. Signed catalog enforcement,
-revocations, attestations, partitioned releases, and deltas are future work.
+establish trust and `runtime_trust.safe_eligible` remains false. Current source
+descriptions are AI-generated and unreviewed, so an exploratory search also
+needs `--include-unreviewed`. The default strict `agent` view returns no records
+from this corpus. Derived search contains only records with completed concept
+mapping; `get` in canonical view, or the data repository itself, can access
+records whose mapping is pending. Treat the description and review fields as
+source claims, not verified facts. Signed catalog enforcement, revocations,
+attestations, partitioned releases, and deltas are future work.
 
 ## Command reference
 
@@ -269,8 +273,8 @@ handling, and [Benchmarks](benchmarks.md) for evaluation commands.
 
 ## Troubleshooting and removal
 
-For missing media components, run `mojilex doctor`; check the reported `ready`
-value, not just whether the diagnostic command succeeded. On supported Windows
+For missing media components, run `mojilex doctor`; check the reported
+`media_ready` value, not just whether the diagnostic command succeeded. On supported Windows
 setups, `doctor --install` installs the missing FFmpeg or TGS components. TGS
 requires the lossless `mojilex-rlottie-rgba` adapter; upstream `lottie2gif` is not
 supported. See [Media prerequisites](media-prerequisites.md), then resume the

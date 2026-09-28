@@ -236,7 +236,7 @@ mojilex submit mlxrun_YOUR_ID --direct-push
 ```console
 mojilex snapshots
 mojilex snapshot verify PATH
-mojilex search "celebration" --snapshot PATH --view search --allow-unverified
+mojilex search "celebration" --snapshot PATH --view search --include-unreviewed --allow-unverified
 mojilex get TELEGRAM_CUSTOM_EMOJI_ID --snapshot PATH --allow-unverified
 ```
 
@@ -248,10 +248,14 @@ mojilex get TELEGRAM_CUSTOM_EMOJI_ID --snapshot PATH --allow-unverified
 В MVP снимок `distribution-v1` проверяется на целостность, но не подписан.
 Для его чтения нужно явное диагностическое согласие `--allow-unverified`; оно
 не делает выпуск доверенным, а `runtime_trust.safe_eligible` остаётся false.
-Поэтому представление `agent` по умолчанию может быть пустым даже с этим флагом.
-Для диагностического поиска явно выбирайте `search` или `canonical`.
-Проверка подписанных каталогов, отзывы выпусков, аттестации, разделённые выпуски
-и дельты пока запланированы на будущее.
+Текущие описания созданы AI и не проверены человеком, поэтому для ознакомительного
+поиска нужен также `--include-unreviewed`. Строгое представление `agent` по
+умолчанию не возвращает записи из этого корпуса. В производный поиск входят
+только записи с завершённой привязкой понятий; `get` в каноническом представлении
+или сам репозиторий данных позволяют читать и записи с ожидающей привязкой.
+Считайте описания и поля проверки утверждениями источника, а не подтверждёнными
+фактами. Проверка подписанных каталогов, отзывы выпусков, аттестации, разделённые
+выпуски и дельты пока запланированы на будущее.
 
 ## Справочник команд
 
@@ -278,7 +282,7 @@ mojilex get TELEGRAM_CUSTOM_EMOJI_ID --snapshot PATH --allow-unverified
 ## Устранение проблем и удаление
 
 Если не хватает компонентов медиа, запустите `mojilex doctor`; смотрите значение
-`ready`, а не только успешное завершение диагностики. На поддерживаемых Windows
+`media_ready`, а не только успешное завершение диагностики. На поддерживаемых Windows
 команда `doctor --install` устанавливает недостающие компоненты FFmpeg или TGS.
 TGS требует адаптер без потерь `mojilex-rlottie-rgba`; исходная утилита `lottie2gif`
 не поддерживается. См. [Компоненты медиа](media-prerequisites.md), затем продолжите

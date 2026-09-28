@@ -15,7 +15,8 @@ Use the terminal menu with arrow keys. No repository cloning, IDE or internal ru
 
 ## Native media platform support
 
-Windows and Linux support isolated media processing when `mojilex doctor` succeeds.
+Windows and Linux support isolated media processing when `mojilex doctor`
+reports `media_ready: true`.
 On macOS versions that reject the exact hard worker memory cap, media processing
 is unavailable; `doctor` reports this and decoding fails before producing output.
 The limit is never raised or disabled automatically. Dataset commands remain
@@ -116,6 +117,10 @@ analysis asks for missing keys for that invocation. `init` never asks for keys.
 Follow any missing-component instructions from `doctor`. On Windows it offers
 WebM/TGS tool installation; TGS can require administrator approval and a sizeable
 Visual Studio Build Tools installation. For Linux/macOS, follow [media prerequisites](docs/media-prerequisites.md).
+`doctor` reports media, local authoring and PR prerequisites separately. Its `ready`
+field applies to the configured publication mode; missing saved keys can still be
+entered privately for a single interactive authoring command. GitHub access is a
+read-only preflight check, not proof that a PR was submitted.
 
 ## Your first pack
 
@@ -139,6 +144,13 @@ cannot be verified; browsing never changes the cache or spends AI requests.
 Example details, rendered by the program using sample data:
 
 ![Example Russian and English descriptions](docs/assets/details-en.svg)
+
+MojiLex CLI is primarily a contributor tool. Reading local release snapshots is
+experimental, and snapshot search does not cover every record in the GitHub dataset.
+For exploratory search in a local unsigned snapshot, use
+`mojilex search "QUERY" --snapshot PATH --view search --include-unreviewed --allow-unverified`.
+See [advanced usage](docs/advanced-usage.md) for its scope and trust limits; this is
+not a complete public agent API.
 
 ## Multiple packs from a file
 
@@ -394,7 +406,7 @@ not every pack on Telegram or GitHub.
 | Check a draft without uploading | `mojilex publish NewsEmoji --local` |
 | Submit results through a GitHub PR | `mojilex publish NewsEmoji` |
 | Change model, limits or parallelism | `mojilex settings` |
-| Diagnose tools and access | `mojilex doctor` |
+| Check media, authoring keys and PR prerequisites | `mojilex doctor` |
 
 For a new pack through commands, run `mojilex import "PACK_URL"`, then
 `mojilex describe PACK_NAME`. Replace the placeholders with your link and pack

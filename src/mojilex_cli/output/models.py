@@ -107,6 +107,7 @@ _TOKEN_RE = re.compile(
     r"\bgithub_pat_[A-Za-z0-9_]{30,}\b|https://api\.telegram\.org/file/bot[^\s\"']+)"
 )
 _SECRET_KEY_RE = re.compile(r"(?:token|secret|password|credential|authorization|api[_-]?key)", re.I)
+_CREDENTIAL_PRESENCE_KEYS = frozenset({"telegram", "gemini", "openai", "github"})
 _AUTH_SCHEME_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[^\s,;\"'<>]+")
 _NAMED_CREDENTIAL_RE = re.compile(
     r"(?i)(\b(?:(?:[a-z0-9]+[_-])*(?:token|secret|password|credential)"
@@ -140,7 +141,15 @@ def redact(value: Any) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             text_key = str(key)
-            if _SECRET_KEY_RE.search(text_key):
+            if (
+                text_key in {"credentials", "credential_presence"}
+                and isinstance(item, Mapping)
+                and set(item).issubset(_CREDENTIAL_PRESENCE_KEYS)
+                and all(type(present) is bool for present in item.values())
+            ):
+                # These explicit presence flags contain no credential values.
+                result[text_key] = dict(item)
+            elif _SECRET_KEY_RE.search(text_key):
                 result[text_key] = "[REDACTED]"
             else:
                 result[text_key] = redact(item)

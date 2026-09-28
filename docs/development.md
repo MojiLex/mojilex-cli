@@ -82,8 +82,9 @@ on Linux/macOS. WebP support comes with Pillow; WebM needs FFmpeg/ffprobe and TG
 needs the lossless MojiLex rlottie RGBA adapter. See
 [Media prerequisites](media-prerequisites.md) for setup and fixture checks.
 
-`doctor` succeeding means diagnostics completed; readiness also requires its
-reported `ready` value to be true. On supported Windows setups, `doctor --install`
+`doctor` succeeding means diagnostics completed; media readiness requires its
+reported `media_ready` value to be true. Its `ready` value also includes the
+configured authoring and PR prerequisites. On supported Windows setups, `doctor --install`
 can install missing components and may request administrator approval or install
 Visual Studio C++ Build Tools for the adapter.
 
