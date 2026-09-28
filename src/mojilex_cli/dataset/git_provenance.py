@@ -11,13 +11,24 @@ from typing import Any, cast
 _SOURCE_ROOTS = (
     "analysis-profiles",
     "data",
+    "examples",
     "platforms",
+    "quality",
     "rights",
     "schemas",
     "taxonomy",
     "tombstones",
+    "tools",
 )
-_REQUIRED_SOURCE_FILES = {"dataset.json"}
+_REQUIRED_SOURCE_FILES = {
+    "dataset.json",
+    "requirements-dev.txt",
+    "tools/build_index.py",
+    "tools/common.py",
+    "tools/git_provenance.py",
+    "tools/spec003_build.py",
+}
+_BLOB_BATCH_SIZE = 256
 _TOOL_SOURCE_ROOT = "src/mojilex_cli"
 _TOOL_REQUIRED_SOURCE_FILES = {"pyproject.toml"}
 _TOOL_SOURCE_SUFFIXES = {".json", ".py", ".typed"}
@@ -29,7 +40,9 @@ class GitSourceProvenance:
     object_format: str
 
 
-def _git(root: Path, *arguments: str, text: bool = False) -> subprocess.CompletedProcess[Any]:
+def _git(
+    root: Path, *arguments: str, text: bool = False, input_data: bytes | None = None
+) -> subprocess.CompletedProcess[Any]:
     command = [
         "git",
         "-c",
@@ -42,6 +55,7 @@ def _git(root: Path, *arguments: str, text: bool = False) -> subprocess.Complete
         command,
         check=False,
         capture_output=True,
+        input=input_data,
         text=text,
         encoding="utf-8" if text else None,
         errors="strict" if text else None,
@@ -76,6 +90,8 @@ def _is_source_path(relative: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == "analysis-profiles" and path.suffix == ".json":
         return True
+    if parts and parts[0] in {"examples", "quality"} and path.suffix == ".json":
+        return True
     if len(parts) == 2 and parts[0] == "platforms" and path.suffix == ".json":
         return True
     if relative == "rights/profiles.json":
@@ -92,9 +108,13 @@ def _is_source_path(relative: str) -> bool:
         return True
     if len(parts) == 3 and parts[0] == "tombstones" and path.suffix == ".json":
         return True
-    if len(parts) == 6 and parts[0] == "data" and parts[2] == "collections":
-        return parts[-1] in {"collection.json", "memberships.jsonl"}
-    if len(parts) == 5 and parts[0] == "data" and parts[2] == "emojis":
+    if len(parts) == 2 and parts[0] == "tools" and path.suffix == ".py":
+        return True
+    if len(parts) in {5, 6} and parts[0] == "data" and parts[2] == "collections":
+        return parts[-1] in {"collection.json", "memberships.jsonl", "README.md"}
+    if relative == "data/telegram/collections/README.md":
+        return True
+    if len(parts) in {4, 5} and parts[0] == "data" and parts[2] == "emojis":
         return path.suffix == ".jsonl"
     return (
         len(parts) == 5 and parts[:3] == ("data", "relations", "visual") and path.suffix == ".jsonl"
@@ -291,6 +311,7 @@ def verify_release_source(root: Path, revision: str) -> GitSourceProvenance:
     if untracked:
         raise ValueError(f"source paths are absent from commit {revision}: {untracked!r}")
 
+    blobs: list[tuple[str, Path, str]] = []
     for relative in sorted(current_paths, key=lambda item: item.encode("utf-8")):
         path = root / PurePosixPath(relative)
         if _is_link_or_reparse(path) or not path.is_file():
@@ -299,12 +320,41 @@ def verify_release_source(root: Path, revision: str) -> GitSourceProvenance:
         object_type, object_id = typed_object.split(":", 1)
         if object_type != "blob" or mode not in {"100644", "100755"}:
             raise ValueError(f"source path is not a regular Git blob at {revision}: {relative}")
-        blob = _git(root, "cat-file", "blob", object_id)
-        if blob.returncode:
-            detail = blob.stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(f"cannot read committed source path {relative!r}: {detail}")
-        if path.read_bytes() != blob.stdout:
-            raise ValueError(f"source path differs from commit {revision}: {relative}")
+        blobs.append((relative, path, object_id))
+
+    for offset in range(0, len(blobs), _BLOB_BATCH_SIZE):
+        batch = blobs[offset : offset + _BLOB_BATCH_SIZE]
+        requests = b"".join(object_id.encode("ascii") + b"\n" for _, _, object_id in batch)
+        result = _git(root, "cat-file", "--batch", input_data=requests)
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"cannot read committed source blobs: {detail}")
+        position = 0
+        for relative, path, object_id in batch:
+            end_of_header = result.stdout.find(b"\n", position)
+            if end_of_header < 0:
+                raise ValueError(f"malformed Git blob response for {relative!r}")
+            header = result.stdout[position:end_of_header].split(b" ")
+            if (
+                len(header) != 3
+                or header[0] != object_id.encode("ascii")
+                or header[1] != b"blob"
+                or not header[2].isdigit()
+            ):
+                raise ValueError(f"unexpected Git blob response for {relative!r}")
+            size = int(header[2])
+            start_of_blob = end_of_header + 1
+            end_of_blob = start_of_blob + size
+            if (
+                end_of_blob >= len(result.stdout)
+                or result.stdout[end_of_blob : end_of_blob + 1] != b"\n"
+            ):
+                raise ValueError(f"truncated Git blob response for {relative!r}")
+            if path.read_bytes() != result.stdout[start_of_blob:end_of_blob]:
+                raise ValueError(f"source path differs from commit {revision}: {relative}")
+            position = end_of_blob + 1
+        if position != len(result.stdout):
+            raise ValueError("unexpected trailing Git blob response")
     return GitSourceProvenance(commit=revision, object_format=object_format)
 
 

@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from mojilex_cli.dataset.layout import emoji_bucket_path, legacy_bucket_path
+from mojilex_cli.dataset.layout import (
+    emoji_bucket_path,
+    legacy_bucket_path,
+    previous_emoji_bucket_path,
+)
 from mojilex_cli.dataset.pack_reader import load_pack_snapshot
 from mojilex_cli.dataset.repository import DatasetLoadError, load_dataset
 from test_dataset_helpers import write_fixture
@@ -33,13 +37,19 @@ def test_unrequested_emoji_buckets_are_not_read(tmp_path, monkeypatch):
     assert not any("emojis" in path.parts for path in reads)
 
 
-def test_legacy_bucket_is_read_and_duplicate_ids_are_rejected(tmp_path):
+@pytest.mark.parametrize("previous", [False, True])
+def test_older_bucket_is_read_and_duplicate_ids_are_rejected(tmp_path, previous):
     fixture = write_fixture(tmp_path)
     emoji = next(iter(fixture.emojis.values()))
     relative = emoji_bucket_path(emoji.platform, emoji.id)
     current = tmp_path / relative
-    legacy = tmp_path / legacy_bucket_path(relative)
+    legacy = tmp_path / (
+        previous_emoji_bucket_path(emoji.platform, emoji.id)
+        if previous
+        else legacy_bucket_path(relative)
+    )
     data = current.read_bytes()
+    legacy.parent.mkdir(parents=True, exist_ok=True)
     current.rename(legacy)
     assert load_pack_snapshot(tmp_path, {"SuspiciousCats"}).emojis == fixture.emojis
     current.write_bytes(data)

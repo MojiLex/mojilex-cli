@@ -102,7 +102,7 @@ def module_profile(emoji, kind):
 
 def test_legacy_load_is_explicit_and_preserves_original_bytes(tmp_path):
     write_fixture(tmp_path)
-    path = next((tmp_path / "data").glob("*/emojis/*/*.jsonl"))
+    path = next((tmp_path / "data").glob("*/emojis/*.jsonl"))
     payload = json.loads(path.read_text())
     payload.pop("fingerprints")
     raw = (json.dumps(payload, ensure_ascii=False) + "\n").encode()
@@ -453,7 +453,7 @@ def test_command_does_not_mask_noncanonical_untouched_source_bytes(
 @pytest.mark.parametrize("field", ["media", "dedupe_profile"])
 def test_malformed_legacy_backfill_input_has_typed_load_failure(tmp_path, field):
     write_fixture(tmp_path)
-    bucket = next((tmp_path / "data").glob("*/emojis/*/*.jsonl"))
+    bucket = next((tmp_path / "data").glob("*/emojis/*.jsonl"))
     emoji = json.loads(bucket.read_text())
     emoji.pop("fingerprints")
     if field == "media":

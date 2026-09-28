@@ -284,7 +284,7 @@ An explicit `resume` keeps saved settings unless overridden.
 Startup uses a rebuildable local run index to select saved work without parsing
 every historical checkpoint. Index entries are tied to checkpoint contents; stale
 or damaged entries fall back to the original checkpoint. Ready-pack checks read
-only the emoji buckets needed by those packs. In the interactive `fast` workflow,
+only the emoji files needed by those packs. In the interactive `fast` workflow,
 Telegram update checks for completed packs run alongside unfinished work. Updates
 are applied after active checkpoint writers finish, and newly discovered work is
 then analyzed. Other queue modes keep their stage ordering.

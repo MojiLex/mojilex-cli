@@ -13,6 +13,9 @@ from mojilex_cli.runs import RunStore
 from test_add_run_staging import saved_add  # noqa: F401
 from test_pipeline_resume_cache import _collection, _item, _processed
 
+# Sequential runs perform two durable pack writes and full on-disk validation.
+_SEQUENTIAL_PACK_RUN_TIMEOUT = 20
+
 
 @pytest.fixture
 def pipeline(request, monkeypatch):
@@ -163,7 +166,7 @@ async def test_pack_stages_finish_in_input_order_before_next_pack_starts(pipelin
 
     monkeypatch.setattr(runner, "_prepare_collection_media", media)
     monkeypatch.setattr(runner, "_descriptions_for_collection", describe)
-    result = await asyncio.wait_for(state.run(), 5)
+    result = await asyncio.wait_for(state.run(), _SEQUENTIAL_PACK_RUN_TIMEOUT)
     assert not result.errors
     assert order == ["PackAlpha", "PackBeta"]
     assert state.merges == ["PackAlpha", "PackBeta"]
@@ -193,7 +196,7 @@ async def test_composition_evidence_is_merged_from_latest_checkpoint_after_await
         return [SimpleNamespace(model_dump=lambda **_: {"pack": key})]
 
     state.queue.prepare = prepare
-    result = await asyncio.wait_for(state.run(), 5)
+    result = await asyncio.wait_for(state.run(), _SEQUENTIAL_PACK_RUN_TIMEOUT)
     assert not result.errors
     assert state.queue_evidence == {
         "PackAlpha": [{"pack": "PackAlpha"}],

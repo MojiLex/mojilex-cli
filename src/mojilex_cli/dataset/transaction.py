@@ -591,8 +591,14 @@ def _current_canonical_dataset_paths(root: Path) -> set[PurePosixPath]:
                 )
             if path.is_file():
                 relative = PurePosixPath(path.relative_to(root).as_posix())
-                if path.suffix in {".json", ".jsonl"} or relative == PurePosixPath(
-                    "data", "telegram", "collections", "README.md"
+                if (
+                    path.suffix in {".json", ".jsonl"}
+                    or relative == PurePosixPath("data", "telegram", "collections", "README.md")
+                    or (
+                        relative.parts[:3] == ("data", "telegram", "collections")
+                        and relative.name == "README.md"
+                        and len(relative.parts) in (5, 6)
+                    )
                 ):
                     result.add(relative)
     return result

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mojilex_cli.commands.dataset import build_index_command
+from mojilex_cli.dataset import git_provenance
 from mojilex_cli.dataset.git_provenance import (
     GitSourceProvenance,
     resolve_head_revision,
@@ -62,8 +63,11 @@ class GitProvenanceTests(unittest.TestCase):
             "rights/profiles.json": b"{}\n",
             "taxonomy/v1/taxonomy.json": b"{}\n",
             "data/telegram/emojis/00/00.jsonl": b"{}\n",
+            f"data/telegram/emojis/{'a' * 64}.jsonl": b"{}\n",
+            "data/telegram/collections/README.md": b"# Catalog\n",
             "data/telegram/collections/example/collection.json": b"{}\n",
             "data/telegram/collections/example/memberships.jsonl": b"{}\n",
+            "data/telegram/collections/example/README.md": b"# Pack\n",
             "data/relations/visual/00/00.jsonl": b"{}\n",
             "tombstones/00/example.json": b"{}\n",
         }
@@ -172,6 +176,50 @@ class GitProvenanceTests(unittest.TestCase):
             (root / "dataset.json").write_bytes(b'{"changed":true}\n')
             with self.assertRaisesRegex(ValueError, "differs from commit"):
                 verify_release_source(root, revision)
+
+    def test_rejects_modified_full_hash_emoji_and_generated_pages(self) -> None:
+        sources = (
+            f"data/telegram/emojis/{'a' * 64}.jsonl",
+            "data/telegram/collections/README.md",
+            "data/telegram/collections/example/README.md",
+            "data/telegram/collections/example/collection.json",
+            "data/telegram/collections/example/memberships.jsonl",
+        )
+        for relative in sources:
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temporary:
+                root, revision = self._repository(Path(temporary))
+                (root / relative).write_bytes(b"changed\n")
+                with self.assertRaisesRegex(ValueError, "differs from commit"):
+                    verify_release_source(root, revision)
+
+    def test_rejects_untracked_full_hash_emoji_and_generated_page(self) -> None:
+        sources = (
+            f"data/telegram/emojis/{'b' * 64}.jsonl",
+            "data/telegram/collections/another/README.md",
+        )
+        for relative in sources:
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temporary:
+                root, revision = self._repository(Path(temporary))
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"new\n")
+                with self.assertRaisesRegex(ValueError, "absent from commit"):
+                    verify_release_source(root, revision)
+
+    def test_blob_verification_is_bounded_in_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = self._repository(Path(temporary))
+            for index in range(257):
+                (root / "data" / "telegram" / "emojis" / f"{index:064x}.jsonl").write_bytes(b"{}\n")
+            self._git(root, "add", "--all")
+            self._git(root, "commit", "-m", "many emoji files")
+            revision = self._git(root, "rev-parse", "HEAD").stdout.strip()
+            with patch.object(git_provenance, "_git", wraps=git_provenance._git) as command:
+                verify_release_source(root, revision)
+            batch_calls = [
+                call for call in command.call_args_list if call.args[1:] == ("cat-file", "--batch")
+            ]
+            self.assertEqual(len(batch_calls), 2)
 
     def test_rejects_untracked_allowlisted_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

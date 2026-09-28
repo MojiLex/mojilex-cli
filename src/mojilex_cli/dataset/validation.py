@@ -510,10 +510,15 @@ def _validate_ids_and_paths(
             if not directory.exists():
                 continue
             for source_path in directory.rglob("*"):
-                if source_path.is_file() and source_path.suffix in {".json", ".jsonl"}:
-                    actual_paths.add(
-                        PurePosixPath(source_path.relative_to(snapshot.root).as_posix())
+                relative = PurePosixPath(source_path.relative_to(snapshot.root).as_posix())
+                if source_path.is_file() and (
+                    source_path.suffix in {".json", ".jsonl"}
+                    or (
+                        relative.parts[:3] == ("data", "telegram", "collections")
+                        and relative.name == "README.md"
                     )
+                ):
+                    actual_paths.add(relative)
         for extra in sorted(actual_paths - set(expected_files), key=str):
             _issue(issues, "PATH", str(extra), "unexpected or non-canonical entity file")
 
