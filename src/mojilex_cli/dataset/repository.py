@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from mojilex_cli.domain.models import Collection, Emoji, Membership, Tombstone, VisualRelation
 
-from .collection_catalog import render_catalog
+from .collection_catalog import render_catalog, render_legacy_catalog, render_pack_page
 from .layout import (
     assert_no_link_or_reparse,
     collection_path,
@@ -24,6 +24,7 @@ from .layout import (
     emoji_bucket_path,
     legacy_bucket_path,
     memberships_path,
+    previous_emoji_bucket_path,
     tombstone_path,
     visual_relations_path,
 )
@@ -131,10 +132,10 @@ class DatasetSnapshot:
         )
 
     def bucket_source_paths(self) -> dict[str, PurePosixPath]:
-        """Locate records in valid current or legacy buckets without rewriting input."""
+        """Locate records in valid current or older buckets without rewriting input."""
         locations: dict[str, PurePosixPath] = {}
         for path, data in self.source_bytes.items():
-            if len(path.parts) != 5 or path.suffix != ".jsonl":
+            if len(path.parts) not in (4, 5) or path.suffix != ".jsonl":
                 continue
             if path.parts[0] != "data" or not (
                 path.parts[2] == "emojis" or path.parts[1:3] == ("relations", "visual")
@@ -149,18 +150,25 @@ class DatasetSnapshot:
                 if not isinstance(identifier, str):
                     continue
                 emoji = self.emojis.get(identifier)
+                allowed: tuple[PurePosixPath, ...]
                 if emoji is not None:
                     expected = emoji_bucket_path(emoji.platform, identifier)
+                    allowed = (
+                        expected,
+                        previous_emoji_bucket_path(emoji.platform, identifier),
+                        legacy_bucket_path(expected),
+                    )
                 elif identifier in self.relations:
                     expected = visual_relations_path(identifier)
+                    allowed = (expected, legacy_bucket_path(expected))
                 else:
                     continue
-                if path in (expected, legacy_bucket_path(expected)):
+                if path in allowed:
                     locations[identifier] = path
         return locations
 
     def to_files(self, *, preserve_legacy_paths: bool = False) -> dict[PurePosixPath, bytes]:
-        """Serialize new eight-hex buckets; optionally validate the original storage layout."""
+        """Serialize full-hash emoji files; optionally retain original storage paths."""
         source_paths = self.bucket_source_paths() if preserve_legacy_paths else {}
         files: dict[PurePosixPath, bytes] = {
             PurePosixPath("dataset.json"): pretty_json(self.manifest).encode("utf-8")
@@ -170,6 +178,40 @@ class DatasetSnapshot:
         }
         for membership in self.memberships.values():
             memberships_by_collection.setdefault(membership.collection_id, []).append(membership)
+        catalog_path = PurePosixPath("data", "telegram", "collections", "README.md")
+        telegram_collections = [
+            collection
+            for collection in self.collections.values()
+            if collection.platform == "telegram"
+        ]
+        source_catalog = self.source_bytes.get(catalog_path)
+        legacy_navigation = (
+            preserve_legacy_paths
+            and not any(
+                path.parts[:3] == ("data", "telegram", "collections")
+                and path.name == "README.md"
+                and len(path.parts) >= 5
+                for path in self.source_bytes
+            )
+            and any(
+                (
+                    len(path.parts) == 5
+                    and path.parts[0] == "data"
+                    and path.parts[2] == "emojis"
+                    and path.suffix == ".jsonl"
+                )
+                or (
+                    len(path.parts) == 6
+                    and path.parts[:3] == ("data", "telegram", "collections")
+                    and path.name == "collection.json"
+                )
+                for path in self.source_bytes
+            )
+            and (
+                source_catalog is None
+                or source_catalog == render_legacy_catalog(telegram_collections)
+            )
+        )
         for collection in self.collections.values():
             collection_file = collection_path(collection.platform, collection.id)
             membership_file = memberships_path(collection.platform, collection.id)
@@ -189,14 +231,18 @@ class DatasetSnapshot:
             files[membership_file] = serialize_memberships(
                 memberships_by_collection.get(collection.id, [])
             )
-        catalog_path = PurePosixPath("data", "telegram", "collections", "README.md")
-        if not preserve_legacy_paths or catalog_path in self.source_bytes:
-            telegram_collections = [
-                collection
-                for collection in self.collections.values()
-                if collection.platform == "telegram"
-            ]
-            if telegram_collections or catalog_path in self.source_bytes:
+            if collection.platform == "telegram":
+                pack_page = collection_file.with_name("README.md")
+                members = memberships_by_collection.get(collection.id, [])
+                if not legacy_navigation and all(
+                    member.emoji_id in self.emojis for member in members
+                ):
+                    files[pack_page] = render_pack_page(collection, members, self.emojis)
+        if telegram_collections or catalog_path in self.source_bytes:
+            if legacy_navigation:
+                if source_catalog is not None:
+                    files[catalog_path] = render_legacy_catalog(telegram_collections)
+            else:
                 files[catalog_path] = render_catalog(telegram_collections)
         buckets: dict[PurePosixPath, list[Emoji]] = {}
         for emoji in self.emojis.values():
@@ -281,6 +327,9 @@ def _load_dataset_unlocked(
                     many=False,
                 )[0]
                 _insert(snapshot.collections, collection, collection_file)
+                pack_page = collection_file.with_name("README.md")
+                if pack_page.is_file():
+                    _read(pack_page, root_path, source)
                 memberships_file = collection_file.with_name("memberships.jsonl")
                 if not memberships_file.is_file() or memberships_file.is_symlink():
                     raise DatasetLoadError(
@@ -293,7 +342,9 @@ def _load_dataset_unlocked(
                     many=True,
                 ):
                     _insert(snapshot.memberships, membership, memberships_file)
-            for bucket_file in sorted(data_root.glob("*/emojis/*/*.jsonl")):
+            emoji_files = set(data_root.glob("*/emojis/*.jsonl"))
+            emoji_files.update(data_root.glob("*/emojis/*/*.jsonl"))
+            for bucket_file in sorted(emoji_files):
                 if not allow_missing_fingerprints:
                     for emoji in _read_models(
                         _read(bucket_file, root_path, source),

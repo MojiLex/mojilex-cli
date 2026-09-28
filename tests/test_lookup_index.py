@@ -10,7 +10,12 @@ from pathlib import PurePosixPath
 import pytest
 
 from mojilex_cli.cache import lookup as module
-from mojilex_cli.dataset.layout import collection_path, emoji_bucket_path, legacy_bucket_path
+from mojilex_cli.dataset.layout import (
+    collection_path,
+    emoji_bucket_path,
+    legacy_bucket_path,
+    previous_emoji_bucket_path,
+)
 from test_dataset_helpers import write_fixture
 
 
@@ -88,12 +93,20 @@ def test_read_only_cold_miss_creates_nothing_and_never_loads(indexed_repo, monke
     assert not index.parent.exists()
 
 
-def test_legacy_bucket_cold_and_warm_lookup_preserve_saved_repository(indexed_repo, monkeypatch):
+@pytest.mark.parametrize("previous", [False, True])
+def test_older_bucket_cold_and_warm_lookup_preserve_saved_repository(
+    indexed_repo, monkeypatch, previous
+):
     snapshot, index = indexed_repo
     emoji = snapshot.emojis[_selector(snapshot)]
     current = emoji_bucket_path(emoji.platform, emoji.id)
-    legacy = legacy_bucket_path(current)
+    legacy = (
+        previous_emoji_bucket_path(emoji.platform, emoji.id)
+        if previous
+        else legacy_bucket_path(current)
+    )
     assert legacy != current
+    (snapshot.root / legacy).parent.mkdir(parents=True, exist_ok=True)
     (snapshot.root / current).rename(snapshot.root / legacy)
     _commit(snapshot.root)
     before = (snapshot.root / legacy).read_bytes()
@@ -114,13 +127,18 @@ def test_legacy_bucket_cold_and_warm_lookup_preserve_saved_repository(indexed_re
     assert _git(snapshot.root, "status", "--porcelain") == ""
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_cached_bucket_with_wrong_hash_prefix_is_rejected(indexed_repo, monkeypatch, legacy):
+@pytest.mark.parametrize("layout", ["current", "previous", "legacy"])
+def test_cached_bucket_with_wrong_hash_prefix_is_rejected(indexed_repo, monkeypatch, layout):
     snapshot, index = indexed_repo
     emoji = snapshot.emojis[_selector(snapshot)]
     path = emoji_bucket_path(emoji.platform, emoji.id)
-    if legacy:
-        old = legacy_bucket_path(path)
+    if layout != "current":
+        old = (
+            previous_emoji_bucket_path(emoji.platform, emoji.id)
+            if layout == "previous"
+            else legacy_bucket_path(path)
+        )
+        (snapshot.root / old).parent.mkdir(parents=True, exist_ok=True)
         (snapshot.root / path).rename(snapshot.root / old)
         path = old
         _commit(snapshot.root)
@@ -182,6 +200,8 @@ def test_changed_head_read_only_misses_and_writable_rebuilds(indexed_repo):
     (snapshot.root / path).write_bytes(generated[path])
     catalog = snapshot.root / "data" / "telegram" / "collections" / "README.md"
     catalog.write_bytes(generated[PurePosixPath("data/telegram/collections/README.md")])
+    pack_page = PurePosixPath(f"data/telegram/collections/{collection.id}/README.md")
+    (snapshot.root / pack_page).write_bytes(generated[pack_page])
     _commit(snapshot.root)
     assert _lookup(snapshot, index, read_only=True) is None
     assert index.read_bytes() == before

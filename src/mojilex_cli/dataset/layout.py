@@ -43,6 +43,12 @@ def memberships_path(platform: str, collection_id: str) -> PurePosixPath:
 
 
 def emoji_bucket_path(platform: str, emoji_id: str) -> PurePosixPath:
+    """One emoji per file, named by the complete SHA-256 of its canonical ID."""
+    return PurePosixPath("data", platform, "emojis", f"{_sha(emoji_id)}.jsonl")
+
+
+def previous_emoji_bucket_path(platform: str, emoji_id: str) -> PurePosixPath:
+    """Eight-hex bucket used by earlier dataset revisions."""
     first, second = emoji_shards(emoji_id)
     return PurePosixPath("data", platform, "emojis", first, f"{second}.jsonl")
 
@@ -57,7 +63,9 @@ def visual_relations_path(relation_id: str) -> PurePosixPath:
 
 
 def legacy_bucket_path(path: PurePosixPath) -> PurePosixPath:
-    """The previous four-hex bucket for an already computed canonical bucket path."""
+    """Four-hex bucket for a current or previous emoji/relation path."""
+    if len(path.parts) == 4 and path.parts[2] == "emojis":
+        return path.parent / path.stem[:2] / f"{path.stem[2:4]}.jsonl"
     return path.with_name(f"{path.stem[:2]}.jsonl")
 
 

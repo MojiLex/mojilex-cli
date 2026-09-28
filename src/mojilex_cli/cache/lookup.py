@@ -25,6 +25,7 @@ from mojilex_cli.dataset.layout import (
     emoji_bucket_path,
     legacy_bucket_path,
     memberships_path,
+    previous_emoji_bucket_path,
     safe_destination,
 )
 from mojilex_cli.dataset.serialization import parse_json, parse_jsonl
@@ -290,6 +291,7 @@ def _check_entity_path(path: object, identifier: str) -> None:
     )
     relatives = [relative]
     if identifier.startswith("mxe_"):
+        relatives.append(previous_emoji_bucket_path("p", identifier))
         relatives.append(legacy_bucket_path(relative))
     suffixes = "|".join(re.escape(str(item).removeprefix("data/p/")) for item in relatives)
     if not isinstance(path, str) or not re.fullmatch(
@@ -356,6 +358,7 @@ def _read_subset(
                 PurePosixPath(path)
                 not in {
                     emoji_bucket_path(item.platform, item.id),
+                    previous_emoji_bucket_path(item.platform, item.id),
                     legacy_bucket_path(emoji_bucket_path(item.platform, item.id)),
                 }
                 for item in emojis

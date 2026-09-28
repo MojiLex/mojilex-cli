@@ -8,7 +8,12 @@ from pathlib import Path, PurePosixPath
 
 from mojilex_cli.domain.models import Collection, Emoji, Membership
 
-from .layout import assert_no_link_or_reparse, emoji_bucket_path, legacy_bucket_path
+from .layout import (
+    assert_no_link_or_reparse,
+    emoji_bucket_path,
+    legacy_bucket_path,
+    previous_emoji_bucket_path,
+)
 from .repository import DatasetLoadError, DatasetSnapshot, _insert, _read
 from .serialization import parse_json, parse_jsonl
 from .transaction import locked_dataset_transaction_view
@@ -17,7 +22,7 @@ from .transaction import locked_dataset_transaction_view
 def load_pack_snapshot(root: str | Path, names: Names[str]) -> DatasetSnapshot:
     """Read shared membership metadata once and only requested Telegram emoji buckets.
 
-    Both current and legacy buckets are examined so duplicate IDs cannot silently
+    Current files and both older bucket layouts are examined so duplicate IDs cannot silently
     overwrite one another. Missing emoji remain absent for the caller's exact
     readiness checks. The transaction view and path guards match full loading.
     """
@@ -57,7 +62,13 @@ def load_pack_snapshot(root: str | Path, names: Names[str]) -> DatasetSnapshot:
             for row in snapshot.memberships.values():
                 if row.collection_id in selected and row.status == "active":
                     bucket = emoji_bucket_path("telegram", row.emoji_id)
-                    buckets.update((bucket, legacy_bucket_path(bucket)))
+                    buckets.update(
+                        (
+                            bucket,
+                            previous_emoji_bucket_path("telegram", row.emoji_id),
+                            legacy_bucket_path(bucket),
+                        )
+                    )
             for relative in sorted(buckets):
                 path = root_path.joinpath(*relative.parts)
                 # Check even absent paths: a dangling link must not look like a miss.

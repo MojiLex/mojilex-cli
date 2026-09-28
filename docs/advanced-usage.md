@@ -25,8 +25,10 @@ directory changes. With `--repo OWNER/REPO`, local results are kept in a persist
 workspace under the configured runs directory. The returned path remains available
 after the command exits. Resume retains the consumed request budget and cached answers.
 
-Previously saved descriptions remain compatible. Dataset writes use filenames
-with an 8-character hash prefix; this needs no new AI analysis. When `main` changes
+Previously saved descriptions remain compatible. Dataset writes use one file per
+emoji, named by the full SHA-256 of its ID; this needs no new AI analysis.
+The pack catalog links to pack pages, and those pages link to each emoji record.
+When `main` changes
 after publication, the repository's enabled **Refresh open data PRs** workflow
 updates PRs from branches in the same repository and starts validation. For a
 fork PR, repeat `mojilex publish NewsEmoji`. Incompatible edits to the same record

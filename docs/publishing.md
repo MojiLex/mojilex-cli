@@ -11,12 +11,13 @@ publish from their fork when they lack upstream write access.
 
 Each collection has its own `data/<platform>/collections/<collection_id>/` directory.
 Readers accept the previous hash-prefixed collection directories for saved runs;
-new writes use the flat collection layout. Emoji and visual-relation writes use eight
-hex characters of SHA-256: a two-character directory and a six-character filename.
-Readers still accept the previous two-plus-two
-layout. Validated writes remove the old buckets atomically and preserve record contents.
-The Telegram collection catalog at `data/telegram/collections/README.md` is regenerated
-from collection records in the same validated write, so titles and links remain current.
+new writes use the flat collection layout. Visual-relation writes use eight
+hex characters of SHA-256. Each emoji has one file at
+`data/<platform>/emojis/<full-64-character-SHA-256-of-emoji-ID>.jsonl`.
+Readers still accept the older two-plus-six and two-plus-two emoji bucket layouts.
+Validated writes migrate those buckets atomically without changing record contents.
+The Telegram catalog and each pack's `README.md` are regenerated from canonical records
+in the same validated write, so the pack links and plain descriptions remain current.
 
 The data repository can enable **Refresh open data PRs** on changes to `main`. It uses
 trusted base code to merge data-only same-repository PRs by entity ID, validates the
@@ -24,7 +25,7 @@ result, creates a normal merge commit, and explicitly starts CI. It does not mer
 PR into `main`. Fork contributors can repeat publication to refresh their branch; the
 repository token cannot write another owner's fork. Actual incompatible edits to the
 same record remain conflicts. Deploy the updated data validator before using the new
-CLI writer, so new bucket paths are accepted by repository checks.
+CLI writer, so full-hash emoji paths and pack pages pass repository checks.
 
 `--direct-push` is a separate owner operation. The CLI:
 
