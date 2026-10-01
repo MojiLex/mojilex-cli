@@ -11,7 +11,6 @@ import pytest
 from google import genai
 
 from mojilex_cli.ai import (
-    AIError,
     AIPaymentRequiredError,
     AITransientError,
     BudgetExceededError,
