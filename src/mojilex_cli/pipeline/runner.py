@@ -10,7 +10,15 @@ import sqlite3
 import subprocess
 import tempfile
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -92,6 +100,7 @@ from mojilex_cli.concurrency import (
     PackDependencies,
     batch_limits,
     bounded_map,
+    complete_before_cancel,
     current_batch_limits,
     pack_pipeline_limits,
     run_blocking,
@@ -1024,6 +1033,55 @@ async def _run_add(
                 resume_checkpoint.ai_cost_reserved_usd if resume_checkpoint else Decimal("0")
             ),
         )
+
+        async def persist_staging_snapshot(
+            before: DatasetSnapshot,
+            after: DatasetSnapshot,
+            paths: Iterable[str],
+            *,
+            selected: set[str] | None = None,
+            pack_report: dict[str, Any] | None = None,
+        ) -> ValidationReport:
+            nonlocal checkpoint
+
+            async def commit() -> ValidationReport:
+                nonlocal checkpoint
+                if checkpoint is None:
+                    raise RuntimeError("staging persistence requires a durable checkpoint")
+                report = await run_blocking_on(
+                    save_worker, _apply_with_rollback, before, after, allow_policy_review=True
+                )
+                delta = await run_blocking_on(
+                    save_worker,
+                    staging_output_receipts,
+                    checkpoint,
+                    after,
+                    paths,
+                    runs_dir=cast(Path, config.runs_dir),
+                )
+                # Peers may reserve AI budget during every await. Merge only
+                # into the latest shared checkpoint, then save without yielding.
+                checkpoint = checkpoint_staging_outputs(checkpoint, delta)
+                if pack_report is not None and selected is not None:
+                    identity = await run_blocking_on(
+                        save_worker, _dedupe_scan_identity, after, selected, config
+                    )
+                    checkpoint = _checkpoint_dedupe_report(
+                        checkpoint,
+                        after,
+                        selected,
+                        config,
+                        pack_report,
+                        identity=identity,
+                        run_selected_emoji_ids=dedupe_emoji_ids | selected,
+                    )
+                run_store.save(checkpoint)
+                return report
+
+            # A completed transaction must leave recoverable ownership receipts
+            # even when its caller is cancelled while the worker is committing.
+            return await complete_before_cancel(commit())
+
         from mojilex_cli.composition.publication import (
             defer_fragment_overflow_for_legacy_schema,
             mark_verified_fragments,
@@ -1698,48 +1756,20 @@ async def _run_add(
                                         )
                                     ),
                                 )
-                                saved_report = await run_blocking_on(
-                                    save_worker,
-                                    _apply_with_rollback,
+                                saved_report = await persist_staging_snapshot(
                                     persisted,
                                     candidate,
-                                    allow_policy_review=True,
+                                    pack_paths,
+                                    selected=selected,
+                                    pack_report=pack_dedupe_report,
                                 )
                                 if saved_report is not None and not saved_report.valid:
                                     warnings.extend(_validation_warnings(saved_report))
-                                receipt_delta = await run_blocking_on(
-                                    save_worker,
-                                    staging_output_receipts,
-                                    checkpoint,
-                                    candidate,
-                                    pack_paths,
-                                    runs_dir=cast(Path, config.runs_dir),
-                                )
-                                checkpoint = checkpoint_staging_outputs(checkpoint, receipt_delta)
                                 persisted = candidate
                                 guarded_staging_paths.update(pack_paths)
                                 marked_fragment_ids.update(marked - deferred)
                                 removed_fragment_ids.update(removed - marked)
                                 deferred_fragment_ids.update(deferred)
-                                # Use the latest checkpoint: peers may have saved
-                                # AI results and budget reservations during awaits.
-                                if pack_dedupe_report is not None:
-                                    identity = await run_blocking_on(
-                                        save_worker,
-                                        _dedupe_scan_identity,
-                                        candidate,
-                                        selected,
-                                        config,
-                                    )
-                                    checkpoint = _checkpoint_dedupe_report(
-                                        checkpoint,
-                                        candidate,
-                                        selected,
-                                        config,
-                                        pack_dedupe_report,
-                                        identity=identity,
-                                        run_selected_emoji_ids=dedupe_emoji_ids | selected,
-                                    )
                                 dedupe_emoji_ids.update(selected)
                             totals["collections_created"] += int(
                                 plan.collection_id not in current.collections
@@ -2150,23 +2180,17 @@ async def _run_add(
                     or str(path) not in guarded_staging_paths | resumed_owned_paths
                 )
                 guard = publisher.guard_targets(guard_paths)
-                await run_blocking(
-                    _apply_with_rollback,
-                    persisted,
-                    current,
-                    allow_policy_review=stage_only or local_only,
-                )
+                if stage_only and checkpoint is not None:
+                    await persist_staging_snapshot(persisted, current, map(str, changed_paths))
+                else:
+                    await run_blocking(
+                        _apply_with_rollback,
+                        persisted,
+                        current,
+                        allow_policy_review=stage_only or local_only,
+                    )
                 if stage_only:
                     publication = {"mode": "staging", "path": str(workspace.root)}
-                    if checkpoint is not None:
-                        receipt_delta = await run_blocking(
-                            staging_output_receipts,
-                            checkpoint,
-                            current,
-                            map(str, changed_paths),
-                            runs_dir=cast(Path, config.runs_dir),
-                        )
-                        checkpoint = checkpoint_staging_outputs(checkpoint, receipt_delta)
                 else:
                     publication = await _publish(
                         workspace,
