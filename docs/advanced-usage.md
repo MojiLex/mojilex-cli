@@ -69,9 +69,13 @@ fixed upper ceiling.
 The default `processing.performance_mode = "auto"` sizes concurrency at operation
 start from available CPU and RAM; larger configured values remain in effect.
 Choose `manual` in settings to use the four configured concurrency values exactly.
-The automatic targets are one decoder per available logical CPU, bounded by 75%
-of available RAM at 512 MiB per decoder; four times that decoder target for both
-preparing packs and AI requests, and four downloads per CPU. This is a startup estimate, not
+On Windows the decoder target uses physical CPU cores when detectable; otherwise
+it uses available logical CPUs. Native decoders also use internal threads, so
+SMT siblings do not provide an extra decoder each. The target is bounded by 75%
+of available RAM at 512 MiB per decoder. The preparation target is one pack per
+decoder; AI requests target four times the decoder count, with four downloads per
+logical CPU. Preparation stays focused on fewer packs so whole packs can finish
+sooner. This is a startup estimate, not
 a guarantee that higher parallelism improves throughput. Automatic temporary storage
 can grow to twice available RAM, while remaining at most one quarter of free space
 on the temporary volume. If RAM or disk probing fails, its allowance is not increased.

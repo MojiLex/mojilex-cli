@@ -34,6 +34,26 @@ def _clone(snapshot, native_id: str) -> Emoji:  # type: ignore[no-untyped-def]
     return clone
 
 
+def test_incremental_scan_report_matches_full_discovery_filtered_to_selection(
+    tmp_path, monkeypatch
+):
+    from mojilex_cli.dedupe.engine import _CandidateIndex
+
+    snapshot = make_snapshot(tmp_path)
+    for offset in range(8):
+        _clone(snapshot, str(5368324170671202300 + offset))
+    selected = {sorted(snapshot.emojis)[-1]}
+    incremental = scan_snapshot(snapshot, selected_emoji_ids=selected).as_dict()
+    original_pairs = _CandidateIndex.pairs
+
+    def legacy_discovery(self, *, selected_emoji_ids=None):
+        return original_pairs(self)
+
+    monkeypatch.setattr(_CandidateIndex, "pairs", legacy_discovery)
+    legacy = scan_snapshot(snapshot, selected_emoji_ids=selected).as_dict()
+    assert incremental == legacy
+
+
 def _collection_with_members(
     snapshot,  # type: ignore[no-untyped-def]
     native_id: str,

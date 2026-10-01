@@ -156,7 +156,10 @@ _KEY_ORDER = (
 _KEY_RANK = {key: index for index, key in enumerate(_KEY_ORDER)}
 
 _DOMAIN_ENTITIES = (Collection, Emoji, Membership, Tombstone, VisualRelation)
-_SERIALIZATION_MEMO_LIMIT = 64 * 1024 * 1024
+# The published corpus already needs about 83 MiB of exact-content entries.
+# A smaller LRU evicts the beginning during every full scan, giving zero hits
+# on the next scan. Retain a bounded working set for bulk imports as it grows.
+_SERIALIZATION_MEMO_LIMIT = 256 * 1024 * 1024
 _EncodedEntity = tuple[bytes, tuple[Any, ...]]
 
 

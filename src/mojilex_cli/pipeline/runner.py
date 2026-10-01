@@ -1063,7 +1063,7 @@ async def _run_add(
         marked_fragment_ids: set[str] = set()
         removed_fragment_ids: set[str] = set()
         deferred_fragment_ids: set[str] = set()
-        dedupe_emoji_ids: set[str] = set()
+        dedupe_emoji_ids = _resume_dedupe_selected_ids(checkpoint, current, set())
         dedupe_report: dict[str, Any] | None = None
         progress_lock = asyncio.Lock()
         media_checkpoint_at = time.monotonic()
@@ -1655,7 +1655,10 @@ async def _run_add(
                                 deferred = defer_fragment_overflow_for_legacy_schema(candidate)
                                 for identifier in deferred & before_reviews.keys():
                                     candidate.emojis[identifier].review = before_reviews[identifier]
-                                selected = dedupe_emoji_ids | {
+                                # Query only this merge against the entire index.
+                                # Earlier packs are still counterparts, without
+                                # repeating their already computed pair scans.
+                                selected = {
                                     identifier
                                     for identifier in _changed_entity_ids(current, candidate)
                                     if identifier.startswith("mxe_")
@@ -1735,6 +1738,7 @@ async def _run_add(
                                         config,
                                         pack_dedupe_report,
                                         identity=identity,
+                                        run_selected_emoji_ids=dedupe_emoji_ids | selected,
                                     )
                                 dedupe_emoji_ids.update(selected)
                             totals["collections_created"] += int(
@@ -7961,15 +7965,27 @@ def _resume_dedupe_selected_ids(
 ) -> set[str]:
     """Recover the immutable scan selection after a crash following dataset apply."""
 
-    if selected_emoji_ids or checkpoint is None or checkpoint.dedupe_scan is None:
+    if checkpoint is None or checkpoint.dedupe_scan is None:
         return selected_emoji_ids
     saved = checkpoint.dedupe_scan
     if saved.snapshot_sha256 != _canonical_snapshot_sha256(snapshot):
         return selected_emoji_ids
     recovered = set(saved.selected_emoji_ids)
+    run_selection = checkpoint.safe_parameters.get("dedupe_run_selection")
+    if (
+        isinstance(run_selection, dict)
+        and run_selection.get("snapshot_sha256") == saved.snapshot_sha256
+    ):
+        values = run_selection.get("emoji_ids")
+        if (
+            isinstance(values, list)
+            and len(values) <= len(snapshot.emojis)
+            and all(isinstance(value, str) and value in snapshot.emojis for value in values)
+        ):
+            recovered.update(values)
     if not recovered or any(emoji_id not in snapshot.emojis for emoji_id in recovered):
         return selected_emoji_ids
-    return recovered
+    return selected_emoji_ids | recovered
 
 
 def _cached_dedupe_report(
@@ -8011,6 +8027,7 @@ def _checkpoint_dedupe_report(
     report: dict[str, Any],
     *,
     identity: tuple[str, str, str, tuple[str, ...]] | None = None,
+    run_selected_emoji_ids: set[str] | None = None,
 ) -> RunCheckpoint:
     input_sha256, snapshot_sha256, profile_sha256, selected = (
         identity
@@ -8044,6 +8061,17 @@ def _checkpoint_dedupe_report(
     return checkpoint.model_copy(
         update={
             "dedupe_scan": persisted,
+            "safe_parameters": {
+                **checkpoint.safe_parameters,
+                "dedupe_run_selection": {
+                    "snapshot_sha256": snapshot_sha256,
+                    "emoji_ids": sorted(
+                        selected_emoji_ids
+                        if run_selected_emoji_ids is None
+                        else run_selected_emoji_ids
+                    ),
+                },
+            },
             "elements": elements,
             "updated_at": datetime.now(UTC).replace(microsecond=0),
         }

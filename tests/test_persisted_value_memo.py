@@ -46,8 +46,11 @@ def test_native_key_and_value_types_cannot_alias_success(tmp_path):
         saved = len(memo.persisted)
         assert not check(tmp_path, {"tuple": ("safe",)})
         assert len(memo.persisted) == saved
-        assert not check(tmp_path, {"number": float("nan")})
-        assert len(memo.persisted) == saved
+        for non_finite in (float("nan"), float("inf"), float("-inf")):
+            issues = check(tmp_path, {"number": non_finite})
+            assert any(issue.code == "JSON_VALUE" for issue in issues)
+            assert check(tmp_path, {"number": non_finite}) == issues
+            assert len(memo.persisted) == saved
 
 
 def test_rules_changes_invalidate_success(tmp_path, monkeypatch):

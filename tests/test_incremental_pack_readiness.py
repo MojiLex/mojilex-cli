@@ -286,3 +286,27 @@ async def test_fragment_totals_include_markers_saved_before_final_assembly(reque
     assert result.result["legacy_fragment_tags_removed"] == 0
     for source in state.sources:
         _assert_durable_pack(state, source)
+
+
+async def test_each_pack_queries_only_its_changes_but_final_scan_covers_the_whole_run(
+    request, monkeypatch
+):
+    state = request.getfixturevalue("pipeline")
+    _real_packs(state, monkeypatch, dedupe="exact")
+    original_scan = runner.scan_snapshot
+    selections = []
+
+    def scan(snapshot, **kwargs):
+        selections.append(set(kwargs["selected_emoji_ids"]))
+        return original_scan(snapshot, **kwargs)
+
+    monkeypatch.setattr(runner, "scan_snapshot", scan)
+    result = await state.run()
+    assert not result.errors
+    assert len(selections) == 3
+    assert [len(selection) for selection in selections] == [1, 1, 2]
+    assert selections[0].isdisjoint(selections[1])
+    assert selections[2] == selections[0] | selections[1]
+    checkpoint = state.latest_checkpoint()
+    snapshot = load_dataset(state.root)
+    assert runner._resume_dedupe_selected_ids(checkpoint, snapshot, set()) == selections[2]

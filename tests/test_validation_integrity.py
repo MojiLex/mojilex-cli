@@ -1,3 +1,5 @@
+import pytest
+
 from mojilex_cli.dataset import load_dataset, validate_dataset, validate_snapshot
 from mojilex_cli.domain import ContentRating, Review, reviewed_content_sha256
 from test_dataset_helpers import write_fixture
@@ -11,6 +13,35 @@ def test_valid_fixture_passes_all_core_integrity_checks(tmp_path) -> None:
     write_fixture(tmp_path)
     assert validate_dataset(tmp_path, strict=False).valid
     assert validate_snapshot(load_dataset(tmp_path), canonical=True).valid
+
+
+def test_staged_validation_checks_identity_without_rendering_disk_layout(tmp_path, monkeypatch):
+    from mojilex_cli.dataset.repository import DatasetSnapshot
+
+    snapshot = write_fixture(tmp_path)
+
+    def unexpected_render(*args, **kwargs):
+        raise AssertionError("staged integrity checks must not serialize the full corpus")
+
+    monkeypatch.setattr(DatasetSnapshot, "to_files", unexpected_render)
+    assert validate_snapshot(snapshot).valid
+    next(iter(snapshot.collections.values())).native_id = "changed-native-identity"
+    assert "ID" in _codes(validate_snapshot(snapshot))
+
+
+def test_canonical_validation_still_checks_serialized_record_bytes(tmp_path):
+    write_fixture(tmp_path)
+    snapshot = load_dataset(tmp_path)
+    path = next(path for path in snapshot.source_bytes if path.suffix == ".jsonl")
+    snapshot.source_bytes[path] += b"\n"
+    assert "CANONICAL" in _codes(validate_snapshot(snapshot, canonical=True))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_staged_validation_still_rejects_nonserializable_json_numbers(tmp_path, value):
+    snapshot = write_fixture(tmp_path)
+    snapshot.manifest["custom"] = {"value": value}
+    assert "JSON_VALUE" in _codes(validate_snapshot(snapshot))
 
 
 def test_detects_dangling_membership_duplicate_position_and_item_count(tmp_path) -> None:

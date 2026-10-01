@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -417,7 +418,10 @@ def _validate_ids_and_paths(
     canonical: bool,
 ) -> None:
     identities: dict[tuple[Any, ...], str] = {}
-    expected_files = snapshot.to_files(preserve_legacy_paths=canonical)
+    # Only canonical disk validation compares serialized bytes and paths. A
+    # staged snapshot still checks every identity below, without rendering the
+    # entire public catalog and every record merely to discard their bytes.
+    expected_files = snapshot.to_files(preserve_legacy_paths=True) if canonical else {}
     for collection in snapshot.collections.values():
         path = collection_path(collection.platform, collection.id)
         if namespace is not None:
@@ -1843,6 +1847,8 @@ def _walk_persisted_value(value: Any, path: str, issues: list[ValidationIssue]) 
     elif isinstance(value, list):
         for index, item in enumerate(value):
             _walk_persisted_value(item, f"{path}/{index}", issues)
+    elif isinstance(value, float) and not math.isfinite(value):
+        _issue(issues, "JSON_VALUE", path, "non-finite numbers cannot be persisted as JSON")
     elif isinstance(value, str):
         if unicodedata.normalize("NFC", value) != value:
             _issue(issues, "NFC", path, "string is not Unicode NFC")

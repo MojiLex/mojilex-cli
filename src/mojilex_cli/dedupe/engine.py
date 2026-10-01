@@ -138,7 +138,7 @@ class _CandidateIndex:
     suppressed_bucket_count: int
     stats: _CandidateIndexStats
 
-    def pairs(self) -> Iterator[tuple[int, int]]:
+    def pairs(self, *, selected_emoji_ids: set[str] | None = None) -> Iterator[tuple[int, int]]:
         """Yield candidate pairs without retaining a dataset-wide pair set."""
 
         bands = 64 // self.band_bits
@@ -149,6 +149,12 @@ class _CandidateIndex:
         )
         animation_threshold = int(self.thresholds["animation_median_hamming_max"])
         for index, ref in enumerate(self.refs):
+            if selected_emoji_ids is not None and ref.emoji_id not in selected_emoji_ids:
+                continue
+            # A selected record must find earlier as well as later counterparts.
+            # Bucket discovery is symmetric; normalize emitted pairs below and
+            # emit selected/selected pairs only once.
+            lower_bound = index if selected_emoji_ids is None else -1
             neighbors: set[int] = set()
             if not ref.low_information:
                 threshold = animation_threshold if ref.animated else static_threshold
@@ -156,7 +162,7 @@ class _CandidateIndex:
                 for label, band, value in _lsh_keys(ref, band_bits=self.band_bits):
                     self._add_lsh_neighbors(
                         neighbors,
-                        index=index,
+                        index=lower_bound,
                         label=label,
                         band=band,
                         value=value,
@@ -166,7 +172,7 @@ class _CandidateIndex:
 
             self._add_bucket_neighbors(
                 neighbors,
-                index=index,
+                index=lower_bound,
                 members=self.canonical_buckets.get(("canonical", ref.canonical_sha256), ()),
             )
             if not ref.low_information:
@@ -174,7 +180,7 @@ class _CandidateIndex:
                 if direct_shape is not None:
                     self._add_bucket_neighbors(
                         neighbors,
-                        index=index,
+                        index=lower_bound,
                         members=direct_shape,
                     )
                 elif ref.shape_sha256 in self.oversized_shapes:
@@ -186,7 +192,7 @@ class _CandidateIndex:
                         prefix = _majority_hash(sequences[label]) >> (64 - width)
                         self._add_bucket_neighbors(
                             neighbors,
-                            index=index,
+                            index=lower_bound,
                             members=self.shape_secondary_buckets.get(
                                 (ref.shape_sha256, specification, prefix), ()
                             ),
@@ -195,12 +201,18 @@ class _CandidateIndex:
             for other in sorted(neighbors):
                 candidate = self.refs[other]
                 if (
+                    selected_emoji_ids is not None
+                    and other < index
+                    and candidate.emoji_id in selected_emoji_ids
+                ):
+                    continue
+                if (
                     ref.emoji_id != candidate.emoji_id
                     and ref.animated == candidate.animated
                     and ref.profile_id == candidate.profile_id
                 ):
                     self.stats.yielded_pairs += 1
-                    yield index, other
+                    yield min(index, other), max(index, other)
 
     def _add_lsh_neighbors(
         self,
@@ -303,7 +315,7 @@ def scan_snapshot(
 
     by_emoji: dict[str, list[DedupeCandidate]] = defaultdict(list)
     comparisons = 0
-    for left_index, right_index in candidate_index.pairs():
+    for left_index, right_index in candidate_index.pairs(selected_emoji_ids=selected_emoji_ids):
         left_ref, right_ref = refs[left_index], refs[right_index]
         if selected_emoji_ids is not None and not (
             left_ref.emoji_id in selected_emoji_ids or right_ref.emoji_id in selected_emoji_ids
@@ -1047,11 +1059,17 @@ def _aligned_distances(
     if not animated or len(left) == 1:
         return tuple((a ^ b).bit_count() for a, b in zip(left, right, strict=True))
     candidates: list[tuple[int, tuple[int, ...]]] = []
+    seen: set[tuple[int, ...]] = set()
     orientations = (right, tuple(reversed(right))) if reverse else (right,)
     shifts = range(len(right)) if cyclic else range(1)
     for orientation in orientations:
         for shift in shifts:
             shifted = orientation[shift:] + orientation[:shift]
+            # Constant and periodic fingerprints repeat the same rotations.
+            # Their direct and DTW distances are identical on every repetition.
+            if shifted in seen:
+                continue
+            seen.add(shifted)
             direct = tuple((a ^ b).bit_count() for a, b in zip(left, shifted, strict=True))
             candidates.append((sum(direct), direct))
             dtw = _banded_dtw(left, shifted, band=dtw_band)
@@ -1071,18 +1089,40 @@ def _shape_candidate_eligible(left: _Ref, right: _Ref) -> bool:
 
 def _banded_dtw(left: tuple[int, ...], right: tuple[int, ...], *, band: int) -> tuple[int, ...]:
     size = len(left)
-    paths: dict[tuple[int, int], tuple[int, tuple[int, ...]]] = {(0, 0): (0, ())}
-    for i in range(1, size + 1):
+    stride = size + 1
+    # Every path has at most 2*size-1 values. Packing cost and path length
+    # preserves their lexicographic ranking without copying a path per cell.
+    weight = 2 * size + 1
+    previous: list[int | float] = [math.inf] * stride
+    previous[0] = 0
+    predecessors = bytearray(stride * stride)
+    for i in range(1, stride):
+        row: list[int | float] = [math.inf] * stride
         for j in range(max(1, i - band), min(size, i + band) + 1):
-            previous = [
-                paths[key] for key in ((i - 1, j), (i, j - 1), (i - 1, j - 1)) if key in paths
-            ]
-            if not previous:
+            best, move = previous[j], 1
+            # Strict comparisons retain the original up/left/diagonal order
+            # for ties in both cost and path length.
+            if row[j - 1] < best:
+                best, move = row[j - 1], 2
+            if previous[j - 1] < best:
+                best, move = previous[j - 1], 3
+            if best == math.inf:
                 continue
-            best_cost, best_values = min(previous, key=lambda item: (item[0], len(item[1])))
-            distance = (left[i - 1] ^ right[j - 1]).bit_count()
-            paths[(i, j)] = (best_cost + distance, (*best_values, distance))
-    return paths.get((size, size), (64 * size, (64,) * size))[1]
+            row[j] = best + (left[i - 1] ^ right[j - 1]).bit_count() * weight + 1
+            predecessors[i * stride + j] = move
+        previous = row
+    if previous[size] == math.inf:
+        return (64,) * size
+    distances: list[int] = []
+    i = j = size
+    while i or j:
+        distances.append((left[i - 1] ^ right[j - 1]).bit_count())
+        move = predecessors[i * stride + j]
+        if move != 2:
+            i -= 1
+        if move != 1:
+            j -= 1
+    return tuple(reversed(distances))
 
 
 def _decode_hashes(value: str) -> tuple[int, ...]:
