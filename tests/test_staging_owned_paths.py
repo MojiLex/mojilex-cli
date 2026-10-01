@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from contextlib import contextmanager
 from pathlib import PurePosixPath
 
@@ -24,6 +23,7 @@ from mojilex_cli.pipeline.staging_guards import (
 )
 from mojilex_cli.pipeline.workspaces import staging_workspace_path
 from mojilex_cli.runs import RunStore
+from staging_fixture_helpers import clone_fixture_repository
 from test_add_run_staging import saved_add  # noqa: F401
 from test_incremental_pack_readiness import _real_packs
 from test_pack_describe_pipeline import pipeline  # noqa: F401
@@ -34,8 +34,12 @@ from test_pipeline_workspaces import _git
 def private_stage(request):
     state = request.getfixturevalue("saved_add")
     root = staging_workspace_path(state.config.runs_dir, state.checkpoint.run_id)
-    root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(state.root, root)
+    clone_fixture_repository(
+        state.root,
+        root,
+        target=state.target,
+        base_revision=state.checkpoint.base_revision,
+    )
     state.root = root
     state.snapshot = load_dataset(root)
     state.checkpoint = state.checkpoint.model_copy(
@@ -281,8 +285,12 @@ async def test_saved_private_pack_can_resume_with_receipts_and_preserved_budget(
     state = request.getfixturevalue("pipeline")
     _real_packs(state, monkeypatch)
     root = staging_workspace_path(state.config.runs_dir, state.checkpoint.run_id)
-    root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(state.root, root)
+    clone_fixture_repository(
+        state.root,
+        root,
+        target=state.target,
+        base_revision=state.checkpoint.base_revision,
+    )
     state.root = root
     state.config = state.config.model_copy(
         update={"repository": state.config.repository.model_copy(update={"target": str(root)})}
