@@ -108,7 +108,13 @@ def assert_no_link_or_reparse(
             raise ValueError(f"link or reparse-point traversal is forbidden: {candidate}")
 
 
-def safe_destination(root: Path, relative: str | PurePosixPath, *, canonical: bool = False) -> Path:
+def safe_destination(
+    root: Path,
+    relative: str | PurePosixPath,
+    *,
+    canonical: bool = False,
+    _resolved_root: Path | None = None,
+) -> Path:
     """Resolve a controlled relative path and reject traversal/symlink ancestors."""
 
     rel = PurePosixPath(relative)
@@ -116,7 +122,15 @@ def safe_destination(root: Path, relative: str | PurePosixPath, *, canonical: bo
         raise ValueError(f"unsafe dataset path: {relative}")
     unresolved_root = Path(os.path.abspath(root))
     assert_no_link_or_reparse(unresolved_root)
-    root = unresolved_root.resolve()
+    if _resolved_root is None:
+        root = unresolved_root.resolve()
+    else:
+        # The anchor is only canonical spelling, never cached filesystem state.
+        # A full-snapshot precondition can resolve its root once, but every
+        # ancestor and target must still be checked and resolved afresh below.
+        if not _resolved_root.is_absolute() or _resolved_root != unresolved_root:
+            raise ValueError("resolved dataset root must match its absolute lexical path")
+        root = _resolved_root
     destination = root.joinpath(*rel.parts)
     # This checks the destination as well as every ancestor below the root.
     # Repeating the same per-component lstats here doubles filesystem work for

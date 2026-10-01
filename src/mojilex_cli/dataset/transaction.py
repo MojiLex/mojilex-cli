@@ -412,6 +412,9 @@ def _verify_dataset_precondition(
     root: Path,
     expected_files: Mapping[PurePosixPath, bytes],
 ) -> None:
+    # Canonical root spelling is immutable during this pass. Safety checks and
+    # target resolution still run immediately before reading every expected file.
+    root = _resolve_dataset_root(root)
     expected: dict[PurePosixPath, bytes] = {}
     for relative, data in expected_files.items():
         if relative in expected:
@@ -432,7 +435,7 @@ def _verify_dataset_precondition(
     for relative, data in expected.items():
         # Validate once, immediately before reading. Retaining destinations from
         # an earlier pass would miss links introduced while the tree is scanned.
-        destination = _validate_relative_path(root, relative)
+        destination = _validate_relative_path(root, relative, _resolved_root=root)
         identity = _validated_destination_identity(destination)
         if identity in expected_identities:
             raise AtomicWriteError(
@@ -1106,6 +1109,7 @@ def _validate_relative_path(
     relative: PurePosixPath,
     *,
     original: str | None = None,
+    _resolved_root: Path | None = None,
 ) -> Path:
     raw = relative.as_posix() if original is None else original
     if (
@@ -1126,7 +1130,7 @@ def _validate_relative_path(
         for component in relative.parts:
             _validate_windows_path_component(component)
     try:
-        return safe_destination(root, relative, canonical=True)
+        return safe_destination(root, relative, canonical=True, _resolved_root=_resolved_root)
     except (OSError, ValueError) as exc:
         raise AtomicWriteError("dataset transaction contains an unsafe path") from exc
 

@@ -97,3 +97,10 @@ Both exceptions require the exact run workspace and recorded base commit; normal
 checkouts and publication keep the regular dirty-worktree guard. Atomic writes still
 recheck the complete baseline under the transaction lock. Receipt deltas are merged
 into the latest checkpoint so concurrent AI results and budget reservations survive.
+
+The bounded parsed-model memo admits exact-byte results while capacity remains;
+oversized sequential scans validate their uncached tail without evicting reusable
+entries. A baseline precondition resolves the canonical root once per pass, while
+every target still receives fresh ancestor, reparse, containment and content checks.
+Pack saving includes whole-dataset validation, so its duration also depends on the
+size of the existing dataset.
