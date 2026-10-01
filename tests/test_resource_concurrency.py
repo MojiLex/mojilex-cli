@@ -39,7 +39,7 @@ def test_auto_uses_hardware_snapshot_without_changing_budget(monkeypatch, memory
     original = MojiLexConfig()
     resolved = resources.resolved_resource_config(original)
     assert resolved.processing.render_concurrency == render
-    assert resolved.processing.pack_concurrency == render * 4
+    assert resolved.processing.pack_concurrency == render
     assert resolved.telegram.download_concurrency == 48
     assert resolved.ai.ai_concurrency == render * 4
     assert resolved.ai.max_ai_requests == original.ai.max_ai_requests
@@ -53,7 +53,7 @@ def test_auto_io_overlap_does_not_multiply_cpu_decoder_processes(monkeypatch):
 
     resolved = resources.resolved_resource_config(config)
 
-    assert resolved.processing.pack_concurrency == 48
+    assert resolved.processing.pack_concurrency == 12
     assert resolved.ai.ai_concurrency == 48
     assert resolved.processing.render_concurrency == 12
     assert resolved.telegram.download_concurrency == 48
@@ -91,7 +91,7 @@ def test_auto_bounds_decoders_by_physical_cores_and_available_resources(
     original = MojiLexConfig(ai={"max_ai_requests": None, "max_cost_usd": 7})
     resolved = resources.resolved_resource_config(original)
     assert resolved.processing.render_concurrency == render
-    assert resolved.processing.pack_concurrency == render * 4
+    assert resolved.processing.pack_concurrency == render
     assert resolved.ai.ai_concurrency == render * 4
     assert resolved.telegram.download_concurrency == logical * 4
     assert resolved.ai.max_ai_requests is None
