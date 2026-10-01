@@ -1,5 +1,7 @@
 """Automatic startup sizing and uncapped manual settings."""
 
+import struct
+
 import pytest
 
 from mojilex_cli.commands.settings import settings_command, update_setting_command
@@ -10,6 +12,7 @@ from mojilex_cli.media.models import MediaLimits
 @pytest.fixture(autouse=True)
 def fixed_temp_disk(monkeypatch):
     monkeypatch.setattr(resources, "available_temp_disk_bytes", lambda: 256 * 1024**3)
+    monkeypatch.setattr(resources, "physical_cpu_count", lambda: None)
 
 
 @pytest.mark.parametrize(
@@ -65,7 +68,57 @@ def test_manual_does_not_probe_hardware(monkeypatch):
     monkeypatch.setattr(
         resources, "available_temp_disk_bytes", lambda: pytest.fail("manual disk probe")
     )
+    monkeypatch.setattr(
+        resources, "physical_cpu_count", lambda: pytest.fail("manual topology probe")
+    )
     assert resources.resolved_resource_config(config) is config
+
+
+@pytest.mark.parametrize(
+    ("logical", "physical", "memory", "render"),
+    [
+        (12, 6, 32 * 1024**3, 6),
+        (4, 6, 32 * 1024**3, 4),
+        (12, 6, 2 * 1024**3, 3),
+    ],
+)
+def test_auto_bounds_decoders_by_physical_cores_and_available_resources(
+    monkeypatch, logical, physical, memory, render
+):
+    monkeypatch.setattr(resources.os, "process_cpu_count", lambda: logical, raising=False)
+    monkeypatch.setattr(resources, "physical_cpu_count", lambda: physical)
+    monkeypatch.setattr(resources, "available_memory_bytes", lambda: memory)
+    original = MojiLexConfig(ai={"max_ai_requests": None, "max_cost_usd": 7})
+    resolved = resources.resolved_resource_config(original)
+    assert resolved.processing.render_concurrency == render
+    assert resolved.processing.pack_concurrency == render * 4
+    assert resolved.ai.ai_concurrency == render * 4
+    assert resolved.telegram.download_concurrency == logical * 4
+    assert resolved.ai.max_ai_requests is None
+    assert resolved.ai.max_cost_usd == 7
+    assert original.processing.render_concurrency == 2
+
+
+def test_windows_topology_counts_cores_instead_of_smt_threads():
+    # Each core record includes a GROUP_AFFINITY; an SMT core still counts once.
+    core = struct.pack("<II", 0, 48) + bytes(40)
+    other = struct.pack("<II", 3, 16) + bytes(8)
+    assert resources._physical_cores_from_windows_topology(core + other + core) == 2
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"",
+        bytes(7),
+        struct.pack("<II", 0, 0),
+        struct.pack("<II", 0, 48),
+        struct.pack("<II", 0, 8),
+        struct.pack("<II", 0, 48) + bytes(40) + b"x",
+    ],
+)
+def test_invalid_windows_topology_falls_back(data):
+    assert resources._physical_cores_from_windows_topology(data) is None
 
 
 def test_auto_keeps_explicit_larger_values(monkeypatch):

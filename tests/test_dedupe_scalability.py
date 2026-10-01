@@ -5,7 +5,10 @@ import time
 import tracemalloc
 from collections import Counter
 from collections.abc import Iterator
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from mojilex_cli.analysis import load_analysis_profile
 from mojilex_cli.dedupe.engine import (
@@ -118,3 +121,39 @@ def test_100k_fingerprints_use_bounded_production_candidate_index() -> None:
 
     assert elapsed < _MAX_WALL_SECONDS
     assert peak_bytes < _MAX_TRACED_PEAK_BYTES
+
+
+@pytest.mark.parametrize("positions", [(), (0,), (10,), (21,), (24,), (25,), (0, 10, 21)])
+def test_incremental_candidate_discovery_matches_full_scan_in_both_directions(positions):
+    profile = load_analysis_profile("dedupe-v1").data
+    policy = profile["oversized_bucket_policy"]
+    keys = tuple(policy["secondary_keys"])
+    refs = [ref for _, ref in zip(range(30), _synthetic_references(), strict=False)]
+    # Exercise canonical-only low-information matches as well as LSH/shape
+    # matches, and multiple media records belonging to one selected identity.
+    refs[24] = replace(refs[24], canonical_sha256=refs[10].canonical_sha256)
+    refs[25] = replace(refs[0], role="variant", variant_id="alternate")
+
+    def build():
+        return _build_candidate_index(
+            refs,
+            thresholds=profile["candidate_thresholds"],
+            bucket_limit=int(policy["posting_bucket_cap"]),
+            secondary_keys=keys,
+            band_bits=_lsh_band_bits(keys),
+        )
+
+    selected = {refs[position].emoji_id for position in positions}
+    full = build()
+    full_pairs = set(full.pairs())
+    assert not refs[10].low_information and refs[24].low_information
+    assert (10, 24) in full_pairs
+    expected = {
+        pair for pair in full_pairs if any(refs[index].emoji_id in selected for index in pair)
+    }
+    incremental = build()
+    actual = list(incremental.pairs(selected_emoji_ids=selected))
+    assert set(actual) == expected
+    assert len(actual) == len(set(actual))
+    assert all(left < right for left, right in actual)
+    assert incremental.stats.bucket_probes <= full.stats.bucket_probes

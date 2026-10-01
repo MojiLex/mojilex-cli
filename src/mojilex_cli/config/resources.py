@@ -5,11 +5,53 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
+import struct
 import tempfile
 
 from .models import MojiLexConfig
 
 _WORKER_MEMORY = 512 * 1024**2
+
+
+def _physical_cores_from_windows_topology(data: bytes) -> int | None:
+    """Count processor-core records from SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX."""
+    offset = 0
+    cores = 0
+    while offset < len(data):
+        if len(data) - offset < 8:
+            return None
+        relationship, size = struct.unpack_from("<II", data, offset)
+        if size < 8 or size > len(data) - offset:
+            return None
+        if relationship == 0:  # RelationProcessorCore
+            if size < 32:
+                return None
+            cores += 1
+        offset += size
+    return cores or None
+
+
+def physical_cpu_count() -> int | None:
+    """Probe Windows physical cores; callers retain logical-CPU fallback elsewhere."""
+    if os.name != "nt":
+        return None
+    try:
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return None
+        query = windll.kernel32.GetLogicalProcessorInformationEx
+        query.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        query.restype = ctypes.c_int
+        length = ctypes.c_uint32()
+        query(0, None, ctypes.byref(length))
+        if not 8 <= length.value <= 1024**2:
+            return None
+        buffer = ctypes.create_string_buffer(length.value)
+        if not query(0, buffer, ctypes.byref(length)) or length.value > len(buffer):
+            return None
+        return _physical_cores_from_windows_topology(buffer.raw[: length.value])
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def available_temp_disk_bytes() -> int | None:
@@ -69,9 +111,11 @@ def resolved_resource_config(config: MojiLexConfig) -> MojiLexConfig:
         return config
     cpu_count = getattr(os, "process_cpu_count", os.cpu_count)() or 1
     available = available_memory_bytes()
-    render_target = cpu_count
+    # Native rasterizers use internal worker threads too. SMT siblings are not
+    # separate decoder capacity; on Windows prefer physical cores when known.
+    render_target = min(cpu_count, physical_cpu_count() or cpu_count)
     if available is not None:
-        render_target = min(cpu_count, max(1, available * 3 // 4 // _WORKER_MEMORY))
+        render_target = min(render_target, max(1, available * 3 // 4 // _WORKER_MEMORY))
     # Packs and provider calls spend time waiting for I/O. Keep more work ready
     # than CPU decoders, but scale this overlap down with available memory too:
     # pending packs and AI image sheets also occupy RAM. More download sockets

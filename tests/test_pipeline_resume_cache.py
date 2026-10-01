@@ -1501,6 +1501,45 @@ def test_dedupe_checkpoint_is_reused_only_for_exact_final_snapshot_and_marks_nat
     assert _cached_dedupe_report(persisted, snapshot, selected, changed_config) is None
 
 
+def test_last_pack_checkpoint_restores_all_run_ids_without_reusing_an_incomplete_report(tmp_path):
+    from mojilex_cli.domain import emoji_id
+
+    snapshot = write_fixture(tmp_path / "dataset")
+    first = next(iter(snapshot.emojis))
+    second = emoji_id("telegram", "custom_emoji.id", "global", "7000000000000000002")
+    snapshot.emojis[second] = snapshot.emojis[first].model_copy(
+        update={"id": second, "native_id": "7000000000000000002"}
+    )
+    config = MojiLexConfig()
+    checkpoint = new_checkpoint(
+        command="add",
+        safe_parameters={},
+        cli_version="0.2.2",
+        schema_version="1.0.0",
+        target_repository="MojiLex/mojilex",
+        base_revision="a" * 40,
+    )
+    report = scan_snapshot(snapshot, selected_emoji_ids={second}, mode=config.dedupe.mode).as_dict()
+    persisted = _checkpoint_dedupe_report(
+        checkpoint, snapshot, {second}, config, report, run_selected_emoji_ids={first, second}
+    )
+    assert _resume_dedupe_selected_ids(persisted, snapshot, set()) == {first, second}
+    assert _cached_dedupe_report(persisted, snapshot, {first, second}, config) is None
+    assert _cached_dedupe_report(persisted, snapshot, {second}, config) == report
+
+    # A stale binding or unknown record never expands the selection on resume.
+    for invalid in [
+        {"snapshot_sha256": "0" * 64, "emoji_ids": [first, second]},
+        {"snapshot_sha256": persisted.dedupe_scan.snapshot_sha256, "emoji_ids": ["unknown"]},
+    ]:
+        changed = persisted.model_copy(
+            update={
+                "safe_parameters": {**persisted.safe_parameters, "dedupe_run_selection": invalid}
+            }
+        )
+        assert _resume_dedupe_selected_ids(changed, snapshot, set()) == {second}
+
+
 def test_legacy_checkpoint_without_new_guards_remains_loadable_but_cannot_fast_resume(
     tmp_path: Path,
 ) -> None:
