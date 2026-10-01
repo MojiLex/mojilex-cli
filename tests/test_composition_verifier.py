@@ -1,10 +1,14 @@
+import asyncio
 import json
+import traceback
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
-from mojilex_cli.ai.base import RequestBudget
+from mojilex_cli.ai.base import AIPaymentRequiredError, RequestBudget, request_budget_scope
 from mojilex_cli.composition.verifier import verify_composition
+from mojilex_cli.concurrency import batch_limits
 
 PNG = b"\x89PNG\r\n\x1a\nsynthetic"
 
@@ -294,3 +298,108 @@ async def test_unknown_audit_never_calls():
         budget=RequestBudget(max_requests=1, allow_unknown_cost=True),
     )
     assert not client.calls
+
+
+class HTTPFailure(Exception):
+    def __init__(self, status):
+        super().__init__("raw provider response must remain private")
+        self.status_code = status
+
+
+async def test_payment_required_preserves_reservation_and_resume_ledger():
+    records = []
+    budget = RequestBudget(
+        max_requests=20,
+        allow_unknown_cost=True,
+        requests_used=7,
+        cost_reserved=Decimal("1.25"),
+        reservation_recorder=lambda count, cost: records.append((count, cost)),
+    )
+    client = Client(error=HTTPFailure(402))
+    with pytest.raises(AIPaymentRequiredError, match="HTTP 402") as raised:
+        await check(client, budget)
+    assert "raw provider response" not in str(raised.value)
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+    assert "raw provider response" not in "".join(traceback.format_exception(raised.value))
+    assert records == [(8, Decimal("1.25"))]
+    assert budget.requests_used == 8
+    assert len(client.calls) == 1
+    with pytest.raises(AIPaymentRequiredError):
+        await check(Client(), budget)
+    assert records == [(8, Decimal("1.25"))]
+    # Resuming after billing is resolved starts a fresh invocation with the
+    # already persisted conservative ledger, never refunding the failed call.
+    resumed = RequestBudget(
+        max_requests=20,
+        allow_unknown_cost=True,
+        requests_used=records[-1][0],
+        cost_reserved=records[-1][1],
+    )
+    assert await check(Client(), resumed)
+    assert resumed.requests_used == 9
+    assert resumed.cost_reserved == Decimal("1.25")
+
+
+async def test_payment_required_blocks_queued_peer_before_ai_slot_release():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class WaitingClient(Client):
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            started.set()
+            await release.wait()
+            raise HTTPFailure(402)
+
+    parent = RequestBudget(max_requests=20, allow_unknown_cost=True)
+    with request_budget_scope(parent):
+        first_budget = RequestBudget(max_requests=20, allow_unknown_cost=True)
+        peer_budget = RequestBudget(max_requests=20, allow_unknown_cost=True)
+    first = WaitingClient()
+    peer = Client()
+    with batch_limits(downloads=1, renders=1, ai=1, max_temp_bytes=1024):
+        task = asyncio.create_task(check(first, first_budget))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        peer_task = asyncio.create_task(check(peer, peer_budget))
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(task, peer_task, return_exceptions=True)
+    assert all(isinstance(result, AIPaymentRequiredError) for result in results)
+    assert len(first.calls) == 1
+    assert not peer.calls
+    assert first_budget.requests_used == parent.requests_used == 1
+    assert peer_budget.requests_used == 0
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500, True, "402"])
+async def test_nonpayment_failure_keeps_optional_veto_behavior(status):
+    error = HTTPFailure(status)
+    error.__cause__ = HTTPFailure(402)
+    # The first explicit HTTP status wins. Non-integer status values alone do
+    # not supply payment evidence, so omit a payment cause in those cases.
+    if type(status) is not int:
+        error.__cause__ = None
+    budget = RequestBudget(max_requests=5, allow_unknown_cost=True)
+    assert not await check(Client(error=error), budget)
+    assert await check(Client(), budget)
+    assert budget.requests_used == 2
+
+
+async def test_owned_client_closes_before_payment_failure_propagates(monkeypatch):
+    client = Client(error=HTTPFailure(402))
+    closed = []
+
+    async def aclose():
+        closed.append("async")
+
+    client.aio.aclose = aclose
+    client.close = lambda: closed.append("sync")
+    monkeypatch.setattr(
+        "mojilex_cli.composition.verifier.GeminiVisionProvider",
+        lambda **kwargs: SimpleNamespace(_client=client),
+    )
+    budget = RequestBudget(max_requests=5, allow_unknown_cost=True)
+    with pytest.raises(AIPaymentRequiredError):
+        await verify_composition(PNG, model="test", api_key=None, budget=budget)
+    assert closed == ["async", "sync"]
+    assert budget.requests_used == len(client.calls) == 1

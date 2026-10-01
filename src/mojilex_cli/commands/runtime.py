@@ -740,6 +740,10 @@ def _structured_exception(exc: BaseException, *, debug: bool = False) -> Structu
             "The model response failed validation. Saved results are retained; "
             "resume with the same run ID. If it repeats, report the validation code and field path."
         ),
+        "AI_PAYMENT_REQUIRED": (
+            "Check Gemini billing and add credits if required. Saved results are retained; "
+            "resume the existing run after restoring provider access."
+        ),
         "INTERNAL_ERROR": "Rerun with --debug and report the sanitized traceback.",
     }
     details = {"exception_type": type(exc).__name__} if debug else None

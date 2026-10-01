@@ -437,6 +437,11 @@ block submission; invalid data still fails validation.
 
 ## Questions and troubleshooting
 
+**Gemini returns HTTP 402 / `AI_PAYMENT_REQUIRED`.** Provider credits are depleted.
+MojiLex stops the batch and retains completed results and request counters.
+Check Gemini billing, then resume the saved run from the menu. Restarting analysis
+does not resolve the payment error. See [Google's error reference](https://ai.google.dev/gemini-api/docs/api-errors).
+
 | Question | What to do or expect |
 |---|---|
 | Does analysis cost money? | It may, depending on your Gemini account and model. Analysis starts without confirmation by default, with **100 requests per run**, including retries. Check settings and provider pricing before adding packs, or enable **Confirm before AI analysis**. Resume retains the consumed count. |

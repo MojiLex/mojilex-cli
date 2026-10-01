@@ -221,6 +221,7 @@ _OWNER_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}\Z
 _TERMINAL_ERROR_CODES = frozenset(
     {
         "AI_BUDGET_EXCEEDED",
+        "AI_PAYMENT_REQUIRED",
         "AUTH_FAILED",
         "BUDGET_EXCEEDED",
         "CONFIG_INVALID",

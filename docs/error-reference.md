@@ -10,7 +10,7 @@
 | 5 | source/stale identity | `SOURCE_UNSUPPORTED`, `SOURCE_NOT_FOUND`, `SOURCE_CHANGED_DURING_RUN`, `IDENTITY_CONFLICT` |
 | 6 | network/rate limit | `NETWORK_ERROR`, `RATE_LIMITED` |
 | 7 | media | `MEDIA_INVALID`, `MEDIA_LIMIT_EXCEEDED`, `MEDIA_RENDER_FAILED` |
-| 8 | AI | `AI_REQUEST_FAILED`, `AI_OUTPUT_INVALID` |
+| 8 | AI | `AI_REQUEST_FAILED`, `AI_OUTPUT_INVALID`, `AI_PAYMENT_REQUIRED` |
 | 9 | budget | `BUDGET_EXCEEDED`, `UNKNOWN_COST` |
 | 10 | dataset validation | `VALIDATION_FAILED` |
 | 11 | Git/conflict | `DIRTY_WORKTREE`, `GIT_CONFLICT` |
@@ -20,3 +20,8 @@
 
 With `--json`, stdout is one envelope. Each error contains `code`, `message`, `retryable`, and
 `hint`; optional details are sanitized and never contain secrets or raw download URLs.
+
+`AI_PAYMENT_REQUIRED` means Gemini returned HTTP 402. The batch stops without
+retrying payment failures or starting further AI requests. Calls already in flight
+remain counted. Saved results and the request ledger are retained; fix provider
+billing, then resume the existing run. See [Google's error reference](https://ai.google.dev/gemini-api/docs/api-errors).

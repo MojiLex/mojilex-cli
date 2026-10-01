@@ -41,6 +41,12 @@ class AIOutputError(AIError):
     code = "AI_OUTPUT_INVALID"
 
 
+class AIPaymentRequiredError(AIError):
+    """Provider billing must be resolved before further requests can proceed."""
+
+    code = "AI_PAYMENT_REQUIRED"
+
+
 class AITransientError(AIError):
     """A known transient failure with an optional explicit server retry interval."""
 
@@ -593,6 +599,31 @@ class RequestBudget:
         self._requests_approved = not confirm_before_requests
         self._unknown_cost_asked = False
         self._lock = asyncio.Lock()
+        self._payment_stop_message: str | None = None
+
+    def stop_for_payment(self, error: AIPaymentRequiredError) -> None:
+        """Block queued reservations before releasing the failed request's slot.
+
+        This state belongs to the current invocation, including parent budgets.
+        Resume reconstructs new budgets from the unchanged durable usage ledger.
+        The synchronous latch cannot yield between observing 402 and blocking peers.
+        """
+        current: RequestBudget | None = self
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if current._payment_stop_message is None:
+                current._payment_stop_message = str(error)
+            current = current._parent
+
+    def _raise_if_payment_stopped(self) -> None:
+        current: RequestBudget | None = self
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if current._payment_stop_message is not None:
+                raise AIPaymentRequiredError(current._payment_stop_message) from None
+            current = current._parent
 
     async def reserve(
         self,
@@ -601,6 +632,7 @@ class RequestBudget:
         approval_callback: Callable[[], None] | None = None,
     ) -> None:
         async with self._lock:
+            self._raise_if_payment_stopped()
             if (
                 self.max_requests is not None
                 and self.requests_used + estimate.requests > self.max_requests
@@ -695,6 +727,9 @@ async def describe_with_recovery(
                     progress("request")
                     try:
                         return await provider.describe(target)
+                    except AIPaymentRequiredError as exc:
+                        budget.stop_for_payment(exc)
+                        raise
                     except AITransientError as exc:
                         if exc.retry_after_seconds is not None:
                             # Publish the cooldown before releasing this slot so

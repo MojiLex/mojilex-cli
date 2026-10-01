@@ -572,6 +572,15 @@ _RUSSIAN_MESSAGES = {
         "продолжите через resume с тем же ID запуска. При повторении сообщите код и поле ошибки."
     ),
     "Gemini structured response: interaction_incomplete": "Gemini не завершил ответ.",
+    "Gemini returned HTTP 402 Payment Required; check provider billing before resuming.": (
+        "Gemini отклонил запрос: HTTP 402, требуется оплата. Проверьте баланс у провайдера."
+    ),
+    "Check Gemini billing and add credits if required. Saved results are retained; "
+    "resume the existing run after restoring provider access.": (
+        "Проверьте оплату Gemini и при необходимости пополните баланс. "
+        "Сохранённые результаты остаются; продолжите существующий запуск "
+        "после восстановления доступа."
+    ),
     "Gemini structured response: model_mismatch": "Gemini вернул ответ другой модели.",
     "Gemini structured response: output_missing": "Gemini вернул ответ без текста JSON.",
     "Gemini structured response: invalid_json": "Gemini вернул некорректный JSON.",
