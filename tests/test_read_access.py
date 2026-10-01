@@ -10,6 +10,7 @@ import pytest
 import rfc8785
 import typer
 
+from mojilex_cli import __version__
 from mojilex_cli.analysis import load_analysis_profile
 from mojilex_cli.commands.read import (
     ReadCommandResult,
@@ -515,12 +516,15 @@ def test_bound_document_exposes_only_validated_delegated_profile_body(tmp_path: 
     assert "body" not in effective
 
 
-@pytest.mark.parametrize("minimum", ["0.1.0", "0.2.0"])
+@pytest.mark.parametrize("minimum", ["0.1.0", __version__])
 def test_minimum_reader_version_accepts_lower_or_equal(minimum: str) -> None:
     _validate_minimum_reader_version({"minimum_reader_version": minimum})
 
 
-def test_minimum_reader_version_rejects_higher_and_malformed() -> None:
+def test_minimum_reader_version_rejects_higher_and_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mojilex_cli.read.snapshot.__version__", "0.2.0")
     with pytest.raises(CommandError) as higher:
         _validate_minimum_reader_version({"minimum_reader_version": "0.2.1"})
     assert higher.value.error.code == "SCHEMA_UNSUPPORTED"
