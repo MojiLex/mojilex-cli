@@ -85,17 +85,21 @@ def _read_models(data: bytes, model: type[_Model], *, source: str, many: bool) -
                 return [cast(_Model, value.model_copy(deep=True)) for value in cached]
     values = parse_jsonl(data, source=source) if many else [parse_json(data, source=source)]
     result = [model.model_validate(raw) for raw in values]
-    if memo is not None and len(data) <= _MODEL_CACHE_BYTES:
-        saved = tuple(item.model_copy(deep=True) for item in result)
+    if memo is not None:
         with memo.lock:
-            if key not in memo.entries:
-                while memo.entries and (
-                    memo.size + len(data) > _MODEL_CACHE_BYTES
-                    or len(memo.entries) >= _MODEL_CACHE_ENTRIES
-                ):
-                    old_key, _ = memo.entries.popitem(last=False)
-                    memo.size -= len(old_key[1])
-                memo.entries[key] = saved
+            # A full sequential scan can exceed the bounded memo. Replacing
+            # its earlier entries with every tail record would make the next
+            # scan miss them all, while deep-copying values never reused.
+            # Admit only when there is room; keep the existing exact-byte
+            # results for this operation and validate the uncached tail fresh.
+            if (
+                key not in memo.entries
+                and len(memo.entries) < _MODEL_CACHE_ENTRIES
+                and memo.size + len(data) <= _MODEL_CACHE_BYTES
+            ):
+                # Admission and its private copy share the lock, so concurrent
+                # readers cannot consume capacity after the check.
+                memo.entries[key] = tuple(item.model_copy(deep=True) for item in result)
                 memo.size += len(data)
     return result
 
