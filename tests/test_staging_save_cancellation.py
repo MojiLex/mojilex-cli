@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import shutil
 import threading
 from contextlib import contextmanager, suppress
 from decimal import Decimal
@@ -18,6 +17,7 @@ from mojilex_cli.runs import RunStore
 from test_add_run_staging import saved_add  # noqa: F401
 from test_incremental_pack_readiness import _real_packs
 from test_pack_describe_pipeline import pipeline  # noqa: F401
+from test_pipeline_workspaces import _git
 
 
 def _private_pipeline(request, monkeypatch):
@@ -26,7 +26,25 @@ def _private_pipeline(request, monkeypatch):
     state.sources = state.sources[:1]
     root = staging_workspace_path(state.config.runs_dir, state.checkpoint.run_id)
     root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(state.root, root)
+    # Git's transport reads the committed tree while source auto-maintenance can
+    # repack loose objects; copying a live .git directory races with that work.
+    _git(
+        state.root,
+        "-c",
+        "core.autocrlf=false",
+        "clone",
+        "--no-local",
+        "--no-hardlinks",
+        str(state.root),
+        str(root),
+    )
+    git = GitRunner(root)
+    assert git.current_sha() == state.checkpoint.base_revision
+    git.run("remote", "set-url", "origin", f"https://github.com/{state.target}.git")
+    # Keep the ignored persistent lock artifact exercised by saved_add.
+    lock = root / ".mojilex" / "locks" / "dataset-transaction-v1.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
     state.root = root
     state.config = state.config.model_copy(
         update={"repository": state.config.repository.model_copy(update={"target": str(root)})}

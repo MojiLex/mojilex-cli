@@ -127,6 +127,44 @@ def test_local_clones_scope_safe_directory_to_the_exact_git_dir(
     assert clone_commands[1][2:4] == ("-c", "core.longpaths=true")
 
 
+@pytest.mark.parametrize("operation", ["staging", "revision"])
+def test_private_clone_transfers_only_reachable_objects_and_survives_source_gc(
+    tmp_path: Path, operation: str
+) -> None:
+    source, revision = _source_repository(tmp_path)
+    scratch = source / "scratch.txt"
+    scratch.write_text("Unreferenced synthetic object.\n", encoding="utf-8")
+    orphan = _git(source, "hash-object", "-w", "scratch.txt")
+    scratch.unlink()
+
+    def check_clone(root: Path) -> None:
+        missing = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-e", orphan],
+            capture_output=True,
+            check=False,
+        )
+        assert missing.returncode != 0
+        assert not (root / ".git" / "objects" / "info" / "alternates").exists()
+        _git(source, "gc", "--prune=now")
+        assert _git(root, "rev-parse", "HEAD") == revision
+        assert (root / "dataset.json").read_text(encoding="utf-8") == "{}\n"
+        _git(root, "fsck", "--strict", "--no-dangling")
+
+    if operation == "staging":
+        root = prepare_staging_workspace(
+            source,
+            target=RepositoryRef.parse("MojiLex/mojilex"),
+            runs_dir=tmp_path / "runs",
+            run_id="mlxrun_" + "c" * 32,
+            base_branch="main",
+            base_revision=revision,
+        )
+        check_clone(root)
+    else:
+        with snapshot_at_revision(source, revision) as root:
+            check_clone(root)
+
+
 def test_revision_snapshot_canonicalizes_its_own_temporary_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
