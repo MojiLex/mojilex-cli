@@ -1789,10 +1789,21 @@ def _validate_repository_files(root: Path, issues: list[ValidationIssue]) -> Non
             continue
         if in_ignored_tree:
             continue
-        if path.is_symlink():
-            _issue(issues, "SYMLINK", relative.as_posix(), "symlinks are forbidden in dataset tree")
+        try:
+            metadata = path.lstat()
+        except (FileNotFoundError, NotADirectoryError):
             continue
-        if not path.is_file():
+        attributes = int(getattr(metadata, "st_file_attributes", 0))
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        if stat.S_ISLNK(metadata.st_mode) or attributes & reparse_flag:
+            _issue(
+                issues,
+                "SYMLINK",
+                relative.as_posix(),
+                "symbolic links and filesystem reparse points are forbidden in the dataset tree",
+            )
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
             continue
         lowered_parts = tuple(part.lower() for part in relative.parts)
         if (

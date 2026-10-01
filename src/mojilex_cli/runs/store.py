@@ -417,6 +417,13 @@ class RunCheckpoint(BaseModel):
         return value
 
 
+_ELEMENT_SERIALIZER = ElementCheckpoint.__pydantic_serializer__
+_ELEMENT_MODEL_DUMP = ElementCheckpoint.model_dump
+_ELEMENT_MODEL_DUMP_JSON = ElementCheckpoint.model_dump_json
+_CHECKPOINT_SERIALIZER = RunCheckpoint.__pydantic_serializer__
+_CHECKPOINT_MODEL_DUMP = RunCheckpoint.model_dump
+
+
 def new_run_id() -> str:
     return f"mlxrun_{uuid.uuid4().hex}"
 
@@ -531,19 +538,42 @@ class RunStore:
             self._safe_payloads.clear()
             _assert_safe(checkpoint.model_dump(mode="json"))
             return
-        payload = checkpoint.model_dump(mode="json")
-        elements = payload.pop("elements")
+        elements = checkpoint.elements
+        if (
+            type(checkpoint) is not RunCheckpoint
+            or type(elements) is not dict
+            or any(
+                type(key) is not str or type(value) is not ElementCheckpoint
+                for key, value in elements.items()
+            )
+            or ElementCheckpoint.__pydantic_serializer__ is not _ELEMENT_SERIALIZER
+            or ElementCheckpoint.model_dump is not _ELEMENT_MODEL_DUMP
+            or ElementCheckpoint.model_dump_json is not _ELEMENT_MODEL_DUMP_JSON
+            or RunCheckpoint.__pydantic_serializer__ is not _CHECKPOINT_SERIALIZER
+            or RunCheckpoint.model_dump is not _CHECKPOINT_MODEL_DUMP
+        ):
+            _assert_safe(checkpoint.model_dump(mode="json"), memo=memo)
+            return
+        payload = checkpoint.model_dump(mode="json", exclude={"elements"})
         _assert_safe(dict.fromkeys(payload), memo=memo)
         for field, value in payload.items():
             self._assert_payload_safe(value, path=f"checkpoint.{field}")
-        if not isinstance(elements, dict):
-            _assert_safe({"elements": elements}, memo=memo)
-            return
         # Check container and element keys even when the corresponding value was
         # seen under a different key. A safe value never legitimizes an unsafe key.
         self._assert_payload_safe({"elements": dict.fromkeys(elements)}, path="checkpoint")
         for key, element in elements.items():
-            self._assert_payload_safe(element, path=f"checkpoint.elements.{key}")
+            # Serialize current content even on a hit: frozen models still hold
+            # mutable containers, and model_copy can bypass field validation.
+            # Use the recorded compiled serializer, as the enclosing checkpoint
+            # does. An unvalidated copy may shadow instance serialization methods.
+            serialized = _ELEMENT_SERIALIZER.to_json(element)
+            if not self._safe_payloads.contains(serialized):
+                _assert_safe(
+                    _ELEMENT_SERIALIZER.to_python(element, mode="json"),
+                    path=f"checkpoint.elements.{key}",
+                    memo=memo,
+                )
+                self._safe_payloads.remember(serialized)
 
     def _assert_payload_safe(self, value: object, *, path: str) -> None:
         serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
