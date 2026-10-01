@@ -101,6 +101,7 @@ def test_invalid_manifest_is_a_miss_without_deletion(tmp_path: Path, change: str
     path.write_text(json.dumps(manifest), encoding="utf-8")
     changed_bytes = path.read_bytes()
     assert store.get(KEY, _expected(media)) is None
+    assert not store.discard(KEY, _expected(media))
     assert not store.put(KEY, media)
     assert path.read_bytes() == changed_bytes
 
@@ -118,10 +119,13 @@ def test_changed_metadata_count_dark_and_frame_bytes_are_misses(tmp_path: Path) 
         expected.model_copy(update={"has_dark_render": False}),
     ):
         assert store.get(KEY, changed) is None
+        assert not store.discard(KEY, changed)
     frame = store.root / KEY / "light-00.png"
     data = frame.read_bytes()
     frame.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
     assert store.get(KEY, expected) is None
+    assert not store.discard(KEY, expected)
+    assert frame.read_bytes() == data[:-1] + bytes([data[-1] ^ 1])
 
 
 def test_store_limit_and_reservation_before_writing(tmp_path: Path) -> None:
@@ -184,10 +188,12 @@ def test_invalid_keys_unknown_entries_and_non_png_are_preserved(tmp_path: Path) 
     store = RetainedMediaStore(tmp_path / "retained", 1_000_000)
     assert not store.put("../outside", media)
     assert store.get("../outside", _expected(media)) is None
+    assert not store.discard("../outside", _expected(media))
     unknown = store.root / KEY
     unknown.mkdir()
     (unknown / "personal.txt").write_text("keep")
     assert not store.put(KEY, media)
+    assert not store.discard(KEY, _expected(media))
     assert (unknown / "personal.txt").read_text() == "keep"
     media.frame_paths[0].write_bytes(b"raw source")
     assert not store.put("b" * 64, media)
@@ -206,6 +212,7 @@ def test_frame_and_root_symlinks_are_rejected(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("symlink creation requires Windows developer mode or privileges")
     assert store.get(KEY, _expected(media)) is None
+    assert not store.discard(KEY, _expected(media))
     linked_root = tmp_path / "linked"
     linked_root.symlink_to(store.root, target_is_directory=True)
     linked_store = RetainedMediaStore(linked_root, 1_000_000)
@@ -337,3 +344,107 @@ async def test_failed_retention_releases_real_temporary_budget(
         source, _, size = await temporary.write_stream(_chunks(b"x" * remaining))
         assert source.stat().st_size == size == remaining
         assert temporary.bytes_written == temporary.limits.max_run_temp_bytes
+
+
+def test_completed_entry_discard_releases_shared_budget_without_touching_other_frames(
+    tmp_path: Path,
+) -> None:
+    from mojilex_cli.concurrency import batch_limits
+    from mojilex_cli.media.resume import get_retained_store
+
+    media = _media(tmp_path)
+    root = tmp_path / "retained"
+    seed = RetainedMediaStore(root, 1_000_000)
+    assert seed.put(KEY, media)
+    assert seed.put("b" * 64, media)
+    total = seed.size_bytes
+    with batch_limits(downloads=1, renders=1, ai=1, max_temp_bytes=total) as limits:
+        with TemporaryMediaRun(root=tmp_path) as run:
+            store = get_retained_store(root, max_bytes=total, run=run)
+            assert limits.temp_budget.used == total
+            assert store.discard(KEY, _expected(media))
+            assert store.size_bytes == limits.temp_budget.used == total // 2
+            assert store.get(KEY, _expected(media)) is None
+            assert store.get("b" * 64, _expected(media)) is not None
+            assert not store.discard(KEY, _expected(media))
+            assert store.put("c" * 64, media)
+            assert limits.temp_budget.used == total
+
+
+def test_discard_preserves_verified_entry_with_unknown_extra_file(tmp_path: Path) -> None:
+    media = _media(tmp_path)
+    store = RetainedMediaStore(tmp_path / "retained", 1_000_000)
+    assert store.put(KEY, media)
+    entry = store.root / KEY
+    (entry / "personal.txt").write_text("keep", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in entry.iterdir()}
+    assert not store.discard(KEY, _expected(media))
+    assert {path.name: path.read_bytes() for path in entry.iterdir()} == before
+
+
+def test_discard_preserves_files_changed_during_verification(tmp_path, monkeypatch) -> None:
+    media = _media(tmp_path)
+    store = RetainedMediaStore(tmp_path / "retained", 1_000_000)
+    assert store.put(KEY, media)
+    original = store._get
+    frame = store.root / KEY / "light-00.png"
+
+    def changed(key, expected):
+        result = original(key, expected)
+        frame.write_bytes(b"new user data")
+        return result
+
+    monkeypatch.setattr(store, "_get", changed)
+    assert not store.discard(KEY, _expected(media))
+    assert frame.read_bytes() == b"new user data"
+    assert (store.root / KEY / "manifest.json").is_file()
+
+
+def test_discard_preserves_hardlinked_frames(tmp_path: Path) -> None:
+    media = _media(tmp_path)
+    store = RetainedMediaStore(tmp_path / "retained", 1_000_000)
+    assert store.put(KEY, media)
+    frame = store.root / KEY / "light-00.png"
+    outside = tmp_path / "personal-preview.png"
+    outside.hardlink_to(frame)
+    assert not store.discard(KEY, _expected(media))
+    assert outside.read_bytes() == frame.read_bytes()
+
+
+def test_discard_partial_failure_releases_only_bytes_actually_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = _media(tmp_path)
+    released = []
+    store = RetainedMediaStore(tmp_path / "retained", 1_000_000, release=released.append)
+    assert store.put(KEY, media)
+    before = store.size_bytes
+    original = Path.unlink
+    removed = []
+
+    def fail_second(path: Path, *args, **kwargs) -> None:
+        if len(removed) == 1:
+            raise OSError("synthetic busy frame")
+        size = path.stat().st_size
+        original(path, *args, **kwargs)
+        removed.append(size)
+
+    monkeypatch.setattr(Path, "unlink", fail_second)
+    assert not store.discard(KEY, _expected(media))
+    assert released == removed
+    assert store.size_bytes == before - sum(removed)
+    assert (store.root / KEY / "manifest.json").is_file()
+    assert store.get(KEY, _expected(media)) is None
+
+
+def test_oversized_reopened_store_counts_all_bytes_before_safe_discard(tmp_path: Path) -> None:
+    media = _media(tmp_path)
+    root = tmp_path / "retained"
+    original = RetainedMediaStore(root, 1_000_000)
+    assert original.put(KEY, media)
+    assert original.put("b" * 64, media)
+    store = RetainedMediaStore(root, original.size_bytes // 2)
+    assert store.size_bytes == original.size_bytes
+    assert store.discard(KEY, _expected(media))
+    assert store.size_bytes == store.max_bytes
+    assert store.get("b" * 64, _expected(media)) is not None

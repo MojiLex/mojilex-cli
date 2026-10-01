@@ -294,11 +294,11 @@ class GitRunner:
         return tuple(result)
 
     def ensure_no_overlapping_changes(self, target_paths: Sequence[str | PurePath]) -> None:
-        targets = tuple(PurePosixPath(path) for path in self.normalize_paths(target_paths))
+        targets, target_parents = _target_path_index(self.normalize_paths(target_paths))
         conflicts: list[str] = []
         for dirty in self.status_paths():
             dirty_path = PurePosixPath(dirty.replace("\\", "/"))
-            if any(_paths_overlap(dirty_path, target) for target in targets):
+            if _overlaps_targets(dirty_path, targets, target_parents):
                 conflicts.append(dirty_path.as_posix())
         if conflicts:
             raise DirtyWorktreeError(
@@ -320,11 +320,11 @@ class GitRunner:
             )
 
     def ensure_only_targets_staged(self, target_paths: Sequence[str | PurePath]) -> None:
-        targets = tuple(PurePosixPath(path) for path in self.normalize_paths(target_paths))
+        targets, target_parents = _target_path_index(self.normalize_paths(target_paths))
         unrelated = [
             path
             for path in self.staged_paths()
-            if not any(_paths_overlap(PurePosixPath(path), target) for target in targets)
+            if not _overlaps_targets(PurePosixPath(path), targets, target_parents)
         ]
         if unrelated:
             raise DirtyWorktreeError(
@@ -498,6 +498,23 @@ def _safe_relative_path(path: str | PurePath, root: Path) -> PurePosixPath:
 
 def _paths_overlap(left: PurePosixPath, right: PurePosixPath) -> bool:
     return left == right or left in right.parents or right in left.parents
+
+
+def _target_path_index(paths: Iterable[str]) -> tuple[set[PurePosixPath], set[PurePosixPath]]:
+    targets = {PurePosixPath(path) for path in paths}
+    return targets, {parent for target in targets for parent in target.parents}
+
+
+def _overlaps_targets(
+    path: PurePosixPath, targets: set[PurePosixPath], target_parents: set[PurePosixPath]
+) -> bool:
+    # Match complete path components in both directions. An index avoids comparing
+    # every dirty/staged file with thousands of generated targets individually.
+    return (
+        path in targets
+        or path in target_parents
+        or any(parent in targets for parent in path.parents)
+    )
 
 
 def _validate_identity(identity: GitIdentity) -> GitIdentity:

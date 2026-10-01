@@ -17,7 +17,10 @@ MVP therefore uses allowlists and fail-closed validation at each boundary.
   junctions and path traversal, checks exact hashes and rendering identity, and charges retained
   bytes against the same run disk limit. Missing/corrupt entries are cache misses. Frames remain
   available after import for a subsequent describe/resume; metadata `cache prune` does not delete
-  these frame directories.
+  these frame directories. Disk pressure can reclaim checksum-verified previews only after their
+  pack's results are durably saved and active processing releases its paths. Interrupted work,
+  unknown files, modified entries and links are never removed by this reclamation. Disk limits
+  stay unchanged; missing previews fall back to existing resume/gallery behavior.
 - Opt-in credential persistence uses the operating-system keyring. API credentials are never
   written to MojiLex configuration files, caches, run state, or repositories; environment values
   take precedence over keyring values.

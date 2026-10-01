@@ -62,6 +62,12 @@ or rendering completed items again. Raw downloaded media remains transient. Reta
 are checked against source descriptors, checkpoint hashes, decoder/analysis identity and their
 own byte hashes, and share the run's disk budget with temporary processing. A missing or
 invalid retained entry falls back to downloading and verification.
+Shared disk pressure can release only verified previews registered after durable
+pack completion and temporary media cleanup. Active and interrupted frames remain
+reserved; completion alone never removes previews. Reclamation runs outside the
+byte-accounting lock and never waits for a busy retained store, so concurrent
+reservations cannot deadlock with PNG writers. Saved results and request counters
+are unaffected; a reclaimed preview may be rebuilt on a later resume.
 
 Completed AI results keep their exact prompt version and routing provenance when a later
 prompt version is introduced. Missing descriptions use the new prompt; cache-only compatibility
@@ -82,3 +88,12 @@ are derived deterministically by `build-index`; native emoji entities are never 
 All files for one collection are first produced in a staging tree. They replace calculated target
 paths atomically only after collection-level validation succeeds. Publication performs another full
 validation against the exact Git tree being committed.
+
+Private run workspaces keep SHA-256 receipts for paths written by completed pack saves.
+Resume checks those receipts against freshly loaded bytes before allowing an update to
+the run's own uncommitted output. A legacy layout migration may move an unchanged file
+only when its exact bytes match the canonical candidate and the destination is absent.
+Both exceptions require the exact run workspace and recorded base commit; normal local
+checkouts and publication keep the regular dirty-worktree guard. Atomic writes still
+recheck the complete baseline under the transaction lock. Receipt deltas are merged
+into the latest checkpoint so concurrent AI results and budget reservations survive.

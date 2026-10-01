@@ -123,7 +123,10 @@ Original downloads and contact sheets are temporary. Selected PNG frames are
 retained locally in `resume-media` under the configured cache directory, outside
 the dataset, for resume and gallery previews. They share the run disk budget
 with temporary files. Metadata `cache prune` does not remove these frame
-directories. Old runs whose frames were already removed may need one rendering
+directories. If the shared disk budget fills, verified previews of durably
+completed packs can be released; active and interrupted work keeps its frames.
+Unknown or changed cache files are never removed automatically. Saved descriptions
+and request counters remain intact. Old runs whose frames were removed may need one rendering
 pass to resume; the gallery uses a placeholder when a preview is unavailable.
 
 Original media, retained frames, contact sheets, credentials, and Telegram

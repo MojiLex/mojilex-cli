@@ -1,12 +1,13 @@
 import subprocess
 import sys
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MethodType
 
 import pytest
 
 from mojilex_cli.git import DirtyWorktreeError, GitError, GitIdentity, GitPublisher, GitRunner
+from mojilex_cli.git.runner import _overlaps_targets, _paths_overlap, _target_path_index
 from mojilex_cli.github import RepositoryRef
 from mojilex_cli.pipeline.runner import _confirm_direct_push
 
@@ -51,6 +52,39 @@ def test_dirty_overlap_is_rejected_before_pipeline_write(tmp_path: Path) -> None
     (repo / "tracked.txt").write_text("user edit\n", encoding="utf-8")
     with pytest.raises(DirtyWorktreeError):
         GitPublisher(GitRunner(repo)).guard_targets(("tracked.txt",))
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        (),
+        ("data",),
+        ("data/telegram/emojis/one.jsonl", "tombstones/one.json"),
+        ("data/telegram", "data/telegram/emojis/one.jsonl"),
+        ("data/telegram/emojis/one.jsonl", "data/telegram/emojis/two.jsonl"),
+    ],
+)
+def test_indexed_overlap_preserves_component_and_ancestor_checks(targets):
+    paths = (
+        "data",
+        "data/telegram",
+        "data/telegram/emojis",
+        "data/telegram/emojis/one.jsonl",
+        "data/telegram/emojis/one.jsonl/child",
+        "data/telegram/emojis/one.jsonl-other",
+        "data/telegram/emojis/other.jsonl",
+        "data/telegram/emojis/two.jsonl",
+        "data/telegram2/emojis/one.jsonl",
+        "tombstones/one.json",
+        "docs/data",
+        "dataset.json",
+    )
+    indexed, parents = _target_path_index(targets)
+    for path in paths:
+        candidate = PurePosixPath(path)
+        assert _overlaps_targets(candidate, indexed, parents) == any(
+            _paths_overlap(candidate, PurePosixPath(target)) for target in targets
+        )
 
 
 def test_git_runner_rejects_force_and_credential_remote(tmp_path: Path) -> None:

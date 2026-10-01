@@ -92,6 +92,18 @@ class TemporaryMediaRun:
             self._adjust_batch(-count)
             self._retained_bytes -= count
 
+    @property
+    def available_temp_bytes(self) -> int:
+        """Current individual headroom; shared admission must still reserve."""
+        with self._account_lock:
+            return max(
+                0,
+                self.limits.max_run_temp_bytes
+                - self.bytes_written
+                - self._reserved_bytes
+                - self._retained_bytes,
+            )
+
     async def write_stream(
         self, chunks: AsyncIterator[bytes], *, expected_size: int | None = None
     ) -> tuple[Path, str, int]:

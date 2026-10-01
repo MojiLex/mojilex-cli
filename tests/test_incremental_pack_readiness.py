@@ -275,7 +275,10 @@ async def test_fragment_totals_include_markers_saved_before_final_assembly(reque
         return changed
 
     monkeypatch.setattr(publication, "mark_verified_fragments", mark)
-    result = await asyncio.wait_for(state.run(), 20)
+    # This finite fixture performs real Git/schema/filesystem work. Its assertions
+    # concern saved fragment totals, so machine speed is not part of the contract.
+    # Event waits in the cancellation/readiness tests remain bounded separately.
+    result = await state.run()
     assert not result.errors
     assert sum(map(len, marked_per_call[:-1])) == 2
     assert marked_per_call[-1] == set()
