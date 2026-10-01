@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import shutil
 import threading
 from contextlib import contextmanager, suppress
 from decimal import Decimal
@@ -15,6 +14,7 @@ from mojilex_cli.pipeline import runner
 from mojilex_cli.pipeline.staging_guards import staging_guard_exemptions
 from mojilex_cli.pipeline.workspaces import staging_workspace_path
 from mojilex_cli.runs import RunStore
+from staging_fixture_helpers import clone_fixture_repository
 from test_add_run_staging import saved_add  # noqa: F401
 from test_incremental_pack_readiness import _real_packs
 from test_pack_describe_pipeline import pipeline  # noqa: F401
@@ -25,8 +25,12 @@ def _private_pipeline(request, monkeypatch):
     _real_packs(state, monkeypatch, dedupe="exact")
     state.sources = state.sources[:1]
     root = staging_workspace_path(state.config.runs_dir, state.checkpoint.run_id)
-    root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(state.root, root)
+    clone_fixture_repository(
+        state.root,
+        root,
+        target=state.target,
+        base_revision=state.checkpoint.base_revision,
+    )
     state.root = root
     state.config = state.config.model_copy(
         update={"repository": state.config.repository.model_copy(update={"target": str(root)})}

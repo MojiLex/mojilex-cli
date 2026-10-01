@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 
-from mojilex_cli.ai.base import RequestBudget
+from mojilex_cli.ai.base import AIPaymentRequiredError, RequestBudget
 from mojilex_cli.concurrency import run_blocking
 from mojilex_cli.media.models import ProcessedMedia
 from mojilex_cli.sources.base import SourceCollection
@@ -231,6 +231,8 @@ class CompositionQueue:
                         self.accepted[key] = [
                             old for old in self.accepted[key] if old not in overlapping
                         ] + [verified]
+                except AIPaymentRequiredError:
+                    raise
                 except Exception:
                     continue
         finally:

@@ -57,6 +57,7 @@ ERROR_EXIT_CODES: dict[str, ExitCode] = {
     "MEDIA_LIMIT_EXCEEDED": ExitCode.MEDIA,
     "MEDIA_RENDER_FAILED": ExitCode.MEDIA,
     "AI_REQUEST_FAILED": ExitCode.AI,
+    "AI_PAYMENT_REQUIRED": ExitCode.AI,
     "AI_OUTPUT_INVALID": ExitCode.AI,
     "BUDGET_EXCEEDED": ExitCode.BUDGET,
     "UNKNOWN_COST": ExitCode.BUDGET,

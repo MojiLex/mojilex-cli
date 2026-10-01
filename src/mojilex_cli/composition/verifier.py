@@ -11,8 +11,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mojilex_cli.ai.base import CostEstimate, RequestBudget
-from mojilex_cli.ai.gemini import GeminiVisionProvider, _disable_interaction_retries
+from mojilex_cli.ai.base import AIPaymentRequiredError, CostEstimate, RequestBudget
+from mojilex_cli.ai.gemini import (
+    GeminiVisionProvider,
+    _disable_interaction_retries,
+    _payment_required_provider_error,
+)
 from mojilex_cli.ai.transport_schema import gemini_transport_schema
 from mojilex_cli.concurrency import ai_slot
 
@@ -125,38 +129,49 @@ async def verify_composition(
                     upper_bound_usd=None, note="Optional composition veto has no price record."
                 )
             )
-            response = await asyncio.wait_for(
-                interactions.create(
-                    model=model,
-                    api_version="v1beta",
-                    input=[
-                        {
-                            "type": "user_input",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
-                                },
-                                {
-                                    "type": "image",
-                                    "mime_type": "image/png",
-                                    "data": base64.b64encode(image_png).decode("ascii"),
-                                },
-                            ],
-                        }
-                    ],
-                    store=False,
-                    background=False,
-                    stream=False,
-                    response_format={
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": gemini_transport_schema(_Verdict.model_json_schema()),
-                    },
-                    generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
-                ),
-                timeout=_TIMEOUT_SECONDS,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    interactions.create(
+                        model=model,
+                        api_version="v1beta",
+                        input=[
+                            {
+                                "type": "user_input",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
+                                    },
+                                    {
+                                        "type": "image",
+                                        "mime_type": "image/png",
+                                        "data": base64.b64encode(image_png).decode("ascii"),
+                                    },
+                                ],
+                            }
+                        ],
+                        store=False,
+                        background=False,
+                        stream=False,
+                        response_format={
+                            "type": "text",
+                            "mime_type": "application/json",
+                            "schema": gemini_transport_schema(_Verdict.model_json_schema()),
+                        },
+                        generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
+                    ),
+                    timeout=_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                if isinstance(exc, AIPaymentRequiredError) or _payment_required_provider_error(exc):
+                    error = AIPaymentRequiredError(
+                        "Gemini returned HTTP 402 Payment Required; "
+                        "check provider billing before resuming."
+                    )
+                    # Block queued reservations before releasing the AI slot.
+                    budget.stop_for_payment(error)
+                    raise error from None
+                raise
         if response.status != "completed" or response.model not in (model, f"models/{model}"):
             return False
         if not isinstance(response.output_text, str) or len(response.output_text) > 16_384:
@@ -172,6 +187,8 @@ async def verify_composition(
             and len(details) >= 2
             and all(20 <= len(detail) <= 1000 for detail in details)
         )
+    except AIPaymentRequiredError:
+        raise
     except Exception:
         # Includes budget refusal, SDK/schema errors and recorder failures. Never
         # expose provider text or attempt another paid call for an optional veto.

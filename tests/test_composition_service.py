@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mojilex_cli.ai.base import CostEstimate, RequestBudget
+from mojilex_cli.ai.base import AIPaymentRequiredError, CostEstimate, RequestBudget
 from mojilex_cli.composition import service
 from test_composition_detector import _split
 
@@ -293,3 +293,39 @@ async def test_shared_emoji_across_packs_has_global_ten_audit_limit(tmp_path, mo
     result = await queue.verify(api_key=None, budget=budget)
     assert budget.requests_used == 10
     assert [len(groups) for groups in result.values()] == [1, 1, 1, 0, 0]
+
+
+async def test_payment_failure_propagates_and_releases_only_owned_proposals(tmp_path, monkeypatch):
+    source, processed = setup_tiles(tmp_path)
+    queue = service.CompositionQueue(model="test")
+    await queue.prepare("failed", source, processed)
+    await queue.prepare("peer", source, processed)
+    records = []
+    budget = RequestBudget(
+        max_requests=20,
+        allow_unknown_cost=True,
+        reservation_recorder=lambda count, cost: records.append(count),
+    )
+    failure = AIPaymentRequiredError("Provider payment required")
+    calls = []
+
+    async def verify(*args, **kwargs):
+        await budget.reserve(CostEstimate(upper_bound_usd=None, note="audit"))
+        calls.append(kwargs["audit"])
+        budget.stop_for_payment(failure)
+        raise failure
+
+    monkeypatch.setattr(service, "verify_composition", verify)
+    with pytest.raises(AIPaymentRequiredError) as raised:
+        await queue.verify(api_key=None, budget=budget, key="failed")
+    assert raised.value is failure
+    assert calls == ["continuity"]
+    assert records == [1]
+    assert not queue.accepted["failed"]
+    assert queue._pending and all(key == "peer" for key, _, _ in queue._pending)
+    assert queue._bytes == sum(len(png) for _, _, png in queue._pending)
+    with pytest.raises(AIPaymentRequiredError):
+        await queue.verify(api_key=None, budget=budget, key="peer")
+    assert calls == ["continuity"]
+    assert records == [1]
+    assert not queue._pending and queue._bytes == 0

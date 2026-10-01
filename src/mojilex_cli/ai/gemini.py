@@ -20,6 +20,7 @@ from .base import (
     SEMANTIC_VALIDATION_CODES,
     AIError,
     AIOutputError,
+    AIPaymentRequiredError,
     AITransientError,
     AIUsage,
     CostEstimate,
@@ -177,6 +178,11 @@ class GeminiVisionProvider:
             raise
         except Exception as exc:
             # Deliberately omit exception text: SDK errors can include request details.
+            if _payment_required_provider_error(exc):
+                raise AIPaymentRequiredError(
+                    "Gemini returned HTTP 402 Payment Required; "
+                    "check provider billing before resuming."
+                ) from None
             message = f"Gemini request failed: {type(exc).__name__}{_safe_provider_status(exc)}"
             if any(_certificate_failure(cause) for cause in _provider_causes(exc)):
                 message += (
@@ -431,6 +437,15 @@ def _certificate_failure(exc: BaseException) -> bool:
         isinstance(exc, ssl.SSLError)
         and getattr(exc, "reason", None) == "CERTIFICATE_VERIFY_FAILED"
     )
+
+
+def _payment_required_provider_error(exc: BaseException) -> bool:
+    """An outer explicit HTTP response wins over incidental nested errors."""
+    for current in _provider_causes(exc):
+        code = getattr(current, "code", getattr(current, "status_code", None))
+        if type(code) is int and 100 <= code <= 599:
+            return code == 402
+    return False
 
 
 def _transient_provider_error(exc: Exception) -> bool:

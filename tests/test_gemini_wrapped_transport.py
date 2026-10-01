@@ -11,7 +11,7 @@ import pytest
 from google import genai
 
 from mojilex_cli.ai import (
-    AIError,
+    AIPaymentRequiredError,
     AITransientError,
     BudgetExceededError,
     GeminiVisionProvider,
@@ -56,10 +56,11 @@ async def test_real_sdk_payment_required_is_not_retried_or_leaked(monkeypatch):
     provider = GeminiVisionProvider(model="gemini-test", api_key="synthetic-key-not-real")
     budget = RequestBudget(max_requests=3, allow_unknown_cost=True)
     try:
-        with pytest.raises(AIError) as captured:
+        with pytest.raises(AIPaymentRequiredError) as captured:
             await describe_with_recovery(provider, _request(), budget)
         assert not isinstance(captured.value, AITransientError)
-        assert "http=402" in str(captured.value)
+        assert captured.value.code == "AI_PAYMENT_REQUIRED"
+        assert "HTTP 402 Payment Required" in str(captured.value)
         assert "PRIVATE" not in str(captured.value)
         assert "synthetic-key" not in str(captured.value)
         assert captured.value.__cause__ is None
