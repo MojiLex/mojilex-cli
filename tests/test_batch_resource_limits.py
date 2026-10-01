@@ -14,6 +14,7 @@ from mojilex_cli.concurrency import (
     batch_limits,
     bounded_map,
     current_batch_limits,
+    pack_pipeline_limits,
 )
 from mojilex_cli.media import MediaLimitError, MediaLimits, MediaProcessor, TemporaryMediaRun
 
@@ -154,6 +155,51 @@ async def test_context_isolation_nested_scope_and_shared_ai_cap() -> None:
     assert peak == 2
     async with ai_slot():
         assert current_batch_limits() is None
+
+
+async def test_repeated_cancel_closes_resource_scopes_in_their_owner_context() -> None:
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    closed: list[bool] = []
+
+    async def operation() -> None:
+        assert current_batch_limits() is None
+        try:
+            with (
+                pack_pipeline_limits(2) as packs,
+                batch_limits(downloads=2, renders=1, ai=1, max_temp_bytes=100) as limits,
+            ):
+
+                async def worker(_: int) -> None:
+                    with batch_limits(downloads=10, renders=10, ai=10, max_temp_bytes=1000):
+                        assert current_batch_limits() is limits
+                        started.set()
+                        try:
+                            await asyncio.Event().wait()
+                        finally:
+                            cleaning.set()
+                            await release.wait()
+                            assert current_batch_limits() is limits
+
+                await bounded_map(range(2), worker, concurrency=2)
+        finally:
+            closed.append(current_batch_limits() is None)
+            with pack_pipeline_limits(3) as fresh:
+                assert fresh is not packs
+
+    task = asyncio.create_task(operation())
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    await asyncio.wait_for(cleaning.wait(), 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    assert closed == [True]
+    assert current_batch_limits() is None
 
 
 async def test_download_slots_are_shared_between_pack_runs(tmp_path: Path) -> None:

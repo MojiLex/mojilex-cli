@@ -124,3 +124,10 @@ def test_tile_requires_exact_expected_metadata(tmp_path, field, value) -> None:
     )
     assert store.get_composition_tile(KEY, changed) is None
     assert store.get_composition_tile("../invalid-key", expected) is None
+
+
+def test_completed_entry_discard_includes_verified_composition_tile(tmp_path) -> None:
+    store, expected = _saved(tmp_path)
+    assert store.discard(KEY, expected)
+    assert store.size_bytes == 0
+    assert list(store.root.iterdir()) == []

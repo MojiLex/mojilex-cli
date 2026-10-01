@@ -11,7 +11,7 @@ import traceback
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any, TypeVar, get_args
@@ -663,6 +663,44 @@ def require_local_repository(value: str | Path) -> Path:
 
 
 def structured_exception(exc: BaseException, *, debug: bool = False) -> StructuredError:
+    """Keep the original exception while adding bounded public source context."""
+    error = _structured_exception(exc, debug=debug)
+    return public_source_error(
+        error,
+        getattr(exc, "_mojilex_source", None),
+        getattr(exc, "_mojilex_entity_id", None),
+    )
+
+
+def public_source_error(
+    error: StructuredError, source: object, entity_id: object = None
+) -> StructuredError:
+    """Attach only a recognized public pack and a decimal custom emoji identifier."""
+    if not isinstance(source, str) or len(source) > 128:
+        return error
+    from mojilex_cli.sources.base import UnsupportedSourceError
+    from mojilex_cli.sources.telegram import parse_telegram_source
+
+    try:
+        reference = parse_telegram_source(source, allow_bare=True)
+    except UnsupportedSourceError:
+        return error
+    safe_id = (
+        entity_id
+        if isinstance(entity_id, str)
+        and 1 <= len(entity_id) <= 20
+        and entity_id.isascii()
+        and entity_id.isdecimal()
+        else None
+    )
+    return replace(
+        error,
+        source=error.source or reference.canonical_url,
+        entity_id=error.entity_id or safe_id,
+    )
+
+
+def _structured_exception(exc: BaseException, *, debug: bool = False) -> StructuredError:
     if isinstance(exc, CommandError):
         return exc.error
     if isinstance(exc, ValidationError):

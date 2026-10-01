@@ -28,20 +28,52 @@ class ByteBudget:
         self.maximum = maximum
         self._used = 0
         self._lock = threading.Lock()
+        self._pressure_lock = threading.Lock()
+        self._reclaimers: list[Callable[[int], int]] = []
 
     @property
     def used(self) -> int:
         with self._lock:
             return self._used
 
+    def register_reclaimer(self, reclaim: Callable[[int], int]) -> None:
+        """Register optional, already-charged storage which can free itself.
+
+        Reclaimers must never wait for another storage lock: callers reserving
+        bytes may already own one. Only durable completed entries may be freed.
+        """
+        with self._lock:
+            if reclaim not in self._reclaimers:
+                self._reclaimers.append(reclaim)
+
     def adjust(self, delta: int, *, observed: bool = False) -> None:
         with self._lock:
             updated = self._used + delta
             if updated < 0:
                 raise ValueError("temporary byte release exceeds reservation")
-            if updated > self.maximum and delta > 0 and not observed:
+            if delta > self.maximum and not observed:
                 raise ByteBudgetExceeded("run temporary disk limit exceeded")
-            self._used = updated
+            if delta <= 0 or updated <= self.maximum:
+                self._used = updated
+                return
+        # Never invoke filesystem callbacks with the accounting lock held:
+        # a successful reclaim releases bytes through this same budget.
+        with self._pressure_lock:
+            with self._lock:
+                reclaimers = tuple(self._reclaimers)
+            for reclaim in reclaimers:
+                with self._lock:
+                    required = self._used + delta - self.maximum
+                if required <= 0:
+                    break
+                reclaim(required)
+            with self._lock:
+                updated = self._used + delta
+                if updated > self.maximum and not observed:
+                    raise ByteBudgetExceeded("run temporary disk limit exceeded")
+                # Observed outputs already exist. Account them accurately even
+                # if no optional completed cache entries could free enough space.
+                self._used = updated
 
 
 class _AICooldown:

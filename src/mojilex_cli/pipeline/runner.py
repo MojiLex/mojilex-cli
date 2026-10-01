@@ -80,6 +80,7 @@ from mojilex_cli.commands.runtime import (
     begin_pack_queue,
     operation_progress,
     preparation_progress,
+    public_source_error,
     report_pack_counts,
     report_pack_stage,
     report_progress,
@@ -187,7 +188,18 @@ from mojilex_cli.sources import (
 )
 
 from .reapply import reapply_candidate
+from .retention import (
+    COMPLETED_MEDIA_PARAMETER,
+    completed_media_receipt,
+    mark_completed_retained,
+    restore_completed_media_receipts,
+)
 from .schema_upgrade import upgrade_private_staging_schema
+from .staging_guards import (
+    checkpoint_staging_outputs,
+    staging_guard_exemptions,
+    staging_output_receipts,
+)
 from .transform import (
     PROMPT_VERSION,
     IdentityConflictError,
@@ -1045,6 +1057,9 @@ async def _run_add(
         successful_source_indexes: set[int] = set()
         durable_source_indexes: set[int] = set()
         guarded_staging_paths: set[str] = set()
+        completed_retained = (
+            restore_completed_media_receipts(checkpoint) if checkpoint is not None else {}
+        )
         marked_fragment_ids: set[str] = set()
         removed_fragment_ids: set[str] = set()
         deferred_fragment_ids: set[str] = set()
@@ -1403,6 +1418,7 @@ async def _run_add(
                                     overwrite_reviewed=options.overwrite_reviewed,
                                     verified_semantic_outcomes=verified_resume_outcomes,
                                     on_item_completed=(None if options.dry_run else record_ready),
+                                    completed_retained=completed_retained,
                                 )
 
                             try:
@@ -1661,10 +1677,23 @@ async def _run_add(
                                         save_worker, _changed_paths, persisted, candidate
                                     )
                                 }
+                                resumed_owned_paths = await run_blocking_on(
+                                    save_worker,
+                                    staging_guard_exemptions,
+                                    persisted,
+                                    candidate,
+                                    checkpoint,
+                                    runs_dir=cast(Path, config.runs_dir),
+                                    changed_paths=pack_paths,
+                                )
                                 await run_blocking_on(
                                     save_worker,
                                     GitPublisher(git).guard_targets,
-                                    tuple(sorted(pack_paths - guarded_staging_paths)),
+                                    tuple(
+                                        sorted(
+                                            pack_paths - guarded_staging_paths - resumed_owned_paths
+                                        )
+                                    ),
                                 )
                                 saved_report = await run_blocking_on(
                                     save_worker,
@@ -1675,6 +1704,15 @@ async def _run_add(
                                 )
                                 if saved_report is not None and not saved_report.valid:
                                     warnings.extend(_validation_warnings(saved_report))
+                                receipt_delta = await run_blocking_on(
+                                    save_worker,
+                                    staging_output_receipts,
+                                    checkpoint,
+                                    candidate,
+                                    pack_paths,
+                                    runs_dir=cast(Path, config.runs_dir),
+                                )
+                                checkpoint = checkpoint_staging_outputs(checkpoint, receipt_delta)
                                 persisted = candidate
                                 guarded_staging_paths.update(pack_paths)
                                 marked_fragment_ids.update(marked - deferred)
@@ -1752,11 +1790,53 @@ async def _run_add(
                                             }
                                         }
                                     )
+                                previous_receipts = checkpoint.safe_parameters.get(
+                                    COMPLETED_MEDIA_PARAMETER, {}
+                                )
+                                receipts = (
+                                    dict(previous_receipts)
+                                    if isinstance(previous_receipts, dict)
+                                    else {}
+                                )
+                                for item in source.items:
+                                    completed_media = processed.get(item.native_id)
+                                    if (
+                                        completed_media is not None
+                                        and completed_media.semantic_frame_count
+                                    ):
+                                        receipts[item.native_id] = completed_media_receipt(
+                                            _source_descriptor_sha256(item), completed_media
+                                        )
+                                checkpoint = checkpoint.model_copy(
+                                    update={
+                                        "safe_parameters": {
+                                            **checkpoint.safe_parameters,
+                                            COMPLETED_MEDIA_PARAMETER: receipts,
+                                        }
+                                    }
+                                )
                                 run_store.save(checkpoint)
                             successful_source_indexes.add(source_index)
                             if stage_only:
                                 durable_source_indexes.add(source_index)
                             report_pack_stage(source_text, "ready" if stage_only else "assembled")
+                        # The temporary pack directory is now closed. Only fully
+                        # completed, durably checkpointed packs can yield previews
+                        # under pressure; no active PNG path is still in use here.
+                        if checkpoint is not None and cache is not None:
+                            finished = {
+                                _source_descriptor_sha256(item): processed[item.native_id]
+                                for item in source.items
+                                if item.native_id in processed
+                                and processed[item.native_id].semantic_frame_count
+                            }
+                            completed_retained.update(finished)
+                            mark_completed_retained(
+                                cache.path.parent
+                                / "resume-media"
+                                / hashlib.sha256(run_identifier.encode()).hexdigest(),
+                                finished,
+                            )
                     except asyncio.CancelledError:
                         report_pack_stage(source_text, "failed")
                         if file_mode == "fast":
@@ -1764,7 +1844,9 @@ async def _run_add(
                         raise
                     except Exception as exc:
                         report_pack_stage(source_text, "failed")
-                        error = structured_exception(exc)
+                        error = public_source_error(structured_exception(exc), source_text)
+                        if error.source is not None:
+                            exc.__dict__["_mojilex_source"] = error.source
                         errors.append(error)
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
                         if checkpoint is not None:
@@ -2045,10 +2127,23 @@ async def _run_add(
 
             if changed_paths:
                 publisher = GitPublisher(git)
+                resumed_owned_paths = (
+                    await run_blocking(
+                        staging_guard_exemptions,
+                        persisted,
+                        current,
+                        checkpoint,
+                        runs_dir=cast(Path, config.runs_dir),
+                        changed_paths=map(str, changed_paths),
+                    )
+                    if stage_only
+                    else set()
+                )
                 guard_paths = tuple(
                     str(path)
                     for path in changed_paths
-                    if not stage_only or str(path) not in guarded_staging_paths
+                    if not stage_only
+                    or str(path) not in guarded_staging_paths | resumed_owned_paths
                 )
                 guard = publisher.guard_targets(guard_paths)
                 await run_blocking(
@@ -2059,6 +2154,15 @@ async def _run_add(
                 )
                 if stage_only:
                     publication = {"mode": "staging", "path": str(workspace.root)}
+                    if checkpoint is not None:
+                        receipt_delta = await run_blocking(
+                            staging_output_receipts,
+                            checkpoint,
+                            current,
+                            map(str, changed_paths),
+                            runs_dir=cast(Path, config.runs_dir),
+                        )
+                        checkpoint = checkpoint_staging_outputs(checkpoint, receipt_delta)
                 else:
                     publication = await _publish(
                         workspace,
@@ -2378,7 +2482,9 @@ async def _run_import(
                             store.save(checkpoint)
                         imported += 1
                     except Exception as exc:
-                        error = structured_exception(exc)
+                        error = public_source_error(structured_exception(exc), source_text)
+                        if error.source is not None:
+                            exc.__dict__["_mojilex_source"] = error.source
                         failures.append(error)
                         terminal_error = error.code in _TERMINAL_ERROR_CODES
                         async with progress_lock:
@@ -2492,7 +2598,9 @@ async def _run_import(
                         report_pack_stage(source_text, "waiting")
                     except Exception as exc:
                         report_pack_stage(source_text, "failed")
-                        error = structured_exception(exc)
+                        error = public_source_error(structured_exception(exc), source_text)
+                        if error.source is not None:
+                            exc.__dict__["_mojilex_source"] = error.source
                         failures.append(error)
                         async with progress_lock:
                             checkpoint = record_source_state(
@@ -3195,7 +3303,7 @@ async def _run_submit(
                 title="data: submit validated MojiLex change set",
                 body=(
                     "Validated MojiLex metadata change set. No source media, download URLs, "
-                    f"or secrets are included.\n\nRun: `{run_identifier}`\n"
+                    "or secrets are included.\n"
                 ),
             )
             publication = {
@@ -3336,6 +3444,7 @@ async def _prepare_collection_media(
     verified_semantic_outcomes: dict[str, _SemanticOutcome] | None = None,
     on_item_completed: _MediaCompletion | None = None,
     import_only: bool = False,
+    completed_retained: Mapping[str, ProcessedMedia] | None = None,
 ) -> tuple[SourceCollection, dict[str, ProcessedMedia]]:
     """Download media and reconcile global IDs already seen in another collection."""
 
@@ -3368,6 +3477,7 @@ async def _prepare_collection_media(
                 retained_root,
                 max_bytes=media_run.limits.max_run_temp_bytes,
                 run=media_run,
+                completed=dict(completed_retained) if completed_retained is not None else None,
             )
     force_direct_ids = {
         native_id
@@ -4275,14 +4385,22 @@ async def _process_media(
                 if isinstance(exc, asyncio.CancelledError):
                     first_failure = exc
                 else:
+                    # Preserve exception type, traceback and retry policy; the
+                    # public error converter validates these diagnostic fields.
+                    exc.__dict__.update(
+                        _mojilex_source=collection.canonical_url,
+                        _mojilex_entity_id=item.native_id,
+                    )
                     progress.finish(item.native_id, failed=True)
                     if first_failure is None or (
                         not isinstance(first_failure, asyncio.CancelledError)
                         and structured_exception(exc).code in _TERMINAL_ERROR_CODES
                     ):
                         first_failure = exc
+                        error = structured_exception(exc)
+                        identity = f" {error.entity_id}" if error.entity_id is not None else ""
                         report_progress(
-                            f"{structured_exception(exc).code}: {structured_exception(exc).message}"
+                            f"{collection.native_id}{identity}: {error.code}: {error.message}"
                         )
                 if isinstance(exc, asyncio.CancelledError):
                     raise
@@ -7494,7 +7612,6 @@ Collections:
 - CLI/schema: {__version__} / {SCHEMA_VERSION}
 - AI: {config.ai.provider} / {config.ai.model}
 - Prompt: {PROMPT_VERSION}
-- Run: `{run_id}`
 - Review routing: {review_line}
 
 Validation passed. The change contains metadata only: no source media, download URLs, or secrets.

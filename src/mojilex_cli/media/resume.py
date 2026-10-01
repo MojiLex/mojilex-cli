@@ -15,7 +15,7 @@ import struct
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,13 @@ class _RetainedInitializationFailure:
     message: str
 
 
-def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) -> RetainedMediaStore:
+def get_retained_store(
+    root: Path,
+    *,
+    max_bytes: int,
+    run: TemporaryMediaRun,
+    completed: Mapping[str, ProcessedMedia] | None = None,
+) -> RetainedMediaStore:
     """Reuse one retained store and one disk reservation across concurrent packs.
 
     Retained frames outlive temporary pack directories: shared reservations belong
@@ -61,8 +67,14 @@ def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) ->
             max_bytes,
             reserve=run.reserve_retained_bytes,
             release=run.release_retained_bytes,
+            admitted=False,
         )
-        run.reserve_retained_bytes(store.size_bytes)
+        _admit_retained_store(
+            store,
+            completed=completed,
+            reserve=run.reserve_retained_bytes,
+            available=lambda: min(max_bytes, run.available_temp_bytes),
+        )
         return store
     key = os.path.normcase(os.path.abspath(root))
     with batch.retained_lock:
@@ -96,7 +108,9 @@ def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) ->
                 raise ValueError("shared retained media limit changed during the operation")
         else:
             try:
-                store = RetainedMediaStore(root, max_bytes, reserve=reserve, release=release)
+                store = RetainedMediaStore(
+                    root, max_bytes, reserve=reserve, release=release, admitted=False
+                )
             except MediaLimitError as exc:
                 batch.retained_initializations[key] = _RetainedInitializationFailure(
                     max_bytes, str(exc)
@@ -105,12 +119,40 @@ def get_retained_store(root: Path, *, max_bytes: int, run: TemporaryMediaRun) ->
             # A rejected reservation must not make every waiting pack rescan.
             # Keep the measurement, but retry admission if temporary space frees.
             batch.retained_initializations[key] = store
-        if store.size_bytes > max_bytes:
-            raise MediaLimitError("run temporary disk limit exceeded")
-        reserve(store.size_bytes)
+        _admit_retained_store(
+            store,
+            completed=completed,
+            reserve=reserve,
+            available=lambda: batch.temp_budget.maximum - batch.temp_budget.used,
+        )
         batch.retained_stores[key] = store
         batch.retained_initializations.pop(key, None)
+        batch.temp_budget.register_reclaimer(store.reclaim_completed)
         return store
+
+
+def _admit_retained_store(
+    store: RetainedMediaStore,
+    *,
+    completed: Mapping[str, ProcessedMedia] | None,
+    reserve: Callable[[int], None],
+    available: Callable[[], int],
+) -> None:
+    if completed is not None and len(completed) <= _MAX_ITEMS:
+        for key, expected in completed.items():
+            store.mark_completed(key, expected)
+    if store.size_bytes > store.max_bytes:
+        store.reclaim_completed(store.size_bytes - store.max_bytes)
+        if store.size_bytes > store.max_bytes:
+            raise MediaLimitError("run temporary disk limit exceeded")
+    try:
+        reserve(store.size_bytes)
+    except MediaLimitError:
+        deficit = store.size_bytes - max(0, available())
+        if store.reclaim_completed(deficit) == 0:
+            raise
+        reserve(store.size_bytes)
+    store._admitted = True
 
 
 def _safe_path(path: Path) -> None:
@@ -183,7 +225,7 @@ class RetainedMediaStore:
     """Retain only verified generated frames; corruption is an ordinary cache miss.
 
     ``reserve`` charges new bytes before writing; ``release`` rolls that charge
-    back if writing fails. Successful charges remain until the caller's run ends.
+    back if writing fails or verified, no-longer-needed entries are discarded.
     Existing bytes are exposed separately through ``size_bytes``.
     """
 
@@ -194,6 +236,7 @@ class RetainedMediaStore:
         *,
         reserve: Callable[[int], None] | None = None,
         release: Callable[[int], None] | None = None,
+        admitted: bool = True,
     ) -> None:
         if max_bytes < 1:
             raise ValueError("retained media limit must be positive")
@@ -201,9 +244,11 @@ class RetainedMediaStore:
         self.max_bytes = max_bytes
         self._reserve = reserve
         self._release = release
+        self._admitted = admitted
         self._lock = threading.RLock()
         self._size_bytes = 0
         self._available = False
+        self._completed: dict[str, ProcessedMedia] = {}
         try:
             _safe_path(self.root)
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -238,8 +283,6 @@ class RetainedMediaStore:
                         raise ValueError("retained media path contains a link or reparse point")
                     if stat.S_ISREG(info.st_mode):
                         total += info.st_size
-                        if total > self.max_bytes:
-                            return total
                     elif stat.S_ISDIR(info.st_mode) and depth < 2:
                         directories += 1
                         if directories > _MAX_ITEMS:
@@ -249,9 +292,122 @@ class RetainedMediaStore:
                         raise ValueError("unexpected retained media entry")
         return total
 
+    def mark_completed(self, key: str, expected: ProcessedMedia) -> bool:
+        """Allow pressure reclamation after durable pack save and media cleanup.
+
+        Registration alone never removes a preview. The caller must not mark
+        interrupted work or paths which an active task can still use.
+        """
+        with self._lock:
+            if (
+                not self._available
+                or not _KEY.fullmatch(key)
+                or not 1 <= expected.semantic_frame_count <= HARD_MAX_FRAMES
+                or (key not in self._completed and len(self._completed) >= _MAX_ITEMS)
+            ):
+                return False
+            self._completed[key] = expected
+            return True
+
+    def reclaim_completed(self, required_bytes: int) -> int:
+        """Free only registered completed entries, and only under disk pressure."""
+        if required_bytes <= 0 or not self._lock.acquire(blocking=False):
+            return 0
+        try:
+            before = self._size_bytes
+            for key, expected in tuple(self._completed.items()):
+                if before - self._size_bytes >= required_bytes:
+                    break
+                self.discard(key, expected)
+                # Failed ownership checks stay preserved and must not cause a
+                # repeated full PNG scan on every later reservation.
+                self._completed.pop(key, None)
+            return before - self._size_bytes
+        finally:
+            self._lock.release()
+
+    def discard(self, key: str, expected: ProcessedMedia) -> bool:
+        """Release a completed entry only after proving its exact ownership.
+
+        The caller must durably save results and stop using these frame paths
+        first. Interrupted items must keep their entries. Unknown, changed or
+        corrupt files are preserved. No directory is deleted recursively.
+        Existing bytes must already be charged when ``release`` is supplied,
+        as with ``get_retained_store``; an uncharged store can prune before
+        admission by being constructed without accounting callbacks.
+        """
+        with self._lock:
+            if not self._available or not _KEY.fullmatch(key):
+                return False
+            entry = self.root / key
+            removed = 0
+            try:
+                _safe_path(entry)
+                paths = list(entry.iterdir())
+                identities = {path: path.lstat() for path in paths}
+                saved = self._get(key, expected)
+                if saved is None:
+                    return False
+                owned = {
+                    entry / "manifest.json",
+                    *saved.frame_paths,
+                    *saved.dark_frame_paths,
+                }
+                if saved.composition_tile_path is not None:
+                    owned.add(saved.composition_tile_path)
+                if set(paths) != owned:
+                    return False
+
+                def unchanged(path: Path) -> bool:
+                    _safe_path(path)
+                    info = path.lstat()
+                    before = identities[path]
+                    return (
+                        stat.S_ISREG(info.st_mode)
+                        and info.st_nlink == 1
+                        and (
+                            info.st_dev,
+                            info.st_ino,
+                            info.st_size,
+                            info.st_mtime_ns,
+                            info.st_ctime_ns,
+                        )
+                        == (
+                            before.st_dev,
+                            before.st_ino,
+                            before.st_size,
+                            before.st_mtime_ns,
+                            before.st_ctime_ns,
+                        )
+                    )
+
+                if not all(unchanged(path) for path in owned):
+                    return False
+                # Keep the manifest until all pixels are removed. A partial
+                # cleanup remains an ordinary cache miss, never a valid entry.
+                for path in sorted(owned, key=lambda path: path.name == "manifest.json"):
+                    if not unchanged(path):
+                        return False
+                    path.unlink()
+                    removed += identities[path].st_size
+                _safe_path(entry)
+                entry.rmdir()
+                return True
+            except (OSError, ValueError):
+                return False
+            finally:
+                if removed:
+                    self._size_bytes -= removed
+                    if self._admitted and self._release is not None:
+                        self._release(removed)
+
     def get(self, key: str, expected: ProcessedMedia) -> ProcessedMedia | None:
         with self._lock:
-            return self._get(key, expected)
+            saved = self._get(key, expected)
+            if saved is not None:
+                # A subsequent pack has started using these paths again.
+                self._completed.pop(key, None)
+            return saved
 
     def get_composition_tile(self, key: str, expected: ProcessedMedia) -> ProcessedMedia | None:
         """Restore only a verified static tile for an independently reusable AI result.
@@ -263,7 +419,10 @@ class RetainedMediaStore:
         if expected.metadata.kind != "static":
             return None
         with self._lock:
-            return self._get(key, expected, composition_only=True)
+            saved = self._get(key, expected, composition_only=True)
+            if saved is not None:
+                self._completed.pop(key, None)
+            return saved
 
     def _get(
         self, key: str, expected: ProcessedMedia, *, composition_only: bool = False
@@ -364,7 +523,7 @@ class RetainedMediaStore:
             return self._put(key, value)
 
     def _put(self, key: str, value: ProcessedMedia) -> bool:
-        if not self._available or not _KEY.fullmatch(key):
+        if not self._available or not self._admitted or not _KEY.fullmatch(key):
             return False
         count = value.semantic_frame_count
         if (
