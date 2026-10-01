@@ -327,6 +327,24 @@ async def run_blocking(function: Callable[P, R], *args: P.args, **kwargs: P.kwar
     return await run_blocking_on(None, function, *args, **kwargs)
 
 
+async def complete_before_cancel(operation: Awaitable[R]) -> R:
+    """Drain a durable operation and its bookkeeping before propagating cancellation."""
+    task = asyncio.ensure_future(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        # Observe failures instead of authorizing outputs from a failed write.
+        task.result()
+        raise
+
+
 async def run_blocking_on(
     executor: ThreadPoolExecutor | None,
     function: Callable[P, R],
