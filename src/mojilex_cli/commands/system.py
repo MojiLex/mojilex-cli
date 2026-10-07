@@ -26,6 +26,7 @@ from mojilex_cli.config.credential_store import (
     store_credentials,
 )
 from mojilex_cli.config.paths import default_repository_path
+from mojilex_cli.config.provider_credentials import provider_api_key, provider_credential_name
 from mojilex_cli.config.secrets import assert_no_secret_keys
 from mojilex_cli.github import GitHubCLI, GitHubError, RepositoryRef
 from mojilex_cli.media import probe_media_backends
@@ -128,7 +129,7 @@ def init_command(
     repo = str(default_repository_path()) if repo is None else repo
     if prompt is not None:
         repo = prompt("Target dataset path or OWNER/REPO", repo).strip()
-        provider = prompt("AI provider (MVP: gemini)", provider).strip()
+        provider = prompt("AI provider (gemini or openai)", provider).strip()
         model = prompt("Exact AI model ID (no model is selected automatically)", model).strip()
         languages = tuple(
             part.strip()
@@ -140,17 +141,17 @@ def init_command(
         publish = prompt("Publication mode (local or pr)", publish).strip()
     selected_provider = provider.strip().lower()
     selected_model = model.strip()
-    if selected_provider != "gemini":
+    if selected_provider not in {"gemini", "openai"}:
         raise CommandError(
             "CONFIG_INVALID",
             f"Unsupported AI provider: {selected_provider or '<empty>'}",
-            hint="The MVP currently supports --provider gemini.",
+            hint="This release supports --provider gemini or --provider openai.",
         )
     if not selected_model:
         raise CommandError(
             "CONFIG_INVALID",
             "An explicit AI model ID is required.",
-            hint="Pass --model with the exact Gemini model ID you intend to use.",
+            hint="Pass --model with the exact provider model ID you intend to use.",
         )
 
     repository_path = Path(repo).expanduser()
@@ -203,7 +204,7 @@ def init_command(
             "source": "non-secret MojiLex configuration (Git global config unchanged)",
         }
     _write_config(target, candidate)
-    selected_credential = credentials.gemini_api_key
+    selected_credential = provider_api_key(credentials, selected_provider)
     warnings = _check_warnings(checks, required_publication=publish)
     if not credentials.telegram_bot_token:
         warnings.append(
@@ -213,7 +214,8 @@ def init_command(
         )
     if not selected_credential:
         warnings.append(
-            "GEMINI_API_KEY is not available; run `mojilex config set-credentials` to save it "
+            f"{provider_credential_name(selected_provider)} is not available; "
+            "run `mojilex config set-credentials` to save it "
             "in the system keyring, use an interactive `mojilex add ...` hidden input once, or "
             "set it in the environment for --non-interactive, --json, or --quiet."
         )
@@ -266,18 +268,23 @@ def doctor_command() -> CommandResult:
     warnings = _check_warnings(checks, required_publication=config.repository.publish)
     if not config.ai.model.strip():
         warnings.append("No AI model is configured; run `mojilex settings` to select one.")
-    if config.ai.provider != "gemini":
+    if config.ai.provider not in {"gemini", "openai"}:
         warnings.append(
-            f"AI provider {config.ai.provider!r} is unsupported; this release supports gemini."
+            f"AI provider {config.ai.provider!r} is unsupported; "
+            "this release supports gemini and openai."
         )
     if not credentials.telegram_bot_token:
         warnings.append(
             "Telegram credential is unavailable; save it in the system keyring or enter it "
             "when an interactive authoring command asks."
         )
-    if config.ai.provider == "gemini" and not credentials.gemini_api_key:
+    if config.ai.provider in {"gemini", "openai"} and not provider_api_key(
+        credentials, config.ai.provider
+    ):
         warnings.append(
-            "Gemini credential is unavailable; save it in the system keyring or enter it "
+            ("OpenAI" if config.ai.provider == "openai" else "Gemini")
+            + " credential is unavailable; "
+            "save it in the system keyring or enter it "
             "when an interactive authoring command asks."
         )
     install_commands = _media_install_commands(checks)
@@ -290,10 +297,10 @@ def doctor_command() -> CommandResult:
     authoring_ready = bool(
         media_ready
         and checks["git"]["available"]
-        and config.ai.provider == "gemini"
+        and config.ai.provider in {"gemini", "openai"}
         and config.ai.model.strip()
         and credentials.telegram_bot_token
-        and credentials.gemini_api_key
+        and provider_api_key(credentials, config.ai.provider)
     )
     publication_ready = bool(
         authoring_ready

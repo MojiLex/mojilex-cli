@@ -14,6 +14,7 @@ from mojilex_cli.benchmark import (
     validate_model_benchmark_runtime,
 )
 from mojilex_cli.config import load_credentials
+from mojilex_cli.config.provider_credentials import provider_api_key, provider_credential_name
 from mojilex_cli.output.models import RunStatus, StructuredError
 
 from .runtime import CommandError, CommandResult
@@ -39,18 +40,19 @@ def benchmark_model_command(
         )
     validate_model_benchmark_runtime(manifest, provider_name)
     credentials = load_credentials()
-    if provider_name != "gemini":
+    if provider_name not in default_registry().names():
         raise CommandError(
             "CONFIG_INVALID",
             "This CLI has no credential adapter for the requested benchmark provider.",
             hint="Use an explicitly registered provider with a dedicated secret source.",
         )
-    api_key = credentials.gemini_api_key
+    api_key = provider_api_key(credentials, provider_name)
     if not api_key:
         raise CommandError(
             "CREDENTIAL_MISSING",
-            "GEMINI_API_KEY is required for this explicit live model benchmark.",
-            hint="Set it only in the current process environment, then retry.",
+            f"{provider_credential_name(provider_name)} is required "
+            "for this explicit live model benchmark.",
+            hint="Save it in the system keyring or set it in the process environment, then retry.",
         )
     try:
         provider = default_registry().create(provider_name, model=model_id, api_key=api_key)

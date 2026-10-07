@@ -741,7 +741,7 @@ def _structured_exception(exc: BaseException, *, debug: bool = False) -> Structu
             "resume with the same run ID. If it repeats, report the validation code and field path."
         ),
         "AI_PAYMENT_REQUIRED": (
-            "Check Gemini billing and add credits if required. Saved results are retained; "
+            "Check provider billing and add credits if required. Saved results are retained; "
             "resume the existing run after restoring provider access."
         ),
         "INTERNAL_ERROR": "Rerun with --debug and report the sanitized traceback.",

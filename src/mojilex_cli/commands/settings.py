@@ -81,7 +81,7 @@ SETTINGS: dict[str, Setting] = {
         "AI provider",
         "The service that creates descriptions.",
         "MOJILEX_PROVIDER",
-        choices=("gemini",),
+        choices=("gemini", "openai"),
     ),
     "model": Setting(
         ("ai", "model"),

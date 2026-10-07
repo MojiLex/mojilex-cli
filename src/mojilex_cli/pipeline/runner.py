@@ -56,9 +56,9 @@ from mojilex_cli.ai.concepts import ConceptContext, load_concept_context
 from mojilex_cli.ai.media_refs import bind_primary_media_references
 from mojilex_cli.ai.prompts import (
     current_prompt_version,
-    gemini_request_parameters_sha256,
     prompt_contract_scope,
     prompt_sha256,
+    request_parameters_sha256,
     use_prompt_version,
 )
 from mojilex_cli.analysis import (
@@ -107,6 +107,7 @@ from mojilex_cli.concurrency import (
     run_blocking_on,
 )
 from mojilex_cli.config import MojiLexConfig, load_config, load_credentials
+from mojilex_cli.config.provider_credentials import provider_api_key, provider_credential_name
 from mojilex_cli.dataset import (
     DatasetSnapshot,
     ValidationReport,
@@ -347,7 +348,7 @@ def _load_generation_inputs(
         "pipeline_version": PIPELINE_VERSION,
         "prompt_version": current_prompt_version(),
         "prompt_sha256": prompt_sha256(),
-        "request_parameters_sha256": gemini_request_parameters_sha256(),
+        "request_parameters_sha256": request_parameters_sha256(config.ai.provider),
         "languages": sorted(config.ai.languages),
         **concepts.provenance_fields,
     }
@@ -1090,7 +1091,9 @@ async def _run_add(
         )
         from mojilex_cli.composition.service import CompositionQueue
 
-        composition_queue = CompositionQueue(model=config.ai.model)
+        composition_queue = CompositionQueue(
+            model=config.ai.model, provider_name=config.ai.provider
+        )
         ai_state = _AIState()
         current = initial
         persisted = initial
@@ -1393,7 +1396,7 @@ async def _run_add(
                                     cache=cache,
                                     budget=budget,
                                     ai_state=ai_state,
-                                    api_key=credentials.gemini_api_key,
+                                    api_key=provider_api_key(credentials, config.ai.provider),
                                     redescribe=options.redescribe,
                                     overwrite_reviewed=options.overwrite_reviewed,
                                     temporary=temporary,
@@ -1533,7 +1536,7 @@ async def _run_add(
                                 cache=cache,
                                 budget=budget,
                                 ai_state=ai_state,
-                                api_key=credentials.gemini_api_key,
+                                api_key=provider_api_key(credentials, config.ai.provider),
                                 redescribe=options.redescribe,
                                 overwrite_reviewed=options.overwrite_reviewed,
                                 temporary=temporary,
@@ -1570,7 +1573,7 @@ async def _run_add(
                                 )
                                 verified = await composition_queue.verify(
                                     key=source.native_id,
-                                    api_key=credentials.gemini_api_key,
+                                    api_key=provider_api_key(credentials, config.ai.provider),
                                     budget=budget,
                                 )
                                 groups = verified.get(source.native_id, groups)
@@ -1984,7 +1987,7 @@ async def _run_add(
                 for source_index in successful_source_indexes - durable_source_indexes:
                     report_pack_stage(all_sources[source_index], "finalize")
                 verified_groups = await composition_queue.verify(
-                    api_key=credentials.gemini_api_key, budget=budget
+                    api_key=provider_api_key(credentials, config.ai.provider), budget=budget
                 )
                 evidence = checkpoint.safe_parameters.get("composition_evidence", {})
                 evidence = dict(evidence) if isinstance(evidence, dict) else {}
@@ -6418,17 +6421,22 @@ async def _provider_for_model(
     async with ai_state.initialization_lock:
         provider = ai_state.providers.get(key)
         if provider is None:
-            if config.ai.provider == "gemini" and not api_key:
+            if config.ai.provider in {"gemini", "openai"} and not api_key:
                 raise CommandError(
                     "CREDENTIAL_MISSING",
-                    "GEMINI_API_KEY is required for uncached descriptions.",
+                    f"{provider_credential_name(config.ai.provider)} is required "
+                    "for uncached descriptions.",
                     hint="Set it in the process environment or use an already populated cache.",
                 )
             report_progress(
                 f"Derived contact-sheet PNG images will be sent to provider={config.ai.provider}, "
                 f"model={model}. Provider processing terms: "
-                "https://ai.google.dev/gemini-api/terms . "
-                "MojiLex does not guarantee zero retention by the provider."
+                + (
+                    "https://openai.com/policies/business-terms/ . "
+                    if config.ai.provider == "openai"
+                    else "https://ai.google.dev/gemini-api/terms . "
+                )
+                + "MojiLex does not guarantee zero retention by the provider."
             )
             provider = default_registry().create(
                 config.ai.provider,
@@ -6493,7 +6501,7 @@ def _semantic_outcome(
             model_revision=result.model_revision,
             description_profile="standard-v1",
             prompt_sha256=prompt_sha256(),
-            request_parameters_sha256=gemini_request_parameters_sha256(),
+            request_parameters_sha256=request_parameters_sha256(config.ai.provider),
             schema_version=SCHEMA_VERSION,
             taxonomy_version=taxonomy_version,
             pipeline_version=PIPELINE_VERSION,
@@ -6516,7 +6524,7 @@ def _semantic_outcome(
             model_revision=result.model_revision,
             description_profile="standard-v1",
             prompt_sha256=prompt_sha256(),
-            request_parameters_sha256=gemini_request_parameters_sha256(),
+            request_parameters_sha256=request_parameters_sha256(config.ai.provider),
             qualification_id=match.qualification_id if match.qualified else None,
             generation_stage=generation_stage,
             routing_policy_version=ROUTING_POLICY_VERSION,
@@ -6669,17 +6677,17 @@ def _cache_deterministic_analysis(
 
 
 def _default_generation_metadata(config: MojiLexConfig) -> SemanticGenerationMetadata:
-    if config.ai.provider != "gemini":
+    if config.ai.provider not in {"gemini", "openai"}:
         raise CommandError(
             "CONFIG_INVALID",
             f"No provenance parameter profile exists for provider {config.ai.provider}.",
-            hint="Use the supported gemini provider or add a versioned provider profile.",
+            hint="Use gemini or openai, or add a versioned provider profile.",
         )
     return SemanticGenerationMetadata(
         provider=config.ai.provider,
         model=config.ai.model,
         prompt_sha256=prompt_sha256(),
-        request_parameters_sha256=gemini_request_parameters_sha256(),
+        request_parameters_sha256=request_parameters_sha256(config.ai.provider),
         generated_at=_utc_text(),
     )
 
@@ -6925,7 +6933,7 @@ def _cache_key(
         taxonomy_version=taxonomy_version,
         routing_policy_version="1.0.0",
         shown_media_sha256=shown_media_sha256,
-        request_parameters_sha256=gemini_request_parameters_sha256(),
+        request_parameters_sha256=request_parameters_sha256(config.ai.provider),
         **_generation_binding_fields(),
         request_identity_sha256=request_identity_sha256,
         item_label=item_label,

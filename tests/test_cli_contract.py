@@ -22,6 +22,7 @@ def saved_interrupted_run(monkeypatch):
             run_id=selector,
             status="interrupted",
             command="add",
+            safe_parameters={},
         ),
     )
 

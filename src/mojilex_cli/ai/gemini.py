@@ -224,7 +224,7 @@ class GeminiVisionProvider:
         return result
 
 
-def _safe_validation_summary(exc: ValidationError) -> str:
+def _safe_validation_summary(exc: ValidationError, *, provider: str = "Gemini") -> str:
     """Expose only schema-owned paths and closed error codes, never generated values."""
 
     errors = exc.errors(include_url=False, include_context=False, include_input=False)
@@ -237,7 +237,7 @@ def _safe_validation_summary(exc: ValidationError) -> str:
             if not (error["loc"] == ("items",) and error["type"] == "too_short")
         ]
     if any(error["type"] == "json_invalid" for error in errors):
-        return "Gemini structured response: invalid_json"
+        return f"{provider} structured response: invalid_json"
     known_codes = SEMANTIC_VALIDATION_CODES | {
         "missing",
         "extra_forbidden",
@@ -278,7 +278,7 @@ def _safe_validation_summary(exc: ValidationError) -> str:
             details.append(detail)
     if len(errors) > 4:
         details.append("additional errors omitted")
-    return "Gemini structured response: schema_validation: " + "; ".join(details)
+    return f"{provider} structured response: schema_validation: " + "; ".join(details)
 
 
 def _disable_interaction_retries(interactions: Any) -> None:

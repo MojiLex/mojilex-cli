@@ -17,6 +17,7 @@ from mojilex_cli.ai.gemini import (
     _disable_interaction_retries,
     _payment_required_provider_error,
 )
+from mojilex_cli.ai.openai import OpenAIVisionProvider, _completed_text
 from mojilex_cli.ai.transport_schema import gemini_transport_schema
 from mojilex_cli.concurrency import ai_slot
 
@@ -75,6 +76,7 @@ async def verify_composition(
     api_key: str | None,
     budget: RequestBudget,
     client: Any | None = None,
+    provider_name: str = "gemini",
     columns: int = 2,
     rows: int = 2,
     audit: Literal["continuity", "independent_objects", "layout"] = "continuity",
@@ -118,65 +120,98 @@ async def verify_composition(
         + "Reference actual joins using adjacent row/column numbers starting at 1.\n"
     )
     try:
-        provider = GeminiVisionProvider(
-            model=model, api_key=api_key, client=client, timeout_seconds=_TIMEOUT_SECONDS
-        )
-        interactions = provider._client.aio.interactions
-        _disable_interaction_retries(interactions)
-        async with ai_slot():
-            await budget.reserve(
-                CostEstimate(
-                    upper_bound_usd=None, note="Optional composition veto has no price record."
-                )
+        if provider_name == "openai":
+            openai_provider = OpenAIVisionProvider(
+                model=model, api_key=api_key, client=client, timeout_seconds=_TIMEOUT_SECONDS
             )
-            try:
-                response = await asyncio.wait_for(
-                    interactions.create(
-                        model=model,
-                        api_version="v1beta",
-                        input=[
-                            {
-                                "type": "user_input",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
-                                    },
-                                    {
-                                        "type": "image",
-                                        "mime_type": "image/png",
-                                        "data": base64.b64encode(image_png).decode("ascii"),
-                                    },
-                                ],
-                            }
-                        ],
-                        store=False,
-                        background=False,
-                        stream=False,
-                        response_format={
-                            "type": "text",
-                            "mime_type": "application/json",
-                            "schema": gemini_transport_schema(_Verdict.model_json_schema()),
-                        },
-                        generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
-                    ),
-                    timeout=_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                if isinstance(exc, AIPaymentRequiredError) or _payment_required_provider_error(exc):
-                    error = AIPaymentRequiredError(
-                        "Gemini returned HTTP 402 Payment Required; "
-                        "check provider billing before resuming."
+            async with ai_slot():
+                await budget.reserve(
+                    CostEstimate(
+                        upper_bound_usd=None, note="Optional composition veto has no price record."
                     )
-                    # Block queued reservations before releasing the AI slot.
-                    budget.stop_for_payment(error)
-                    raise error from None
-                raise
-        if response.status != "completed" or response.model not in (model, f"models/{model}"):
+                )
+                try:
+                    payload = await openai_provider.structured_response(
+                        prompt=grid_prompt + _PROMPT + "\n" + _AUDIT_FOCUS[audit],
+                        images=(image_png,),
+                        schema=_Verdict.model_json_schema(),
+                        max_output_tokens=2048,
+                        schema_name="mojilex_composition_verdict",
+                    )
+                except AIPaymentRequiredError as exc:
+                    budget.stop_for_payment(exc)
+                    raise
+            output_text = _completed_text(payload, model)
+            if len(output_text) > 16_384:
+                return False
+        elif provider_name == "gemini":
+            provider = GeminiVisionProvider(
+                model=model, api_key=api_key, client=client, timeout_seconds=_TIMEOUT_SECONDS
+            )
+            interactions = provider._client.aio.interactions
+            _disable_interaction_retries(interactions)
+            async with ai_slot():
+                await budget.reserve(
+                    CostEstimate(
+                        upper_bound_usd=None, note="Optional composition veto has no price record."
+                    )
+                )
+                try:
+                    response = await asyncio.wait_for(
+                        interactions.create(
+                            model=model,
+                            api_version="v1beta",
+                            input=[
+                                {
+                                    "type": "user_input",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": grid_prompt
+                                            + _PROMPT
+                                            + "\n"
+                                            + _AUDIT_FOCUS[audit],
+                                        },
+                                        {
+                                            "type": "image",
+                                            "mime_type": "image/png",
+                                            "data": base64.b64encode(image_png).decode("ascii"),
+                                        },
+                                    ],
+                                }
+                            ],
+                            store=False,
+                            background=False,
+                            stream=False,
+                            response_format={
+                                "type": "text",
+                                "mime_type": "application/json",
+                                "schema": gemini_transport_schema(_Verdict.model_json_schema()),
+                            },
+                            generation_config={"max_output_tokens": 2048, "thinking_level": "low"},
+                        ),
+                        timeout=_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, AIPaymentRequiredError) or _payment_required_provider_error(
+                        exc
+                    ):
+                        error = AIPaymentRequiredError(
+                            "Gemini returned HTTP 402 Payment Required; "
+                            "check provider billing before resuming."
+                        )
+                        # Block queued reservations before releasing the AI slot.
+                        budget.stop_for_payment(error)
+                        raise error from None
+                    raise
+            if response.status != "completed" or response.model not in (model, f"models/{model}"):
+                return False
+            if not isinstance(response.output_text, str) or len(response.output_text) > 16_384:
+                return False
+            output_text = response.output_text
+        else:
             return False
-        if not isinstance(response.output_text, str) or len(response.output_text) > 16_384:
-            return False
-        verdict = _Verdict.model_validate_json(response.output_text)
+        verdict = _Verdict.model_validate_json(output_text)
         details = {" ".join(detail.lower().split()) for detail in verdict.seam_crossing_details}
         return (
             verdict.one_continuous_image

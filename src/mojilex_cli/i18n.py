@@ -312,7 +312,7 @@ _PARAMETER_HELP: dict[str, tuple[str, str]] = {
         "Сохранить токен Telegram Bot API.",
     ),
     "gemini": ("Save a Gemini API key.", "Сохранить API-ключ Gemini."),
-    "openai": ("Also save an OpenAI API key.", "Также сохранить API-ключ OpenAI."),
+    "openai": ("Save an OpenAI API key.", "Сохранить API-ключ OpenAI."),
 }
 
 
@@ -575,15 +575,23 @@ _RUSSIAN_MESSAGES = {
     "Gemini returned HTTP 402 Payment Required; check provider billing before resuming.": (
         "Gemini отклонил запрос: HTTP 402, требуется оплата. Проверьте баланс у провайдера."
     ),
-    "Check Gemini billing and add credits if required. Saved results are retained; "
+    "Check provider billing and add credits if required. Saved results are retained; "
     "resume the existing run after restoring provider access.": (
-        "Проверьте оплату Gemini и при необходимости пополните баланс. "
+        "Проверьте оплату у провайдера и при необходимости пополните баланс. "
         "Сохранённые результаты остаются; продолжите существующий запуск "
         "после восстановления доступа."
     ),
     "Gemini structured response: model_mismatch": "Gemini вернул ответ другой модели.",
     "Gemini structured response: output_missing": "Gemini вернул ответ без текста JSON.",
     "Gemini structured response: invalid_json": "Gemini вернул некорректный JSON.",
+    "OpenAI structured response: response_incomplete": "OpenAI не завершил ответ.",
+    "OpenAI structured response: refusal": "OpenAI отказался обработать изображение.",
+    "OpenAI structured response: model_mismatch": "OpenAI вернул ответ другой модели.",
+    "OpenAI structured response: output_missing": "OpenAI вернул ответ без текста JSON.",
+    "OpenAI structured response: invalid_json": "OpenAI вернул некорректный JSON.",
+    "OpenAI requires API billing or credits; check provider billing before resuming.": (
+        "OpenAI требует оплату API. Проверьте баланс перед продолжением запуска."
+    ),
     "The existing AI cache could not be inspected; plan assumes misses.": (
         "Не удалось проверить существующий AI-кеш; план рассчитан без его использования."
     ),
@@ -873,6 +881,10 @@ def text(value: str, *, language: UiLanguage | None = None) -> str:
     if value.startswith("Gemini structured response: schema_validation: "):
         return "Ответ Gemini нарушает схему: " + value.removeprefix(
             "Gemini structured response: schema_validation: "
+        )
+    if value.startswith("OpenAI structured response: schema_validation: "):
+        return "Ответ OpenAI нарушает схему: " + value.removeprefix(
+            "OpenAI structured response: schema_validation: "
         )
     invalid = re.fullmatch(r"Invalid value for (.+?): (.+)", value, flags=re.DOTALL)
     if invalid:
