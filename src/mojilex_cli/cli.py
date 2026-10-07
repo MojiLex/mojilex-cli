@@ -31,6 +31,8 @@ from mojilex_cli.commands.runtime import (
     require_confirmation,
     suspend_progress,
 )
+from mojilex_cli.config import load_config
+from mojilex_cli.config.provider_credentials import provider_credential_name
 from mojilex_cli.i18n import (
     confirm as ui_confirm,
 )
@@ -57,6 +59,37 @@ app.add_typer(config_app, name="config")
 app.add_typer(cache_app, name="cache")
 app.add_typer(dedupe_app, name="dedupe")
 register_read_commands(app)
+
+
+def _authoring_secret_names(
+    provider: str | None = None,
+    *,
+    selectors: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Saved runs keep their own provider even after settings have changed."""
+    from mojilex_cli.commands.packs import resolve_pack_run
+
+    configured = provider or load_config().ai.provider
+    providers = [configured]
+    saved_selection = (len(selectors) == 1 and not selectors[0].startswith(("mxe_", "mxc_"))) or (
+        bool(selectors) and all(value.startswith("mlxrun_") for value in selectors)
+    )
+    if provider is None and saved_selection:
+        providers = []
+        for selector in selectors:
+            try:
+                checkpoint = resolve_pack_run(selector, purpose="describe")
+            except CommandError as exc:
+                if len(selectors) != 1 or exc.error.code != "CONFIG_MISSING":
+                    raise
+                providers.append(configured)
+            else:
+                providers.append(str(checkpoint.safe_parameters.get("provider") or configured))
+    return tuple(
+        dict.fromkeys(
+            ("TELEGRAM_BOT_TOKEN", *(provider_credential_name(name) for name in providers))
+        )
+    )
 
 
 def init_command(
@@ -486,14 +519,11 @@ def add(
             ),
         )
 
-    required_secrets = (
-        ("TELEGRAM_BOT_TOKEN",) if dry_run else ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY")
-    )
     execute(
         "add",
         lambda: _with_runtime_secrets(
             action,
-            names=required_secrets,
+            names=("TELEGRAM_BOT_TOKEN",) if dry_run else _authoring_secret_names(provider),
             prompt=_secret_prompt(
                 non_interactive=non_interactive,
                 json_output=json_output,
@@ -633,7 +663,7 @@ def describe(
                 ),
                 selectors,
             ),
-            names=("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY"),
+            names=_authoring_secret_names(provider, selectors=selectors),
             prompt=_secret_prompt(
                 non_interactive=non_interactive,
                 json_output=json_output,
@@ -1148,7 +1178,9 @@ def resume(
             names=(
                 ("TELEGRAM_BOT_TOKEN",)
                 if phase == "import"
-                else ("TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY")
+                else _authoring_secret_names(
+                    str(checkpoint.safe_parameters.get("provider") or load_config().ai.provider)
+                )
             ),
             prompt=_secret_prompt(
                 non_interactive=non_interactive,
@@ -1339,25 +1371,26 @@ def config_set_credentials(
         bool, typer.Option("--telegram/--no-telegram", help="Save a Telegram Bot API token.")
     ] = True,
     gemini: Annotated[
-        bool, typer.Option("--gemini/--no-gemini", help="Save a Gemini API key.")
-    ] = True,
-    openai: Annotated[bool, typer.Option("--openai", help="Also save an OpenAI API key.")] = False,
+        bool | None, typer.Option("--gemini/--no-gemini", help="Save a Gemini API key.")
+    ] = None,
+    openai: Annotated[
+        bool | None, typer.Option("--openai/--no-openai", help="Save an OpenAI API key.")
+    ] = None,
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
-    selected = [
-        name
-        for name, enabled in (
-            ("TELEGRAM_BOT_TOKEN", telegram),
-            ("GEMINI_API_KEY", gemini),
-            ("OPENAI_API_KEY", openai),
-        )
-        if enabled
-    ]
-
     def action() -> CommandResult:
+        if gemini is None and openai is None:
+            provider_names: tuple[str, ...] = (provider_credential_name(load_config().ai.provider),)
+        else:
+            provider_names = tuple(
+                name
+                for name, enabled in (("GEMINI_API_KEY", gemini), ("OPENAI_API_KEY", openai))
+                if enabled
+            )
+        selected = [*(("TELEGRAM_BOT_TOKEN",) if telegram else ()), *provider_names]
         prompt = _secret_prompt(
             non_interactive=non_interactive,
             json_output=json_output,

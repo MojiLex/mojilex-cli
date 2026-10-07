@@ -28,9 +28,12 @@ Run manually or in a trusted workflow only:
 mojilex benchmark-model --provider NAME --model ID --benchmark-manifest PATH --json
 ```
 
-The provider and model must exactly equal the manifest target. The CLI currently obtains Gemini
-credentials only from `GEMINI_API_KEY`; credentials are neither accepted in a manifest nor
-written to a report. The manifest binds every contact-sheet PNG and source-media digest, split,
+The provider and model must exactly equal the manifest target. Credentials come from the process
+environment or MojiLex's system keyring; they are neither accepted in a manifest nor written to
+a report. `GEMINI_API_KEY` is the Gemini credential source and `OPENAI_API_KEY` is the OpenAI
+credential source. OpenAI targets use provider `openai` and an explicit model ID such as
+`gpt-6-luna`; Gemini remains available through provider `gemini`. The manifest binds every
+contact-sheet PNG and source-media digest, split,
 prompt and request-parameter hashes, schema/taxonomy/media-pipeline/routing versions, runtime
 lock/container provenance, and human adjudication tied to the exact structured response hash.
 Without an immutable provider revision, the manifest must declare a dated comparison.
@@ -54,6 +57,17 @@ The manifest also embeds the exact `concept_registry` and `concept_candidate_pro
 The current prompt requires their active candidate set. Reports preserve the seven exact
 concept/routing identity fields and local routing body; this is generation evidence, not a
 signed model-qualification attestation or an automatically granted qualification.
+
+OpenAI Structured Outputs constrains the response JSON, but does not qualify visual accuracy,
+motion descriptions, OCR, or bilingual text quality. Adding the OpenAI adapter does not itself
+establish better quality, latency, or cost than Gemini. A comparison needs fresh provider runs
+on the same rights-cleared fixtures, exact response-bound adjudication, and measured request
+usage and timing. Check [OpenAI's model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna)
+and [current API pricing](https://developers.openai.com/api/docs/pricing) before a paid run.
+This build has no supplied OpenAI price record. Its request cap remains effective,
+but a USD spending ceiling cannot be guaranteed for unknown pricing. A live run
+requires explicit `allow_unknown_cost: true` in its benchmark manifest; a provider's
+published price alone is not a supplied, validated MojiLex price record.
 
 Multilabel macro-F1 averages per-label F1 over labels present in references or predictions;
 micro-F1 pools weighted label decisions. Repeated attempts are separately measured observations,

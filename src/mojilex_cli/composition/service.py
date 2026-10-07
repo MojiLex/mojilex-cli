@@ -113,8 +113,9 @@ def _preserves_layout(old: Composition, new: Composition) -> bool:
 class CompositionQueue:
     """Bounded proposals checked as soon as their source descriptions finish."""
 
-    def __init__(self, *, model: str) -> None:
+    def __init__(self, *, model: str, provider_name: str = "gemini") -> None:
         self.model = model
+        self.provider_name = provider_name
         self._pending: list[tuple[str, Composition, bytes]] = []
         self._bytes = 0
         self._locks: dict[str, asyncio.Lock] = {}
@@ -211,6 +212,7 @@ class CompositionQueue:
                         if not await verify_composition(
                             png,
                             model=self.model,
+                            provider_name=self.provider_name,
                             api_key=api_key,
                             budget=budget,
                             columns=proposal.columns,

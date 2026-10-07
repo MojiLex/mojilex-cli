@@ -79,8 +79,8 @@ mojilex --ui-language en init
 
 The wizard asks for settings:
 
-- Keep the suggested local dataset path, `gemini` as the provider and `ru,en` as the description languages.
-- Enter the exact [Gemini model ID](https://ai.google.dev/gemini-api/docs/models) available to your account. No model is selected automatically.
+- Keep the suggested local dataset path and `ru,en` as the description languages. Choose `gemini` or `openai` as the provider.
+- Enter the exact model ID available to your account: a [Gemini model](https://ai.google.dev/gemini-api/docs/models), or [`gpt-6-luna` for OpenAI](https://developers.openai.com/api/docs/models/gpt-6-luna). No model is selected automatically.
 - You can keep the publication default. The **menu always analyzes locally** and offers sending separately; advanced commands also use this setting.
 - If asked for a Git author, enter the name and email to appear on contributions, or skip until publishing.
 
@@ -102,6 +102,7 @@ and manually selected branches are preserved.
 |---|---|---|
 | Telegram bot token | [Create a bot with BotFather](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) | Download public emoji packs |
 | Gemini API key | [Google AI Studio instructions](https://ai.google.dev/gemini-api/docs/api-key) | Generate descriptions |
+| OpenAI API key | [OpenAI API keys](https://platform.openai.com/api-keys) | Generate descriptions with the `openai` provider |
 | GitHub account | `gh auth login` | Submit results; login is optional for local analysis |
 
 To avoid re-entering keys, save them through hidden input, then check the tools:
@@ -113,6 +114,29 @@ mojilex doctor
 
 Keys go into the operating system's credential store, not Git. Saving is optional:
 analysis asks for missing keys for that invocation. `init` never asks for keys.
+Without provider flags, `config set-credentials` saves Telegram and the current
+provider's key. Explicit `--openai` selects OpenAI; use `--gemini --openai` to save both.
+
+For OpenAI, save its key through hidden input:
+
+```console
+mojilex config set-credentials --no-telegram --no-gemini --openai
+mojilex settings
+```
+
+In settings, select provider `openai` and model `gpt-6-luna`. Keep your Telegram
+token saved as well; a new installation can save both with
+`mojilex config set-credentials --no-gemini --openai`.
+Create the key in your OpenAI API project and check that project's billing and
+model access. API-key requests use [API billing](https://developers.openai.com/api/docs/pricing),
+separate from [ChatGPT/Codex subscription usage and credits](https://learn.chatgpt.com/docs/pricing).
+Paste the key only into the hidden prompt, never into a pack file or a public issue.
+OpenAI uses the Responses API with strict Structured Outputs for descriptions
+and tags. A valid JSON structure does not establish description accuracy; compare
+results on your packs before choosing a provider for a large run.
+This build has no supplied OpenAI price record: the request cap applies, but a
+USD ceiling cannot be guaranteed for unknown pricing. Analysis needs explicit
+unknown-cost consent; see [request and cost limits](docs/advanced-usage.md#resume-speed-and-request-limits).
 
 Follow any missing-component instructions from `doctor`. On Windows it offers
 WebM/TGS tool installation; TGS can require administrator approval and a sizeable
@@ -444,7 +468,7 @@ does not resolve the payment error. See [Google's error reference](https://ai.go
 
 | Question | What to do or expect |
 |---|---|
-| Does analysis cost money? | It may, depending on your Gemini account and model. Analysis starts without confirmation by default, with **100 requests per run**, including retries. Check settings and provider pricing before adding packs, or enable **Confirm before AI analysis**. Resume retains the consumed count. |
+| Does analysis cost money? | It may, depending on your Gemini or OpenAI API account and model. Analysis starts without confirmation by default, with **100 requests per run**, including retries. Check settings and provider pricing before adding packs, or enable **Confirm before AI analysis**. Resume retains the consumed count. |
 | Can it run faster? | The default `fast` mode prepares following packs while AI handles the current one. `prepare_all` maximizes local preparation before AI. Increase each concurrency limit only after measuring the computer and provider. For an existing run, `mojilex resume NewsEmoji --ai-concurrency 4` changes AI parallelism without increasing its request budget. |
 | The connection dropped or I stopped it | Use `mojilex resume NewsEmoji`. Completed work is reused; missing/corrupt media may need downloading again. Budget or access errors need resolving first. |
 | Why is the count not moving? | A batch may be waiting for a response or validation. Watch the stage, retries and elapsed time. Time spent is not completed work. |

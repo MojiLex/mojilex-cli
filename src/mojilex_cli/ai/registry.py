@@ -31,7 +31,9 @@ class ProviderRegistry:
 
 def default_registry() -> ProviderRegistry:
     from .gemini import GeminiVisionProvider
+    from .openai import OpenAIVisionProvider
 
     registry = ProviderRegistry()
     registry.register("gemini", GeminiVisionProvider)
+    registry.register("openai", OpenAIVisionProvider)
     return registry

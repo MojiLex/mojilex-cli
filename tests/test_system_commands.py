@@ -337,7 +337,8 @@ def test_doctor_media_readiness_is_independent_of_git_and_provider(
     assert result.result["media_ready"] is True
     assert result.result["authoring_ready"] is False
     assert result.result["ready"] is False
-    assert any("provider 'openai' is unsupported" in str(item) for item in result.warnings)
+    assert not any("unsupported" in str(item) for item in result.warnings)
+    assert any("OpenAI credential is unavailable" in str(item) for item in result.warnings)
     assert not any("Gemini credential" in str(item) for item in result.warnings)
 
 

@@ -188,6 +188,39 @@ Environment overrides include `MOJILEX_MODEL`, `MOJILEX_AI_CONCURRENCY`,
 `MOJILEX_UI_LANGUAGE` overrides it temporarily. Language changes apply on the next
 invocation. Commands, flags, and JSON field names remain in English.
 
+### OpenAI GPT-6 Luna
+
+Select provider `openai` and model `gpt-6-luna` in `mojilex settings`. For a
+project configuration, change the two `[ai]` entries above to:
+
+```toml
+provider = "openai"
+model = "gpt-6-luna"
+```
+
+Save only the OpenAI key with
+`mojilex config set-credentials --no-telegram --no-gemini --openai`.
+Without provider flags, `config set-credentials` saves Telegram and the selected
+provider's key. Explicit `--openai` saves Telegram and OpenAI; use `--gemini --openai`
+to save both provider keys. The menu uses the same command and selected provider.
+Gemini and OpenAI keys can coexist, but each
+analysis uses its configured provider and model. Resume keeps the saved run's AI
+settings, so changing the provider for future runs does not switch an interrupted run.
+
+The OpenAI adapter sends PNG contact sheets through the Responses API and requests
+strict [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+It performs the same local validation of descriptions, tags, and concept candidates.
+This checks response structure and dataset rules, not the factual accuracy of the
+visual interpretation. No model is automatically substituted. Check
+[model access](https://developers.openai.com/api/docs/models/gpt-6-luna) and
+[current API pricing](https://developers.openai.com/api/docs/pricing) in your API project;
+MojiLex's API-key requests do not consume ChatGPT/Codex subscription credits.
+
+This build has no supplied OpenAI price record. The AI request cap still applies,
+including retries, but a configured USD ceiling cannot be guaranteed while pricing
+is unknown. Interactive analysis asks for explicit unknown-cost consent; automation
+needs `--allow-unknown-cost`, where supported. Consent does not raise the request cap.
+
 `init` writes non-secret settings. `config set-credentials` stores secrets in the
 OS keyring through hidden input; `config clear-credentials` removes them. Without
 saved credentials, interactive analysis asks for missing values for that process
@@ -195,7 +228,8 @@ only. Environment variables take precedence over keyring values. If no usable
 keyring is available, saving fails without writing secrets to configuration.
 
 For JSON, quiet, piped-input, and non-interactive runs, provide stored credentials
-or process environment variables `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY`.
+or process environment variables `TELEGRAM_BOT_TOKEN` and the selected provider's
+`GEMINI_API_KEY` or `OPENAI_API_KEY`.
 Normal GitHub publication uses `gh auth login`; `GH_TOKEN` or `GITHUB_TOKEN` are
 also available for automation. Never put these values into a TOML file or Git.
 

@@ -29,6 +29,7 @@ from .base import (
     validate_result_labels,
 )
 from .gemini import GeminiVisionProvider, ModelPricing
+from .openai import OpenAIVisionProvider
 from .registry import ProviderRegistry, default_registry
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "GeminiVisionProvider",
     "LocalizedDescription",
     "ModelPricing",
+    "OpenAIVisionProvider",
     "ProviderCapabilities",
     "ProviderRegistry",
     "RequestBudget",

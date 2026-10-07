@@ -117,6 +117,57 @@ def gemini_request_parameters_sha256() -> str:
         return str(cache.values[key])
 
 
+def openai_request_parameters() -> dict[str, Any]:
+    """Responses transport profile, separate from immutable Gemini contracts."""
+    from ..base import DescriptionBatch
+    from ..openai_schema import openai_transport_schema
+
+    cache = _CONTRACTS.get()
+    key = (current_prompt_version(), openai_request_parameters)
+    if cache is not None:
+        with cache.lock:
+            if key in cache.values:
+                return deepcopy(cache.values[key])
+    parameters = {
+        "api_surface": "responses",
+        "http_retry_policy": "one-http-attempt-v1",
+        "store": False,
+        "background": False,
+        "stream": False,
+        "reasoning": {"effort": "none"},
+        "image_detail": "high",
+        "max_output_tokens": 8192,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "mojilex_description_batch",
+                "strict": True,
+                "schema": openai_transport_schema(DescriptionBatch.model_json_schema()),
+            }
+        },
+        "local_schema_sha256": jcs_sha256(DescriptionBatch.model_json_schema()),
+    }
+    if cache is not None:
+        with cache.lock:
+            cache.values[key] = deepcopy(parameters)
+    return parameters
+
+
+def request_parameters_sha256(provider: str) -> str:
+    if provider == "gemini":
+        return gemini_request_parameters_sha256()
+    if provider != "openai":
+        raise ValueError(f"unsupported provider parameter profile: {provider}")
+    cache = _CONTRACTS.get()
+    key = (current_prompt_version(), request_parameters_sha256, provider)
+    if cache is None:
+        return jcs_sha256(openai_request_parameters())
+    with cache.lock:
+        if key not in cache.values:
+            cache.values[key] = jcs_sha256(openai_request_parameters())
+        return str(cache.values[key])
+
+
 def build_prompt(expected_labels: tuple[str, ...], *, animated: bool) -> str:
     return _current().build_prompt(expected_labels, animated=animated)  # type: ignore[no-any-return]
 
@@ -133,11 +184,13 @@ __all__ = [
     "current_prompt_version",
     "gemini_request_parameters",
     "gemini_request_parameters_sha256",
+    "openai_request_parameters",
     "prompt_contract_scope",
     "prompt_manifest",
     "prompt_manifest_sha256",
     "prompt_sha256",
     "prompt_template_bytes",
     "prompt_templates",
+    "request_parameters_sha256",
     "use_prompt_version",
 ]

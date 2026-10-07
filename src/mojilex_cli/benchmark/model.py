@@ -29,8 +29,8 @@ from mojilex_cli.ai import (
 from mojilex_cli.ai.concepts import ConceptContext, concept_context_from_documents
 from mojilex_cli.ai.prompts import (
     PROMPT_VERSION,
-    gemini_request_parameters_sha256,
     prompt_sha256,
+    request_parameters_sha256,
 )
 from mojilex_cli.domain import SCHEMA_VERSION
 from mojilex_cli.media import PIPELINE_VERSION
@@ -813,14 +813,14 @@ def validate_model_benchmark_runtime(manifest: ModelBenchmarkManifest, provider_
 
     if manifest.target_provider != provider_name:
         raise BenchmarkError("selected provider does not match the benchmark manifest")
-    if provider_name == "gemini" and _benchmark_concept_context(manifest) is None:
+    if provider_name in {"gemini", "openai"} and _benchmark_concept_context(manifest) is None:
         raise BenchmarkError("current model benchmark requires exact concept input documents")
     if manifest.prompt_version != PROMPT_VERSION or manifest.prompt_sha256 != prompt_sha256():
         raise BenchmarkError("benchmark prompt provenance does not match this CLI")
-    if (
-        manifest.target_provider == "gemini"
-        and manifest.request_parameters_sha256 != gemini_request_parameters_sha256()
-    ):
+    if manifest.target_provider in {
+        "gemini",
+        "openai",
+    } and manifest.request_parameters_sha256 != request_parameters_sha256(provider_name):
         raise BenchmarkError("benchmark request parameters do not match this CLI")
     if (
         manifest.output_schema_version != SCHEMA_VERSION
