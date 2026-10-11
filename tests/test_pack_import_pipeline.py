@@ -12,7 +12,12 @@ import pytest
 from PIL import Image
 
 from mojilex_cli.config import MojiLexConfig, ProcessingConfig, TelegramConfig
-from mojilex_cli.dataset.validation import validate_dataset
+from mojilex_cli.dataset.validation import (
+    DatasetValidationError,
+    ValidationIssue,
+    ValidationReport,
+    load_validated_dataset,
+)
 from mojilex_cli.media.models import MediaRenderError
 from mojilex_cli.pipeline import runner
 from mojilex_cli.runs import RunStore
@@ -140,7 +145,9 @@ async def _harness(
     monkeypatch.setattr(runner, "_resolved_config", lambda _options: config)
     # The synthetic dataset has real domain records but omits external JSON schemas.
     monkeypatch.setattr(
-        runner, "validate_dataset", lambda root, **_: validate_dataset(root, strict=False)
+        runner,
+        "load_validated_dataset",
+        lambda root, **_: load_validated_dataset(root, strict=False),
     )
     monkeypatch.setattr(
         runner,
@@ -180,6 +187,55 @@ async def _wait_for_gate(event: asyncio.Event, task: asyncio.Task) -> None:
     finally:
         waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def test_import_prepares_media_from_the_exact_validated_snapshot(tmp_path, monkeypatch):
+    async def ready(_item):
+        pass
+
+    state = await _harness(tmp_path, monkeypatch, (_pack("SnapshotPack", "samebytes"),), ready)
+    loaded = []
+    prepare = runner._prepare_collection_media
+
+    def load_once(root, *, strict):
+        assert strict is True
+        snapshot, report = load_validated_dataset(root, strict=False)
+        loaded.append(snapshot)
+        return snapshot, report
+
+    async def prepare_validated(snapshot, *args, **kwargs):
+        assert snapshot is loaded[0]
+        return await prepare(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "load_validated_dataset", load_once)
+    monkeypatch.setattr(runner, "_prepare_collection_media", prepare_validated)
+    monkeypatch.setattr(
+        runner, "load_dataset", lambda *_: pytest.fail("Import reread the validated base")
+    )
+    result = await runner._run_import(state.sources, runner.PipelineOptions())
+    assert not result.errors
+    assert len(loaded) == 1
+    assert state.downloads == ["samebytes"]
+
+
+async def test_invalid_import_base_is_rejected_before_telegram_access(tmp_path, monkeypatch):
+    async def ready(_item):
+        pass
+
+    state = await _harness(tmp_path, monkeypatch, (_pack("InvalidPack", "notdownloaded"),), ready)
+    monkeypatch.setattr(
+        runner,
+        "load_validated_dataset",
+        lambda *args, **kwargs: (
+            None,
+            ValidationReport((ValidationIssue("SCHEMA", "dataset.json", "invalid base"),)),
+        ),
+    )
+    with pytest.raises(DatasetValidationError, match="invalid base"):
+        await runner._run_import(state.sources, runner.PipelineOptions())
+    assert state.fetched == []
+    assert state.downloads == []
+    assert state.run_ids == []
 
 
 @pytest.mark.parametrize("pack_concurrency", [1, 3])

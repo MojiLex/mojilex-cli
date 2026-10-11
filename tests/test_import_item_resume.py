@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from mojilex_cli.config import MojiLexConfig, TelegramConfig
-from mojilex_cli.dataset.validation import validate_dataset
+from mojilex_cli.dataset.validation import load_validated_dataset
 from mojilex_cli.media.models import MediaError, MediaRenderError
 from mojilex_cli.media.processor import SourceChangedDuringRunError
 from mojilex_cli.media.temporary import TemporaryMediaRun
@@ -101,7 +101,9 @@ async def test_import_persists_each_file_and_resumes_without_reanalysis(
     monkeypatch.setattr(runner, "_resolved_config", lambda _: config)
     # This data fixture has domain records, but no external JSON Schema files.
     monkeypatch.setattr(
-        runner, "validate_dataset", lambda root, **_: validate_dataset(root, strict=False)
+        runner,
+        "load_validated_dataset",
+        lambda root, **_: load_validated_dataset(root, strict=False),
     )
     monkeypatch.setattr(
         runner,

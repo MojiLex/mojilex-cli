@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from threading import Lock
 
 from mojilex_cli.config import load_config
-from mojilex_cli.dataset import load_validated_dataset
+from mojilex_cli.dataset import DatasetLoadError
+from mojilex_cli.dataset.collection_reader import load_collection_names
+from mojilex_cli.github import RepositoryRef
 from mojilex_cli.i18n import current_ui_language
 from mojilex_cli.output import RunStatus
 from mojilex_cli.pipeline.runner import repository_workspace
@@ -77,17 +79,14 @@ def official_pack_names() -> frozenset[str]:
 def _load_official_pack_names() -> frozenset[str]:
     # The official main branch, never a user's local draft, fork, or pending PR.
     # One bounded checkout per input batch, not one GitHub request per URL.
-    with repository_workspace("MojiLex/mojilex", "main") as workspace:
-        snapshot, report = load_validated_dataset(workspace.root, strict=True)
-        report.raise_for_errors()
-        assert snapshot is not None
-        return frozenset(
-            collection.native_id.casefold()
-            for collection in snapshot.collections.values()
-            if collection.platform == "telegram"
-            and collection.native_namespace == "sticker_set.name"
-            and collection.scope_id == "global"
-        )
+    with repository_workspace(
+        "https://github.com/MojiLex/mojilex", "main", isolated=True
+    ) as workspace:
+        if workspace.target != RepositoryRef(owner="MojiLex", name="mojilex"):
+            raise DatasetLoadError(
+                "official collection source is not the public MojiLex repository"
+            )
+        return load_collection_names(workspace.root)
 
 
 def select_sources(

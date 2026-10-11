@@ -6,6 +6,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+from mojilex_cli.config import ConfigError, load_config
 from mojilex_cli.dataset import build_index, validate_dataset
 from mojilex_cli.dataset.git_provenance import (
     GitSourceProvenance,
@@ -14,6 +15,7 @@ from mojilex_cli.dataset.git_provenance import (
     verify_release_source,
     verify_tool_source,
 )
+from mojilex_cli.dataset.validation import schema_validation_scope
 from mojilex_cli.domain import preview_takedown, review_emoji, set_availability, takedown
 
 from .runtime import CommandError, CommandResult, require_local_repository
@@ -21,7 +23,16 @@ from .runtime import CommandError, CommandResult, require_local_repository
 
 def validate_command(path: Path, *, strict: bool) -> CommandResult:
     root = require_local_repository(path)
-    report = validate_dataset(root, strict=strict)
+    try:
+        cache_dir = load_config().cache_dir
+    except ConfigError:
+        # Dataset diagnostics must work even when unrelated authoring settings
+        # are broken. Persistent reuse is optional; validation remains complete.
+        cache_dir = None
+    with schema_validation_scope(
+        persistent_cache=Path(cache_dir) / "schema-validation" if cache_dir is not None else None
+    ):
+        report = validate_dataset(root, strict=strict)
     issues = [
         {"code": issue.code, "path": issue.path, "message": issue.message}
         for issue in report.issues

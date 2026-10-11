@@ -104,3 +104,18 @@ entries. A baseline precondition resolves the canonical root once per pass, whil
 every target still receives fresh ancestor, reparse, containment and content checks.
 Pack saving includes whole-dataset validation, so its duration also depends on the
 size of the existing dataset.
+
+Import prepares media from the exact snapshot that passed validation, without
+loading the same dataset a second time. Import, analysis and `validate` share
+authenticated local history of successful JSON Schema checks. Identical schemas
+with fixed absolute IDs and fully contained references can reuse those successes
+across private workspaces; relative references and nested schema bases remain
+bound to their original directory. Cache keys include exact schema and record
+contents and validator versions. Changed data and semantic relationships, paths,
+repository files and secrets are still checked afresh; damaged caches fall back
+to validation.
+
+The already-published pack check reads the current public `main` manifest and
+collection records, rather than validating every emoji merely to obtain pack
+names. It never substitutes local drafts for the public source. Full dataset
+validation still applies before analysis and publication.

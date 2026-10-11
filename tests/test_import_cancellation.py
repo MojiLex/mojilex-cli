@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from mojilex_cli.config import MojiLexConfig, TelegramConfig
-from mojilex_cli.dataset.validation import validate_dataset
+from mojilex_cli.dataset.validation import load_validated_dataset
 from mojilex_cli.pipeline import runner
 from mojilex_cli.runs import RunStore
 from test_dataset_helpers import write_fixture
@@ -91,7 +91,9 @@ async def test_cancelled_import_preserves_completed_item_and_resumes(tmp_path_fa
     monkeypatch.setattr(runner, "_resolved_config", lambda _: config)
     # Synthetic domain fixture deliberately omits the external JSON Schema files.
     monkeypatch.setattr(
-        runner, "validate_dataset", lambda root, **_: validate_dataset(root, strict=False)
+        runner,
+        "load_validated_dataset",
+        lambda root, **_: load_validated_dataset(root, strict=False),
     )
     monkeypatch.setattr(
         runner,

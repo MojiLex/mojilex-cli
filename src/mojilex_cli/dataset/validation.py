@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from threading import Lock
 from typing import Any
+from urllib.parse import urldefrag, urlsplit
 from uuid import UUID
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
@@ -192,7 +193,7 @@ class _SchemaMemo:
         self.successes: dict[bytes, None] = (
             dict.fromkeys(self.persistent.loaded) if self.persistent is not None else {}
         )
-        self.graphs: dict[bytes, tuple[Any, dict[str, dict[str, Any]]]] = {}
+        self.graphs: dict[bytes, tuple[Any, dict[str, dict[str, Any]], bytes]] = {}
         self.persisted: OrderedDict[tuple[tuple[object, ...], bytes], None] = OrderedDict()
         self.persisted_bytes = 0
         self.lock = Lock()
@@ -243,6 +244,72 @@ def _schema_instance_key(graph: bytes, name: str, instance: object) -> bytes | N
     return hashlib.sha256(graph + name.encode("utf-8") + b"\0" + payload).digest()
 
 
+def _schema_success_graph(
+    schema_root: Path,
+    documents: list[tuple[Path, bytes, dict[str, Any]]],
+    bound_graph: bytes,
+) -> bytes:
+    """Reuse identical absolute-ID graphs across private workspaces, conservatively.
+
+    Filesystem URI bindings still identify the compiled registry. Only graphs
+    whose references cannot reach those bindings receive a portable success key.
+    Unknown/relative references, nested bases and older dialects keep the bound key.
+    """
+    identifiers: set[str] = set()
+    for _, _, schema in documents:
+        identifier = schema.get("$id")
+        if not isinstance(identifier, str):
+            return bound_graph
+        try:
+            parsed = urlsplit(identifier)
+        except ValueError:
+            return bound_graph
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or identifier in identifiers
+        ):
+            return bound_graph
+        identifiers.add(identifier)
+    for _, _, schema in documents:
+        pending: list[tuple[object, bool]] = [(schema, True)]
+        while pending:
+            value, top_level = pending.pop()
+            if isinstance(value, dict):
+                if not top_level and "$id" in value:
+                    return bound_graph
+                dialect = value.get("$schema")
+                if (
+                    dialect is not None
+                    and dialect != "https://json-schema.org/draft/2020-12/schema"
+                ):
+                    return bound_graph
+                for keyword in ("$ref", "$dynamicRef", "$recursiveRef"):
+                    if keyword not in value:
+                        continue
+                    reference = value.get(keyword)
+                    if not isinstance(reference, str):
+                        return bound_graph
+                    try:
+                        reference_base = urldefrag(reference)[0]
+                    except ValueError:
+                        return bound_graph
+                    if reference_base and reference_base not in identifiers:
+                        return bound_graph
+                pending.extend((item, False) for item in value.values())
+            elif isinstance(value, list):
+                pending.extend((item, False) for item in value)
+    graph = hashlib.sha256(b"mojilex-absolute-schema-graph-v1\0")
+    for path, raw, _ in documents:
+        relative = path.relative_to(schema_root).as_posix().encode("utf-8")
+        graph.update(
+            len(relative).to_bytes(8, "big") + relative + len(raw).to_bytes(8, "big") + raw
+        )
+    return graph.digest()
+
+
 def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], bytes]:
     registry: Any = Registry()
     by_name: dict[str, dict[str, Any]] = {}
@@ -260,9 +327,11 @@ def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], by
         with memo.lock:
             cached = memo.graphs.get(digest)
             if cached is not None:
-                return cached[0], cached[1], digest
+                return cached
+    parsed_documents: list[tuple[Path, bytes, dict[str, Any]]] = []
     for path, raw in documents:
         schema = parse_json(raw, source=str(path))
+        parsed_documents.append((path, raw, schema))
         by_name[path.name] = schema
         resource = Resource.from_contents(schema, default_specification=DRAFT202012)
         registry = registry.with_resource(path.as_uri(), resource)
@@ -270,12 +339,13 @@ def _schema_store(schema_root: Path) -> tuple[Any, dict[str, dict[str, Any]], by
         schema_id = schema.get("$id")
         if isinstance(schema_id, str):
             registry = registry.with_resource(schema_id, resource)
+    success_graph = _schema_success_graph(schema_root, parsed_documents, digest)
     if memo is not None:
         with memo.lock:
             if digest not in memo.graphs and len(memo.graphs) >= 8:
                 memo.graphs.pop(next(iter(memo.graphs)))
-            memo.graphs[digest] = (registry, by_name)
-    return registry, by_name, digest
+            memo.graphs[digest] = (registry, by_name, success_graph)
+    return registry, by_name, success_graph
 
 
 def _validate_json_schemas(snapshot: DatasetSnapshot, issues: list[ValidationIssue]) -> None:

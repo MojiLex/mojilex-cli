@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from mojilex_cli.cli import _unknown_cost_callback, _with_runtime_secrets, app
 from mojilex_cli.commands import packs, workflow
 from mojilex_cli.commands.runtime import CommandError, CommandResult
+from mojilex_cli.config import ConfigError, load_config
 from test_dataset_helpers import write_fixture
 
 
@@ -40,6 +41,26 @@ def test_validate_json_is_one_machine_readable_object(tmp_path) -> None:
     assert payload["status"] == "succeeded"
     assert payload["result"]["issues"] == 0
     assert payload["errors"] == []
+
+
+@pytest.mark.parametrize("broken_layer", ["environment", "project"])
+def test_validate_does_not_depend_on_valid_authoring_configuration(
+    tmp_path, monkeypatch, broken_layer
+) -> None:
+    repository = tmp_path / "dataset"
+    write_fixture(repository)
+    monkeypatch.chdir(tmp_path)
+    if broken_layer == "environment":
+        monkeypatch.setenv("MOJILEX_MAX_AI_REQUESTS", "invalid-limit")
+    else:
+        (tmp_path / ".mojilex.toml").write_text("[ai", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config()
+    result = CliRunner().invoke(app, ["validate", str(repository), "--no-strict", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["result"]["issues"] == 0
 
 
 def test_validate_json_preserves_stable_validation_exit_code(tmp_path) -> None:

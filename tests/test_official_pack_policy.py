@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,8 @@ from mojilex_cli import cli
 from mojilex_cli.commands import official_packs, workflow
 from mojilex_cli.commands.runtime import CommandResult
 from mojilex_cli.config import MojiLexConfig, load_config
+from mojilex_cli.dataset import DatasetLoadError
+from mojilex_cli.github import RepositoryRef
 from mojilex_cli.i18n import use_ui_language
 from mojilex_cli.pipeline import runner
 from mojilex_cli.runs import RunStore, new_checkpoint
@@ -90,36 +93,75 @@ def test_check_failure_does_not_silently_authorize_analysis(monkeypatch):
         official_packs.select_sources([OLD], platform="auto", policy="ask")
 
 
-def test_index_uses_only_official_main_and_correct_namespace(tmp_path, monkeypatch):
+def test_index_uses_only_official_main_and_collection_identities(tmp_path, monkeypatch):
     opened = []
 
     @contextmanager
-    def workspace(target, branch):
-        opened.append((target, branch))
-        yield SimpleNamespace(root=tmp_path)
+    def workspace(target, branch, *, isolated):
+        opened.append((target, branch, isolated))
+        yield SimpleNamespace(root=tmp_path, target=RepositoryRef(owner="MojiLex", name="mojilex"))
 
     monkeypatch.setattr(official_packs, "repository_workspace", workspace)
-    collections = [
-        SimpleNamespace(
-            platform="telegram",
-            native_namespace="sticker_set.name",
-            scope_id="global",
-            native_id="Published",
-        ),
-        SimpleNamespace(
-            platform="telegram", native_namespace="other", scope_id="global", native_id="Unrelated"
-        ),
-    ]
+    roots = []
     monkeypatch.setattr(
         official_packs,
-        "load_validated_dataset",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(collections=dict(enumerate(collections))),
-            SimpleNamespace(raise_for_errors=lambda: None),
-        ),
+        "load_collection_names",
+        lambda root: roots.append(root) or frozenset({"published"}),
     )
     assert official_packs.official_pack_names() == {"published"}
-    assert opened == [("MojiLex/mojilex", "main")]
+    assert opened == [("https://github.com/MojiLex/mojilex", "main", True)]
+    assert roots == [tmp_path]
+
+
+def test_official_main_cannot_be_shadowed_by_a_local_draft(tmp_path, monkeypatch):
+    shadow = tmp_path / "MojiLex" / "mojilex"
+    shadow.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "load_credentials", lambda: SimpleNamespace(github_token=None))
+    monkeypatch.setattr(
+        runner.GitRunner, "remote_url", lambda _: "https://github.com/SomeFork/local-draft.git"
+    )
+    cloned = []
+
+    def clone(command, **_kwargs):
+        assert command[:2] == ["git", "clone"]
+        assert command[command.index("--branch") + 1] == "main"
+        assert command[-2] == "https://github.com/MojiLex/mojilex.git"
+        root = Path(command[-1])
+        root.mkdir(parents=True)
+        cloned.append(root)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.subprocess, "run", clone)
+    roots = []
+
+    def names(root):
+        assert root != shadow
+        assert root.is_dir()
+        roots.append(root)
+        return frozenset({"published"})
+
+    monkeypatch.setattr(official_packs, "load_collection_names", names)
+    assert official_packs.official_pack_names() == {"published"}
+    assert cloned == roots
+    assert len(roots) == 1
+    assert not roots[0].exists()  # The isolated checkout is released after reading.
+
+
+@pytest.mark.parametrize("target", ["SomeFork/mojilex", "MojiLex/other"])
+def test_unexpected_checkout_target_is_rejected_before_collection_read(
+    tmp_path, monkeypatch, target
+):
+    @contextmanager
+    def workspace(*_args, **_kwargs):
+        yield SimpleNamespace(root=tmp_path, target=RepositoryRef.parse(target))
+
+    monkeypatch.setattr(official_packs, "repository_workspace", workspace)
+    monkeypatch.setattr(
+        official_packs, "load_collection_names", lambda _: pytest.fail("must not read a fork")
+    )
+    with pytest.raises(DatasetLoadError, match="not the public MojiLex repository"):
+        official_packs.official_pack_names()
 
 
 @pytest.mark.parametrize("answer,allowed", [("\n", False), ("нет\n", False), ("да\n", True)])
@@ -496,37 +538,36 @@ def test_official_snapshot_is_shared_for_import_and_saved_runs_only_within_scope
     assert len(calls) == 4  # Standalone calls do not retain a stale main-branch index.
 
 
-def test_official_snapshot_failure_is_not_cached_and_validation_stays_strict(tmp_path, monkeypatch):
+def test_official_snapshot_failure_is_not_cached_and_collection_validation_stays_strict(
+    tmp_path, monkeypatch
+):
     attempts = []
     validations = []
 
     @contextmanager
-    def workspace(target, branch):
-        attempts.append((target, branch))
-        yield SimpleNamespace(root=tmp_path)
+    def workspace(target, branch, *, isolated):
+        attempts.append((target, branch, isolated))
+        yield SimpleNamespace(root=tmp_path, target=RepositoryRef(owner="MojiLex", name="mojilex"))
 
-    def validate(root, *, strict):
-        validations.append((root, strict))
-
-        def raise_for_errors():
-            if len(validations) == 1:
-                raise RuntimeError("invalid official dataset")
-
-        return SimpleNamespace(raise_for_errors=raise_for_errors)
+    def validate(root):
+        validations.append(root)
+        if len(validations) == 1:
+            raise RuntimeError("invalid official dataset")
+        return frozenset()
 
     monkeypatch.setattr(official_packs, "repository_workspace", workspace)
     monkeypatch.setattr(
         official_packs,
-        "load_validated_dataset",
-        lambda root, strict: (SimpleNamespace(collections={}), validate(root, strict=strict)),
+        "load_collection_names",
+        validate,
     )
     with official_packs.official_pack_scope():
         with pytest.raises(RuntimeError, match="invalid official dataset"):
             official_packs.official_pack_names()
         assert official_packs.official_pack_names() == frozenset()
         assert official_packs.official_pack_names() == frozenset()
-    assert attempts == [("MojiLex/mojilex", "main")] * 2
-    assert validations == [(tmp_path, True)] * 2
+    assert attempts == [("https://github.com/MojiLex/mojilex", "main", True)] * 2
+    assert validations == [tmp_path] * 2
 
 
 def test_official_snapshot_is_shared_with_worker_threads(monkeypatch):

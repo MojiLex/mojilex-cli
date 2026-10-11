@@ -2323,9 +2323,21 @@ async def _run_import(
             "TELEGRAM_BOT_TOKEN is not available.",
             hint="Set it in the current process environment.",
         )
-    with repository_workspace(config.repository.target, config.repository.base_branch) as workspace:
-        validate_dataset(workspace.root, strict=True).raise_for_errors()
-        initial = load_dataset(workspace.root)
+    with (
+        schema_validation_scope(
+            persistent_cache=Path(config.cache_dir) / "schema-validation"
+            if config.cache_dir is not None
+            else None
+        ),
+        repository_workspace(config.repository.target, config.repository.base_branch) as workspace,
+    ):
+        # Use the exact snapshot that passed validation rather than reading and
+        # parsing the whole dataset again. Later writes still check fresh bytes.
+        initial, initial_report = await run_blocking(
+            load_validated_dataset, workspace.root, strict=True
+        )
+        initial_report.raise_for_errors()
+        assert initial is not None
         base_sha = GitRunner(workspace.root).current_sha()
         runs_dir = cast(Path, config.runs_dir)
         store = RunStore(runs_dir, repository_root=workspace.root)
