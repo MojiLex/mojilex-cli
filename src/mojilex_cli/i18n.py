@@ -37,7 +37,7 @@ _ROOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "read",
-        ("search", "get", "get-collection", "resolve", "similar", "snapshots"),
+        ("lookup", "search", "get", "get-collection", "resolve", "similar", "snapshots"),
     ),
     ("quality", ("validate", "dedupe", "review", "set-status", "takedown")),
     ("releases", ("snapshot", "build-index", "benchmark-dedupe", "benchmark-model")),
@@ -54,6 +54,26 @@ _PANEL_TITLES: dict[str, tuple[str, str]] = {
 
 
 _COMMAND_HELP: dict[str, tuple[str, str]] = {
+    "lookup": (
+        "Find published emoji descriptions without paid API calls.",
+        "Искать готовые описания в публичной базе без платных API-запросов.",
+    ),
+    "lookup search": (
+        "Search every eligible published description in the cached public commit.",
+        "Искать по готовым описаниям и названиям паков в публичной базе.",
+    ),
+    "lookup get": (
+        "Read one saved public description, identity, pack, and provenance.",
+        "Показать публичное описание эмодзи и его происхождение.",
+    ),
+    "lookup info": (
+        "Report public source version, coverage, and review status offline.",
+        "Показать версию, полноту и статусы проверки публичной базы.",
+    ),
+    "lookup refresh": (
+        "Fetch public main and rebuild the lookup cache; never generate descriptions.",
+        "Обновить публичную базу из GitHub и перестроить поиск.",
+    ),
     "sync": (
         "Send all completed new packs in one GitHub pull request.",
         "Отправить все новые готовые паки одним Pull Request на GitHub.",
@@ -959,6 +979,13 @@ def localize_command_tree(command: Any, language: UiLanguage, path: tuple[str, .
         command.help = _COMMAND_HELP[key][1 if language == "ru" else 0]
         command.short_help = command.help
     for parameter in command.params:
+        if path[:1] == ("lookup",) and getattr(parameter, "name", "") == "repo":
+            parameter.help = (
+                "Полная локальная копия публичного репозитория MojiLex/mojilex."
+                if language == "ru"
+                else "Full local clone of the public MojiLex/mojilex repository."
+            )
+            continue
         help_text = _PARAMETER_HELP.get(getattr(parameter, "name", ""))
         if help_text is not None:
             parameter.help = help_text[1 if language == "ru" else 0]
@@ -985,6 +1012,7 @@ def _group_root_commands(command: Any, language: UiLanguage) -> None:
         if name not in ordered:
             ordered[name] = child
     basic = {
+        "lookup",
         "list",
         "show",
         "gallery",

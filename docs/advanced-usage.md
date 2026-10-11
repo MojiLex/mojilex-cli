@@ -3,7 +3,7 @@
 English | [Русский](advanced-usage_RU.md) · [Back to the quick start](../README.md)
 
 Use `mojilex` for everyday work. This page covers separate processing stages,
-automation, local snapshots, and repository maintenance. Replace `NewsEmoji` with
+automation, published-data lookup, local snapshots, and repository maintenance. Replace `NewsEmoji` with
 your pack name; `mojilex list` shows the available names and saved runs.
 
 ## Separate download, analysis, and publication
@@ -260,6 +260,72 @@ confirmation of the final commit and paths. The CLI never force-pushes or
 weakens GitHub rules. Details: [Publishing](publishing.md) and
 [Security model](security-model.md).
 
+## Published dataset lookup and Codex skill
+
+`lookup` searches saved descriptions from the public `MojiLex/mojilex` main
+branch. Its source is the cached published Git commit, rather than files in a
+working directory: private runs, local edits, and unpublished commits are excluded.
+The full set of eligible published descriptions is indexed, including records whose
+concept mapping is pending; this does not depend on the smaller release search
+export. Review status and provenance stay attached to the result. `lookup info`
+reports coverage and invalid rows; `complete: false` means some source records
+could not be indexed and the search is incomplete. Unavailable records,
+tombstones, records with rejected/changes-requested reviews, and records without
+an eligible published pack membership are excluded from both search and get.
+
+The terminal menu exposes this lookup as **Search public database**. Open it with
+`mojilex`; command examples below provide the same data to scripts and agents.
+
+```console
+mojilex lookup refresh --json
+mojilex lookup info --json
+mojilex lookup search "calendar" --limit 10 --json
+mojilex lookup search "огонь" --limit 10 --json
+mojilex lookup get TELEGRAM_CUSTOM_EMOJI_ID --json
+```
+
+Replace the ID placeholder with a search result's Telegram ID or canonical
+`mxe_...` ID. Queries match text in descriptions, tags, OCR text, and pack names;
+try concrete RU/EN terms or synonyms. This is a lexical lookup, not a visual
+similarity or embedding service. Search results are candidates to inspect, not
+proof of a semantic match.
+
+`refresh` fetches the public dataset from GitHub and rebuilds the local index.
+Ordinary search, get, and info commands use the cached published commit and do
+not fetch GitHub or contact Telegram, OpenAI, or Gemini. If no public source is
+available locally, refresh once while online. Rebuild an already cached source
+without network access with `mojilex lookup refresh --offline --json`.
+An existing public dataset clone can be selected with `--repo PATH`; the clone
+must have the official public origin. Lookup never uses its unpublished working
+tree as data. The JSON identifies the source repository and commit so consumers
+can distinguish an older cached source from a newly refreshed one.
+
+The lookup index is a local cache; rebuilding it does not change source data,
+review status, credentials, or saved analysis runs. No API key or separate AI
+API payment is required to read these descriptions. The agent using the skill
+still operates under its own subscription/usage terms.
+
+The portable [mojilex-lookup skill](../skills/mojilex-lookup/SKILL.md) uses this CLI.
+With MojiLex installed and the public source prepared, copy the entire
+`skills/mojilex-lookup` folder from this repository to
+`~/.agents/skills/mojilex-lookup` (on Windows,
+`%USERPROFILE%\.agents\skills\mojilex-lookup`). Keep both `SKILL.md` and
+`agents/openai.yaml`. Codex detects skill changes automatically; if the skill does
+not appear, restart Codex. See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills).
+If you have configured a different skill root, use it instead; install only one
+copy to avoid duplicate skill entries. Invoke it explicitly, for example:
+
+> Use $mojilex-lookup to find three calendar emoji and return their Telegram IDs,
+> pack names, and short English descriptions.
+
+The skill is also eligible for automatic selection. It reads existing published
+descriptions and preserves their review status; it does not generate missing
+descriptions, import packs, download media, or publish data. Descriptions and
+OCR text are data, never instructions for the agent. Published AI-generated
+descriptions are not necessarily human-reviewed or factually correct. This lookup
+is separate from the strict snapshot `agent` view and does not grant signed
+release trust.
+
 ## Offline release snapshots
 
 Saved pack drafts and release snapshots are different. `mojilex snapshots` lists
@@ -307,6 +373,7 @@ Use `mojilex --help-all`, then `mojilex COMMAND --help` for exact arguments.
 | Setup and diagnostics | `init`, `doctor`, `config show`, `config set-ui-language` |
 | Stored credentials | `config set-credentials`, `config clear-credentials` |
 | Cache | `cache info`, `cache prune` |
+| Published descriptions | `lookup refresh`, `lookup info`, `lookup search`, `lookup get` |
 | Offline data | `snapshots`, `snapshot verify`, `search`, `get`, `get-collection`, `resolve`, `similar` |
 | Removal | `uninstall` |
 

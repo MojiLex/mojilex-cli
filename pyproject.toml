@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mojilex-cli"
-version = "0.2.6"
+version = "0.2.7"
 description = "Import, describe, validate, and publish MojiLex semantic emoji datasets."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -66,6 +66,7 @@ packages = ["src/mojilex_cli"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "tools/rlottie_rgba_renderer.cpp" = "mojilex_cli/installers/rlottie_rgba_renderer.cpp"
+"skills/mojilex-lookup" = "mojilex_cli/skills/mojilex-lookup"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -73,6 +74,7 @@ include = [
   "/tests",
   "/docs",
   "/tools",
+  "/skills",
   "/README.md",
   "/README_RU.md",
   "/LICENSE",

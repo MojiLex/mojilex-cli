@@ -1054,8 +1054,63 @@ def _render_human(
         )
 
 
+def _render_lookup_result(console: Console, command: str, result: Mapping[str, Any]) -> bool:
+    """Show saved public captions without exposing internal index payloads."""
+
+    ru = current_ui_language() == "ru"
+    metadata = result.get("index", result)
+    if not isinstance(metadata, Mapping):
+        return False
+    source = metadata.get("source", {})
+    if isinstance(source, Mapping):
+        console.print(Text(f"MojiLex/mojilex · {str(source.get('commit', ''))[:12]}"))
+    if command in {"lookup info", "lookup refresh"}:
+        console.print(
+            Text(
+                ("Доступно описаний: " if ru else "Descriptions available: ")
+                + str(metadata.get("indexed_emojis", 0))
+                + (" · Паков: " if ru else " · Packs: ")
+                + str(metadata.get("collections", 0))
+            )
+        )
+        console.print(
+            Text(
+                "Чтение готовой публичной базы. API-ключи не нужны."
+                if ru
+                else "Reading saved public data. No API key is needed."
+            )
+        )
+        return True
+    if command == "lookup search":
+        console.print(Text(("Найдено: " if ru else "Matches: ") + str(result.get("total", 0))))
+        items = result.get("items", [])
+    else:
+        items = [result.get("item", {})]
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        descriptions = item.get("descriptions", {})
+        description = descriptions.get("ru" if ru else "en", {})
+        packs = item.get("packs", [])
+        names = ", ".join(str(pack.get("name", "")) for pack in packs if isinstance(pack, Mapping))
+        console.print(Text(f"{item.get('native_id', '')} · {names}", style="bold"))
+        console.print(Text(str(description.get("text", ""))))
+        if description.get("motion"):
+            console.print(Text(str(description["motion"])))
+        review = item.get("review", {})
+        console.print(
+            Text(
+                ("Проверка: " if ru else "Review: ") + str(review.get("status", "unknown")),
+                style="dim",
+            )
+        )
+    return True
+
+
 def _render_pack_result(console: Console, command: str, result: Mapping[str, Any]) -> bool:
     """Render pack data as readable text, never Python dicts or Rich markup."""
+    if command.startswith("lookup "):
+        return _render_lookup_result(console, command, result)
     if command == "sync":
         added = result.get("added_packs", [])
         changed = result.get("changed_paths", [])
