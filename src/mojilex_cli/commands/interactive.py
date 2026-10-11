@@ -646,13 +646,14 @@ def run_menu(dispatch: Dispatch) -> None:
                         "Отправить все новые готовые паки на GitHub",
                         "Sync all new completed packs to GitHub",
                     ),
+                    label("Поиск в публичной базе", "Search public database"),
                     label("Выход", "Exit"),
                 ],
                 detail=label(
                     "Эмодзи → понятные текстовые описания", "Emoji → readable descriptions"
                 ),
             )
-            if choice in {None, 5}:
+            if choice in {None, 6}:
                 return
             if choice == 0:
                 rows = list_packs_command().result["packs"]
@@ -690,6 +691,24 @@ def run_menu(dispatch: Dispatch) -> None:
                 _invoke(dispatch, ["doctor"])
             elif choice == 4:
                 _invoke(dispatch, ["sync"])
+            elif choice == 5:
+                action = select(
+                    label("Публичная база MojiLex", "Public MojiLex database"),
+                    [
+                        label("Поиск готовых описаний", "Search saved descriptions"),
+                        label("Обновить базу с GitHub", "Update database from GitHub"),
+                        label("Версия и полнота базы", "Database version and coverage"),
+                    ],
+                    detail=label("Без платных API-запросов", "No paid API calls"),
+                )
+                if action == 0:
+                    query = str(typer.prompt(label("Что найти", "Search for"))).strip()
+                    if query:
+                        _invoke(dispatch, ["lookup", "search", query])
+                elif action == 1:
+                    _invoke(dispatch, ["lookup", "refresh"])
+                elif action == 2:
+                    _invoke(dispatch, ["lookup", "info"])
         except (KeyboardInterrupt, EOFError, typer.Abort):
             continue
         except CommandError as exc:

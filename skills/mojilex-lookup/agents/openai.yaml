@@ -1,0 +1,4 @@
+interface:
+  display_name: "MojiLex Lookup"
+  short_description: "Find published emoji descriptions without paid APIs"
+  default_prompt: "Use $mojilex-lookup to find published emoji descriptions and their Telegram IDs for my request."

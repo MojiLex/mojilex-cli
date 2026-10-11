@@ -20,6 +20,7 @@ from mojilex_cli.commands.dataset import (
     takedown_preview_command,
     validate_command,
 )
+from mojilex_cli.commands.lookup import register_lookup_commands
 from mojilex_cli.commands.read import execute_read, register_read_commands
 from mojilex_cli.commands.runtime import (
     CommandError,
@@ -59,6 +60,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(cache_app, name="cache")
 app.add_typer(dedupe_app, name="dedupe")
 register_read_commands(app)
+register_lookup_commands(app)
 
 
 def _authoring_secret_names(
@@ -1583,6 +1585,7 @@ def _extract_json_flag(argv: Sequence[str]) -> tuple[bool, list[str]]:
 def _command_label(argv: Sequence[str]) -> str:
     commands = {
         "list",
+        "lookup",
         "show",
         "publish",
         "gallery",
@@ -1617,7 +1620,7 @@ def _command_label(argv: Sequence[str]) -> str:
     for index, argument in enumerate(argv):
         if argument not in commands:
             continue
-        if argument in {"cache", "config", "dedupe", "snapshot"}:
+        if argument in {"cache", "config", "dedupe", "snapshot", "lookup"}:
             for child in argv[index + 1 :]:
                 if not child.startswith("-"):
                     return (

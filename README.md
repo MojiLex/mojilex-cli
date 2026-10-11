@@ -11,7 +11,7 @@ Use the terminal menu with arrow keys. No repository cloning, IDE or internal ru
 ![MojiLex terminal menu](docs/assets/menu-en.svg)
 
 [Install](#quick-start) · [First pack](#your-first-pack) ·
-[Commands](#everyday-commands) · [Help](#questions-and-troubleshooting)
+[Commands](#everyday-commands) · [Lookup](#find-published-emoji-without-ai-requests) · [Help](#questions-and-troubleshooting)
 
 ## Native media platform support
 
@@ -169,12 +169,34 @@ Example details, rendered by the program using sample data:
 
 ![Example Russian and English descriptions](docs/assets/details-en.svg)
 
-MojiLex CLI is primarily a contributor tool. Reading local release snapshots is
-experimental, and snapshot search does not cover every record in the GitHub dataset.
-For exploratory search in a local unsigned snapshot, use
-`mojilex search "QUERY" --snapshot PATH --view search --include-unreviewed --allow-unverified`.
-See [advanced usage](docs/advanced-usage.md) for its scope and trust limits; this is
-not a complete public agent API.
+## Find published emoji without AI requests
+
+Search the descriptions already published in the
+[MojiLex dataset](https://github.com/MojiLex/mojilex).
+
+After installing MojiLex, lookup needs no Telegram bot or AI API keys.
+
+For the terminal interface, run `mojilex` and select **Search public database**.
+For scripts and agents, use the same lookup through commands:
+
+```console
+mojilex lookup refresh --json
+mojilex lookup search "calendar" --limit 10 --json
+mojilex lookup get TELEGRAM_CUSTOM_EMOJI_ID --json
+```
+
+Replace the ID placeholder with an ID returned by search. Refresh downloads the
+public dataset; subsequent queries run locally without Telegram or paid AI API
+requests. Search covers all eligible published descriptions, including pending concept
+mappings. Local drafts and unpublished edits are excluded. The index records the
+published commit, and descriptions retain their review status. Removed,
+unavailable, and negatively reviewed records are excluded.
+
+The included [Codex skill](skills/mojilex-lookup/SKILL.md) selects emoji using these
+commands. After installing it, ask `$mojilex-lookup` to find an emoji for your use
+case. See [lookup and skill setup](docs/advanced-usage.md#published-dataset-lookup-and-codex-skill).
+The separate [release snapshot commands](docs/advanced-usage.md#offline-release-snapshots)
+retain their existing coverage and trust rules.
 
 ## Multiple packs from a file
 

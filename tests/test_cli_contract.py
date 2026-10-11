@@ -152,7 +152,8 @@ def test_set_credentials_uses_hidden_prompts_and_never_renders_values(monkeypatc
         "_secret_prompt",
         lambda **_kwargs: lambda _label: next(supplied),
     )
-    result = CliRunner().invoke(app, ["config", "set-credentials"])
+    # Hidden-input behavior must not depend on the machine's selected provider.
+    result = CliRunner().invoke(app, ["config", "set-credentials", "--gemini", "--no-openai"])
 
     assert result.exit_code == 0, result.output
     assert captured == {
