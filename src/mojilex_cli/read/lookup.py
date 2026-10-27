@@ -31,7 +31,7 @@ from mojilex_cli.domain.models import Collection, Emoji, Membership, Tombstone
 
 PUBLIC_REPOSITORY_URL = "https://github.com/MojiLex/mojilex"
 PUBLIC_REF = "refs/remotes/origin/main"
-_VERSION = 1
+_VERSION = 2
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _PLATFORM = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
 _SOURCE_PATHS = (
@@ -546,6 +546,15 @@ class LookupIndex:
                     "payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, "
                     "search_text TEXT NOT NULL)"
                 )
+                connection.execute(
+                    "CREATE TABLE packs (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                    "title TEXT NOT NULL, url TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE pack_members (pack_id TEXT NOT NULL, emoji_id TEXT NOT NULL, "
+                    "PRIMARY KEY (pack_id, emoji_id))"
+                )
+                connection.execute("CREATE INDEX emoji_packs ON pack_members (emoji_id)")
                 try:
                     connection.execute(
                         "CREATE VIRTUAL TABLE search USING fts5(search_text, tokenize='unicode61')"
@@ -555,6 +564,15 @@ class LookupIndex:
                     engine = "python-prefix"
                 metadata["engine"] = engine
                 for document in documents:
+                    for pack in document["packs"]:
+                        connection.execute(
+                            "INSERT OR IGNORE INTO packs VALUES (?,?,?,?)",
+                            (pack["id"], pack["name"], pack["title"], pack["url"]),
+                        )
+                        connection.execute(
+                            "INSERT OR IGNORE INTO pack_members VALUES (?,?)",
+                            (pack["id"], document["emoji_id"]),
+                        )
                     payload = _json(document)
                     text = _search_text(document)
                     cursor = connection.execute(
@@ -623,7 +641,89 @@ class LookupIndex:
         )
         return dict(value)
 
-    def search(self, query: str, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+    @staticmethod
+    def _resolve_packs(connection: sqlite3.Connection, packs: list[str]) -> list[dict[str, Any]]:
+        resolved: dict[str, dict[str, Any]] = {}
+        for reference in packs:
+            value = _normalize(reference.strip().rstrip("/"))
+            rows = connection.execute(
+                "SELECT * FROM packs WHERE lower(name)=? OR id=? OR lower(url)=? ORDER BY id",
+                (value, value, value),
+            ).fetchall()
+            if not rows:
+                raise LookupError(
+                    "LOOKUP_NOT_FOUND",
+                    "A selected pack has no eligible published emoji.",
+                    "List packs with lookup packs and select an exact pack name or Telegram URL.",
+                )
+            if len(rows) != 1:
+                raise LookupError("LOOKUP_AMBIGUOUS", "Use the exact canonical pack ID.")
+            resolved[rows[0]["id"]] = dict(rows[0])
+        return list(resolved.values())
+
+    def resolve_packs(self, packs: list[str]) -> list[dict[str, Any]]:
+        self.refresh()
+        with closing(self._connect()) as connection:
+            return self._resolve_packs(connection, packs)
+
+    def packs(self, query: str = "", *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """List eligible packs, with links and context from their published descriptions."""
+        if len(query) > 512 or not 1 <= limit <= 100 or not 0 <= offset <= 100_000:
+            raise LookupError(
+                "LOOKUP_QUERY", "Use a query up to 512 characters and valid pagination."
+            )
+        terms = re.findall(r"\w+", _normalize(query), flags=re.UNICODE)
+        metadata = self.refresh()
+        with closing(self._connect()) as connection:
+            metadata = self._query_metadata(connection, metadata)
+            items = []
+            for pack in connection.execute("SELECT * FROM packs ORDER BY lower(name), id"):
+                examples: list[dict[str, Any]] = []
+                matched = 0
+                name_matches = all(
+                    term in _normalize(pack["name"] + " " + pack["title"]) for term in terms
+                )
+                rows = connection.execute(
+                    "SELECT d.* FROM documents d JOIN pack_members m ON m.emoji_id=d.emoji_id "
+                    "WHERE m.pack_id=? ORDER BY d.native_id, d.emoji_id",
+                    (pack["id"],),
+                ).fetchall()
+                for row in rows:
+                    words = re.findall(r"\w+", row["search_text"], flags=re.UNICODE)
+                    if name_matches or all(
+                        any(word.startswith(term) for word in words) for term in terms
+                    ):
+                        matched += 1
+                        if len(examples) < 3:
+                            item = self._payload(row)
+                            examples.append(
+                                {
+                                    "native_id": item["native_id"],
+                                    "descriptions": item["descriptions"],
+                                }
+                            )
+                if matched:
+                    items.append(
+                        {
+                            **dict(pack),
+                            "emoji_count": len(rows),
+                            "matched_emojis": matched,
+                            "examples": examples,
+                        }
+                    )
+            if terms:
+                items.sort(key=lambda item: (-item["matched_emojis"], item["name"].casefold()))
+        return {
+            "items": items[offset : offset + limit],
+            "total": len(items),
+            "limit": limit,
+            "offset": offset,
+            "index": metadata,
+        }
+
+    def search(
+        self, query: str, *, limit: int = 20, offset: int = 0, packs: list[str] | None = None
+    ) -> dict[str, Any]:
         if not isinstance(query, str) or not query.strip() or len(query) > 512:
             raise LookupError("LOOKUP_QUERY", "Use a non-empty query of at most 512 characters.")
         if not 1 <= limit <= 100 or not 0 <= offset <= 100_000:
@@ -636,20 +736,36 @@ class LookupIndex:
         try:
             with closing(self._connect()) as connection:
                 metadata = self._query_metadata(connection, metadata)
+                selected = self._resolve_packs(connection, packs or [])
+                pack_ids = {pack["id"] for pack in selected}
+                pack_filter = ""
+                parameters: tuple[Any, ...] = ()
+                if pack_ids:
+                    pack_filter = (
+                        " AND EXISTS (SELECT 1 FROM pack_members m WHERE m.emoji_id=d.emoji_id "
+                        "AND m.pack_id IN (" + ",".join("?" for _ in pack_ids) + "))"
+                    )
+                    parameters = tuple(sorted(pack_ids))
                 if metadata["engine"] == "fts5" and terms:
                     match = " AND ".join('"' + term.replace('"', '""') + '"*' for term in terms)
                     total = connection.execute(
-                        "SELECT COUNT(*) FROM search WHERE search MATCH ?", (match,)
+                        "SELECT COUNT(*) FROM search JOIN documents d ON d.rowid=search.rowid "
+                        "WHERE search MATCH ?" + pack_filter,
+                        (match, *parameters),
                     ).fetchone()[0]
                     rows = connection.execute(
                         "SELECT d.* FROM search JOIN documents d ON d.rowid=search.rowid "
-                        "WHERE search MATCH ? ORDER BY bm25(search), d.native_id, d.emoji_id "
+                        "WHERE search MATCH ?"
+                        + pack_filter
+                        + " ORDER BY bm25(search), d.native_id, d.emoji_id "
                         "LIMIT ? OFFSET ?",
-                        (match, limit, offset),
+                        (match, *parameters, limit, offset),
                     ).fetchall()
                 else:
                     ranked: list[tuple[int, str, str, sqlite3.Row]] = []
-                    for row in connection.execute("SELECT * FROM documents"):
+                    for row in connection.execute(
+                        "SELECT d.* FROM documents d WHERE 1=1" + pack_filter, parameters
+                    ):
                         words = re.findall(r"\w+", row["search_text"], flags=re.UNICODE)
                         score = sum(sum(word.startswith(term) for word in words) for term in terms)
                         matches = (
@@ -667,7 +783,14 @@ class LookupIndex:
             raise LookupError(
                 "LOOKUP_CACHE", "The lookup cache is unreadable.", "Rebuild with lookup refresh."
             ) from exc
-        return {"items": items, "total": total, "limit": limit, "offset": offset, "index": metadata}
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "index": metadata,
+            "selected_packs": selected,
+        }
 
     def get(self, identifier: str) -> dict[str, Any]:
         if not identifier or len(identifier) > 256:

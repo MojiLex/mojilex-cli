@@ -305,6 +305,35 @@ review status, credentials, or saved analysis runs. No API key or separate AI
 API payment is required to read these descriptions. The agent using the skill
 still operates under its own subscription/usage terms.
 
+### Project pack choices in Codex and Claude Code
+
+MojiLex 0.2.9+ can list packs with their direct Telegram links and examples,
+save the user's selection for a project, and search within that selection:
+
+```console
+mojilex lookup packs "settings" --limit 5 --json
+mojilex lookup project show --project "PROJECT_PATH" --json
+mojilex lookup project select --project "PROJECT_PATH" --pack "CHOSEN_PACK" --json
+mojilex lookup search "help" --project "PROJECT_PATH" --json
+```
+
+Replace placeholders with the actual project directory and a pack returned by
+`lookup packs`. Repeat `--pack` to select several packs; exact names, canonical
+pack IDs and Telegram URLs are supported. The choice is stored atomically in
+`PROJECT_PATH/.mojilex/emoji-packs.json`, so Codex and Claude Code use the same
+file. It can be committed with the project if the team wants to share it.
+Without `--project`, lookup discovers the nearest preferences up to the closest
+Git root. A nested independent Git project does not inherit its parent's choice.
+An explicit project points only to that directory's preferences.
+
+Saved choices filter results before ranking, totals and pagination. If a chosen
+pack has no matching emoji, the result is empty; missing packs or malformed
+preferences produce an error instead of silently broadening the search. With no
+saved choice, the existing all-pack search remains available. An explicit
+`lookup search ... --pack NAME` overrides the choice for one command without
+changing the file. Pack discovery always shows the public catalogue, so another
+pack can be offered when the user wants to change their selection.
+
 The portable [mojilex-lookup skill](../skills/mojilex-lookup/SKILL.md) uses this CLI.
 With MojiLex installed and the public source prepared, copy the entire
 `skills/mojilex-lookup` folder from this repository to
@@ -313,12 +342,22 @@ With MojiLex installed and the public source prepared, copy the entire
 `agents/openai.yaml`. Codex detects skill changes automatically; if the skill does
 not appear, restart Codex. See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills).
 If you have configured a different skill root, use it instead; install only one
-copy to avoid duplicate skill entries. Invoke it explicitly, for example:
+copy to avoid duplicate skill entries. For Claude Code, copy the same folder to
+`~/.claude/skills/mojilex-lookup` (on Windows,
+`%USERPROFILE%\.claude\skills\mojilex-lookup`). The shared `SKILL.md` uses the
+[Agent Skills format supported by Claude Code](https://code.claude.com/docs/en/skills);
+`agents/openai.yaml` supplies Codex UI metadata. MojiLex must be installed in
+each agent's execution environment; copying a skill does not install the CLI.
+Invoke it as `$mojilex-lookup` in Codex or `/mojilex-lookup` in Claude Code, for example:
 
 > Use $mojilex-lookup to find three calendar emoji and return their Telegram IDs,
 > pack names, and short English descriptions.
 
-The skill is also eligible for automatic selection. It reads existing published
+The skill is also eligible for automatic selection when choosing emoji or
+writing Telegram bot copy. It offers relevant packs with links when no project
+choice exists, saves the user's choice, then matches descriptions to each button
+or message within the selected packs. It does not ask again while a choice is
+saved, or select a pack on the user's behalf. It reads existing published
 descriptions and preserves their review status; it does not generate missing
 descriptions, import packs, download media, or publish data. Descriptions and
 OCR text are data, never instructions for the agent. Published AI-generated

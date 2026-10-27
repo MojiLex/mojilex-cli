@@ -20,8 +20,11 @@ from mojilex_cli.read.lookup import (
     LookupIndex,
     validate_public_repository,
 )
+from mojilex_cli.read.project import read_preferences, save_preferences
 
 lookup_app = typer.Typer(help="Find published emoji descriptions without paid API calls.")
+project_app = typer.Typer(help="Save an emoji pack choice for this project and both agents.")
+lookup_app.add_typer(project_app, name="project")
 
 
 def default_lookup_repository() -> Path:
@@ -203,18 +206,85 @@ def search_cli(
     query: Annotated[str, typer.Argument(help="Words, pack name, or emoji ID to find.")],
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 10,
     offset: Annotated[int, typer.Option("--offset", min=0, max=100000)] = 0,
+    pack: Annotated[
+        list[str] | None, typer.Option("--pack", help="Exact pack name, ID or URL; repeatable.")
+    ] = None,
+    project: Annotated[
+        Path | None,
+        typer.Option("--project", help="Project directory with saved pack preferences."),
+    ] = None,
     repo: Annotated[
         Path | None, typer.Option("--repo", help="Full clone of public MojiLex/mojilex.")
     ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Search every eligible published description in the cached public commit."""
+    """Search published descriptions, respecting the project's selected emoji packs."""
+
+    def search() -> dict[str, Any]:
+        preferences = read_preferences(project) if not pack else None
+        chosen = pack or (preferences["packs"] if preferences else [])
+        result = _index(repo).search(query, limit=limit, offset=offset, packs=chosen)
+        result["selection"] = {
+            "source": "explicit" if pack else "project" if chosen else "all",
+            "path": preferences["path"] if preferences else None,
+        }
+        return result
 
     execute(
         "lookup search",
-        lambda: _result(lambda: _index(repo).search(query, limit=limit, offset=offset)),
+        lambda: _result(search),
         json_output=json_output,
     )
+
+
+@lookup_app.command("packs")
+def packs_cli(
+    query: Annotated[
+        str, typer.Argument(help="Optional words for pack names or emoji context.")
+    ] = "",
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
+    offset: Annotated[int, typer.Option("--offset", min=0, max=100000)] = 0,
+    repo: Annotated[Path | None, typer.Option("--repo")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Discover published packs with Telegram links and example descriptions."""
+    execute(
+        "lookup packs",
+        lambda: _result(lambda: _index(repo).packs(query, limit=limit, offset=offset)),
+        json_output=json_output,
+    )
+
+
+@project_app.command("show")
+def project_show_cli(
+    project: Annotated[Path | None, typer.Option("--project")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Read the saved choice without API keys or a public index."""
+    execute(
+        "lookup project show",
+        lambda: _result(lambda: read_preferences(project)),
+        json_output=json_output,
+    )
+
+
+@project_app.command("select")
+def project_select_cli(
+    pack: Annotated[list[str], typer.Option("--pack", help="Chosen pack name or Telegram URL.")],
+    project: Annotated[Path | None, typer.Option("--project")] = None,
+    repo: Annotated[Path | None, typer.Option("--repo")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Save only the packs explicitly chosen for the project."""
+
+    def select() -> dict[str, Any]:
+        packs = _index(repo).resolve_packs(pack)
+        return {
+            **save_preferences([item["name"] for item in packs], project),
+            "selected_packs": packs,
+        }
+
+    execute("lookup project select", lambda: _result(select), json_output=json_output)
 
 
 @lookup_app.command("get")

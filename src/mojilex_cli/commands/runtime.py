@@ -1058,6 +1058,15 @@ def _render_lookup_result(console: Console, command: str, result: Mapping[str, A
     """Show saved public captions without exposing internal index payloads."""
 
     ru = current_ui_language() == "ru"
+    if command.startswith("lookup project "):
+        console.print(Text(str(result.get("path", ""))))
+        console.print(
+            Text(
+                ("Выбранные паки: " if ru else "Selected packs: ")
+                + (", ".join(result.get("packs", [])) or ("не выбраны" if ru else "not selected"))
+            )
+        )
+        return True
     metadata = result.get("index", result)
     if not isinstance(metadata, Mapping):
         return False
@@ -1080,6 +1089,16 @@ def _render_lookup_result(console: Console, command: str, result: Mapping[str, A
                 else "Reading saved public data. No API key is needed."
             )
         )
+        return True
+    if command == "lookup packs":
+        console.print(
+            Text(("Найдено паков: " if ru else "Packs found: ") + str(result.get("total", 0)))
+        )
+        for pack in result.get("items", []):
+            console.print(
+                Text(f"{pack['name']} · {pack['title']} · {pack['emoji_count']}", style="bold")
+            )
+            console.print(Text(str(pack["url"])))
         return True
     if command == "lookup search":
         console.print(Text(("Найдено: " if ru else "Matches: ") + str(result.get("total", 0))))

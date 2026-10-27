@@ -175,6 +175,10 @@ Search the descriptions already published in the
 [MojiLex dataset](https://github.com/MojiLex/mojilex).
 
 After installing MojiLex, lookup needs no Telegram bot or AI API keys.
+The Codex and Claude Code skill can offer packs with Telegram links, remember
+the user's project choice, and select emoji within those packs. Preferences are
+shared in the project's `.mojilex/emoji-packs.json` file. See
+[project pack selection](docs/advanced-usage.md#project-pack-choices-in-codex-and-claude-code).
 
 For the terminal interface, run `mojilex` and select **Search public database**.
 For scripts and agents, use the same lookup through commands:
